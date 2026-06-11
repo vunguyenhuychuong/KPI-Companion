@@ -31,6 +31,83 @@ React (Vite) ── /api proxy ──► FastAPI ──► LangChain (ChatOpenAI
 
 ## 🚀 Chạy dự án
 
+### ⚡ Khởi động nhanh trên máy local (Windows) — hướng dẫn từng bước
+
+> Hướng dẫn này dành cho lần đầu chạy trên máy Windows. Các bước đã được kiểm chứng thực tế; làm tuần tự từ trên xuống.
+
+**Bước 0 — Kiểm tra công cụ.** Mở **PowerShell** (bấm `Win + R`, gõ `powershell`, Enter) rồi chạy:
+
+```powershell
+py --version    # cần Python 3.12 trở lên
+node --version  # cần Node 20 trở lên — KHÔNG dùng Node 14
+```
+
+> ⚠️ **Lưu ý Node:** máy có thể có 2 bản Node song song — bản cũ ở `C:\Program Files\nodejs` và bản mới quản lý bởi **nvm** ở `C:\nvm4w\nodejs`. Vite (frontend) cần Node 20+. Nếu `node --version` ra v14, chuyển sang Node 20 bằng `nvm use 20.20.2` (hoặc bản 20.x đã cài). File `start.ps1` đã được cấu hình tự dùng Node ở `C:\nvm4w\nodejs`.
+
+**Bước 1 — Cài backend (Python).** Tạo môi trường ảo và cài thư viện:
+
+```powershell
+cd D:\KPI-Compani\backend
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+> Mô tả: lệnh này tạo thư mục `.venv` (môi trường Python riêng cho dự án) rồi cài FastAPI, LangChain, SQLAlchemy… Chỉ cần làm **một lần**.
+
+**Bước 2 — Cài frontend (Node).** Cài thư viện giao diện React/Vite:
+
+```powershell
+cd D:\KPI-Compani\frontend
+npm install
+```
+
+> Mô tả: tải toàn bộ `node_modules`. Cũng chỉ làm **một lần**. Nếu báo lỗi liên quan Vite/engine, kiểm tra lại Node đang là v20 (Bước 0).
+
+**Bước 3 — Cấu hình LLM.** Tạo file cấu hình rồi điền thông tin endpoint AI:
+
+```powershell
+cd D:\KPI-Compani\backend
+Copy-Item .env.example .env   # nếu chưa có .env (start.ps1 cũng tự làm bước này)
+```
+
+Mở `backend\.env` bằng Notepad/VS Code và sửa 3 dòng cho khớp endpoint của bạn (ví dụ dùng **VNG Cloud / GreenNode MaaS**):
+
+```env
+LLM_BASE_URL=https://maas-llm-aiplatform-hcm.api.vngcloud.vn/v1
+LLM_API_KEY=vn-xxxxxxxx          # key thật, KHÔNG để giá trị mẫu sk-your-key-here
+LLM_MODEL=qwen/qwen3-5-27b       # tên model đúng như nhà cung cấp yêu cầu
+```
+
+> 🔒 **Bảo mật:** `backend\.env` đã nằm trong `.gitignore` nên **không bị commit lên git**. Tuyệt đối không dán API key vào chat AI hay nơi công cộng — chỉ sửa trực tiếp trong file trên máy.
+>
+> 💡 `LLM_BASE_URL` và `LLM_MODEL` lấy ở trang **API Keys / Model serving** trên console nhà cung cấp (đây không phải secret). Key phải khớp endpoint: key `vn-...` của VNG **không** dùng được với endpoint DashScope (`sk-...`) và ngược lại.
+
+**Bước 4 — Khởi động.** Một lệnh duy nhất, lần nào cũng dùng:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "D:\KPI-Compani\start.ps1"
+```
+
+`start.ps1` sẽ tự động: dọn cổng 8000/5173 còn kẹt từ lần trước → mở cửa sổ backend (`:8000`, có auto-reload) → mở cửa sổ frontend (`:5173`) → sau 4 giây tự mở trình duyệt vào ứng dụng.
+
+> Phần `-ExecutionPolicy Bypass` để tránh lỗi *"running scripts is disabled on this system"*. Muốn từ nay gõ gọn `.\start.ps1`, chạy **một lần duy nhất**: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+
+**Bước 5 — Kiểm tra.** Mở các địa chỉ:
+
+- UI: <http://localhost:5173> — Dashboard hiện 5 KPI mẫu (DB trống sẽ tự seed).
+- API docs: <http://127.0.0.1:8000/docs>
+- Vào **Trợ lý AI**, gõ thử *"xin chào"* → nếu Agent trả lời tiếng Việt là LLM đã thông.
+
+> ⏱️ Phản hồi có thể mất 20–60 giây tuỳ model (vd `qwen3-5-27b` trên MaaS khá chậm; câu hỏi phức tạp gọi LLM nhiều lần nên lâu hơn). Đây là độ trễ của model, không phải lỗi — muốn nhanh hơn, đổi `LLM_MODEL` sang model nhỏ/nhanh hơn.
+
+**Dừng / khởi động lại.**
+
+- Đóng app: đóng **cả 2** cửa sổ PowerShell (backend + frontend).
+- Sửa `.env` xong: chạy lại `start.ps1` để nạp cấu hình mới (sửa `.env` **không** tự reload — `--reload` chỉ theo dõi file code `.py`).
+- Gặp lỗi `address already in use` ở cổng 8000: cứ chạy lại `start.ps1` — bước dọn cổng tích hợp sẵn sẽ kill tiến trình mồ côi rồi mở lại.
+
+---
+
 ### Yêu cầu
 - Python 3.12+ · Node.js 20+
 - API key của Qwen (endpoint OpenAI-compatible bất kỳ)

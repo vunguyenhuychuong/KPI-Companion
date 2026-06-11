@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     # LLM — Qwen qua endpoint OpenAI-compatible
     llm_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-    llm_api_key: str = "sk-not-set"
+    llm_api_key: str = "vn-8VHFt_8Og6s-j8GyfKTG88axZG_Uv978d89acf2ac9478194be8bc2586bea17Qxwo4UM_54UYD8JnITQc2NIVZC_L-4u"
     llm_model: str = "qwen3.5-plus"
     llm_temperature: float = 0.2
 
