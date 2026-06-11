@@ -1,0 +1,7 @@
+[
+  {"date": "2026-06-08", "time": "09:00", "title": "Họp giao ban tuần phòng CNTT", "duration": "1h", "description": "Báo cáo tiến độ ITGC Q2 và tình trạng ticket tồn đọng"},
+  {"date": "2026-06-09", "time": "14:00", "title": "Workshop rà soát kiểm soát truy cập (ITGC)", "duration": "2h", "description": "Rà soát ma trận phân quyền hệ thống ERP cùng team audit"},
+  {"date": "2026-06-10", "time": "10:00", "title": "Kick-off hỗ trợ dự án ISO 27001 GĐ2", "duration": "1h", "description": "Nhận phạm vi hỗ trợ: rà soát 12 tài liệu chính sách ATTT"},
+  {"date": "2026-06-11", "time": "15:00", "title": "Demo phương án tự động hóa báo cáo tuân thủ", "duration": "45m", "description": "Trình bày prototype script tự động sinh báo cáo cho sếp Trường"},
+  {"date": "2026-06-05", "time": "11:00", "title": "Review SLA ticket tháng 5", "duration": "30m", "description": "Tỷ lệ đóng ticket trong SLA đạt 96%"}
+]

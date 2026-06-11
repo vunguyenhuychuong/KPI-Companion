@@ -1,0 +1,6 @@
+Tên KPI,Mô tả,Chỉ tiêu đo lường,Trọng số,Deadline
+Hoàn thành báo cáo ITGC 4 quý đúng hạn,Lập và nộp báo cáo kiểm soát chung CNTT mỗi quý,4/4 báo cáo quý được duyệt đúng hạn,30,2026-12-31
+Tỷ lệ xử lý ticket trong SLA >= 95%,Xử lý ticket vận hành trong SLA cam kết,>=95% ticket đóng trong SLA đo theo tháng,25,2026-12-31
+Hoàn thành hồ sơ audit nội bộ 2026,Chuẩn bị bằng chứng kiểm soát cho 2 đợt audit,2 đợt audit không có finding nghiêm trọng,20,2026-10-31
+Tự động hóa 2 báo cáo tuân thủ định kỳ,Xây dựng script tự động sinh báo cáo hàng tháng,2 báo cáo chạy tự động giảm 50% thời gian,15,2026-09-30
+Hoàn thành 100% khóa đào tạo bắt buộc,Các khóa ATTT và tuân thủ theo quy định,100% khóa học hoàn thành trước hạn,10,2026-12-31

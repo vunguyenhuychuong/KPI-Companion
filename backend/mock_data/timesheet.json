@@ -1,0 +1,8 @@
+[
+  {"date": "2026-06-08", "task": "Hoàn thiện và nộp báo cáo ITGC Quý 2", "status": "Hoàn thành", "note": "Đã được sếp duyệt, còn bổ sung phụ lục kiểm soát truy cập"},
+  {"date": "2026-06-09", "task": "Xử lý ticket WF-1024 workflow phê duyệt bị treo", "status": "Hoàn thành", "note": "Root cause: rule engine timeout, đã fix và deploy"},
+  {"date": "2026-06-09", "task": "Cập nhật ma trận phân quyền ERP sau workshop", "status": "Đang làm", "note": "Xong 60%, còn module kho"},
+  {"date": "2026-06-10", "task": "Rà soát tài liệu chính sách ATTT cho dự án ISO 27001", "status": "Đang làm", "note": "Việc phát sinh ngoài kế hoạch, nhận từ PMO"},
+  {"date": "2026-06-11", "task": "Chuẩn bị danh mục bằng chứng cho audit nội bộ tháng 7", "status": "Chưa bắt đầu", "note": "Kế hoạch tuần sau"},
+  {"date": "2026-06-11", "task": "Học 2 module còn lại khóa ATTT Q2", "status": "Chưa bắt đầu", "note": "Hạn 30/6"}
+]
