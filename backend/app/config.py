@@ -11,8 +11,9 @@ class Settings(BaseSettings):
     )
 
     # LLM — Qwen qua endpoint OpenAI-compatible
+    # API key KHONG hard-code o day — dien vao backend/.env (file da bi gitignore).
     llm_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-    llm_api_key: str = "vn-8VHFt_8Og6s-j8GyfKTG88axZG_Uv978d89acf2ac9478194be8bc2586bea17Qxwo4UM_54UYD8JnITQc2NIVZC_L-4u"
+    llm_api_key: str = ""
     llm_model: str = "qwen3.5-plus"
     llm_temperature: float = 0.2
 
