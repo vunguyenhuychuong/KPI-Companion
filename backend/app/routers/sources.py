@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from .. import schemas
 from ..agent import agent as kpi_agent
+from ..auth import CurrentUser
 from ..config import settings
 from ..connectors import fetch_activities
 from ..connectors.file_upload import parse_worklog_file
@@ -27,14 +28,14 @@ def sources_status():
 
 
 @router.post("/sync", response_model=schemas.ChatResponse)
-def sync(payload: schemas.SyncRequest, db: Session = Depends(get_db)):
+def sync(payload: schemas.SyncRequest, current_user: CurrentUser, db: Session = Depends(get_db)):
     """Quet nguon ngoai theo yeu cau (nut bam tren UI, khong qua chat)."""
     activities = fetch_activities(payload.sources, payload.start_date, payload.end_date)
     if not activities:
         return schemas.ChatResponse(
             reply="Không tìm thấy hoạt động nào trong khoảng thời gian này.", intent="sync_request"
         )
-    kpis = kpi_service.get_active_kpis(db)
+    kpis = kpi_service.get_active_kpis(db, user_id=current_user.id)
     try:
         items = kpi_agent.extract_work_items("", kpis, activities=activities)
     except Exception as e:
@@ -47,13 +48,13 @@ def sync(payload: schemas.SyncRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/upload", response_model=schemas.ChatResponse)
-async def upload_worklog(file: UploadFile, db: Session = Depends(get_db)):
+async def upload_worklog(file: UploadFile, current_user: CurrentUser, db: Session = Depends(get_db)):
     """Upload file Excel/CSV log cong viec -> Agent phan loai -> de xuat dau viec."""
     content = await file.read()
     activities = parse_worklog_file(file.filename or "upload.csv", content)
     if not activities:
         raise HTTPException(400, "Không đọc được dòng dữ liệu nào từ file.")
-    kpis = kpi_service.get_active_kpis(db)
+    kpis = kpi_service.get_active_kpis(db, user_id=current_user.id)
     try:
         items = kpi_agent.extract_work_items("", kpis, activities=activities)
     except Exception as e:

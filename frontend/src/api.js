@@ -1,23 +1,48 @@
 const BASE = '/api'
 
+function getToken() {
+  return localStorage.getItem('kpi_token')
+}
+
 async function request(path, options = {}, timeoutMs = 0) {
   const controller = timeoutMs > 0 ? new AbortController() : null
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
+  const token = getToken()
+  const headers = {}
+  if (!(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json'
+  }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
   let res
   try {
     res = await fetch(BASE + path, {
-      headers: options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' },
+      headers,
       signal: controller?.signal,
       ...options,
     })
   } finally {
     if (timer) clearTimeout(timer)
   }
+  if (res.status === 401) {
+    localStorage.removeItem('kpi_token')
+    localStorage.removeItem('kpi_user')
+    window.location.reload()
+    throw new Error('Phiên đăng nhập hết hạn, vui lòng đăng nhập lại')
+  }
   if (!res.ok) {
     let detail = `Lỗi ${res.status}`
     try {
       const data = await res.json()
-      detail = data.detail || detail
+      if (Array.isArray(data.detail)) {
+        // Pydantic 422 validation error: [{loc, msg, type}, ...]
+        detail = data.detail
+          .map(e => e.msg.replace(/^Value error,\s*/i, ''))
+          .join(' | ')
+      } else {
+        detail = data.detail || detail
+      }
     } catch { /* ignore */ }
     throw new Error(detail)
   }
@@ -25,6 +50,15 @@ async function request(path, options = {}, timeoutMs = 0) {
 }
 
 export const api = {
+  // Auth
+  authConfig: () => request('/auth/config'),
+  login: (email, password) =>
+      request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  register: (email, password, name) =>
+      request('/auth/register', { method: 'POST', body: JSON.stringify({ email, password, name }) }),
+  googleLogin: (credential) =>
+      request('/auth/google', { method: 'POST', body: JSON.stringify({ credential }) }),
+
   // KPI
   listKpis: () => request('/kpis'),
   createKpi: (data) => request('/kpis', { method: 'POST', body: JSON.stringify(data) }),

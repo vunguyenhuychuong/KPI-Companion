@@ -6,7 +6,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, text
 
 from . import models
+from .auth import hash_password
+from .config import settings
 from .database import Base, SessionLocal, engine
+from .routers import auth as auth_router
 from .routers import chat, kpis, objectives, reports, sources, work_items
 
 
@@ -15,6 +18,8 @@ def migrate():
     with engine.connect() as conn:
         kpi_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(kpis)"))]
         obj_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(objectives)"))]
+        user_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(users)"))]
+
         if kpi_cols and "objective_id" not in kpi_cols:
             conn.execute(text("ALTER TABLE kpis ADD COLUMN objective_id INTEGER"))
 
@@ -72,6 +77,16 @@ def migrate():
                         ),
                         {"total": total, **({"oid": obj_id} if obj_id is not None else {})},
                     )
+
+        # Multi-user: them email va hashed_password vao bang users
+        if user_cols and "email" not in user_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR(254)"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN hashed_password VARCHAR(200)"))
+
+        # Google OAuth: them picture
+        if user_cols and "picture" not in user_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN picture VARCHAR(500) DEFAULT ''"))
+
         conn.commit()
 
 
@@ -102,12 +117,25 @@ def seed_objectives():
 
 
 def seed_demo_data():
-    """Tao user mac dinh + bo KPI mau (chi khi DB trong) de demo nhanh."""
+    """Tao user mac dinh + bo KPI mau (chi khi DB trong) de demo nhanh.
+
+    Tai khoan demo: demo@local / demo
+    """
     db = SessionLocal()
     try:
-        if not db.get(models.User, 1):
-            db.add(models.User(id=1, name="Người dùng demo"))
+        user = db.get(models.User, 1)
+        if not user:
+            db.add(models.User(
+                id=1, name="Người dùng demo",
+                email="demo@local",
+                hashed_password=hash_password("demo"),
+            ))
             db.commit()
+        elif user.hashed_password is None:
+            user.email = user.email or "demo@local"
+            user.hashed_password = hash_password("demo")
+            db.commit()
+
         if db.scalars(select(models.KPI).limit(1)).first():
             return
         samples = [
@@ -164,14 +192,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="KPI Companion API", version="0.1.0", lifespan=lifespan)
 
+origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
+    allow_origins=origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.include_router(auth_router.router)
 app.include_router(kpis.router)
 app.include_router(objectives.router)
 app.include_router(chat.router)

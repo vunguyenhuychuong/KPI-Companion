@@ -20,6 +20,18 @@ class Settings(BaseSettings):
 
     database_url: str = f"sqlite:///{BASE_DIR / 'kpi_companion.db'}"
 
+    # JWT Auth — đặt JWT_SECRET_KEY dài, ngẫu nhiên trong .env khi deploy thật
+    jwt_secret_key: str = "change-me-in-production-with-a-long-random-string"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_days: int = 30
+
+    # CORS: danh sách origin phân cách bởi dấu phẩy, hoặc "*" để cho tất cả
+    cors_origins: str = "*"
+
+    # Google OAuth2 — lấy từ Google Cloud Console > Credentials > OAuth 2.0 Client IDs
+    # Để trống thì không hiển thị nút "Đăng nhập bằng Google"
+    google_client_id: str = ""
+
     # Google: mock mode khi chua co OAuth credentials
     google_mock_mode: bool = True
     google_credentials_file: str = "credentials.json"

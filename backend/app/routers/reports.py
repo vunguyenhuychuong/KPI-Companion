@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..agent import agent as kpi_agent
+from ..auth import CurrentUser
 from ..database import get_db
 from ..services import kpi_service, report_service
 
@@ -17,7 +18,6 @@ def _period_range(period_type: str, period_label: str | None) -> tuple[str, str,
     """Tinh (nhan hien thi, khoa chuan period_key, ngay bat dau, ngay ket thuc) cua ky."""
     today = date.today()
     if period_type == "week":
-        # period_label = ngay BAT KY trong tuan can bao cao (YYYY-MM-DD); de trong = tuan nay
         anchor = today
         if period_label:
             try:
@@ -38,7 +38,7 @@ def _period_range(period_type: str, period_label: str | None) -> tuple[str, str,
         end = (date(y + (m // 12), m % 12 + 1, 1) - timedelta(days=1))
         return f"Tháng {m:02d}/{y}", f"{y}-{m:02d}", start, end
     if period_type == "quarter":
-        if period_label:  # dang "Q2/2026" hoac "Q2-2026"
+        if period_label:
             try:
                 q = int(period_label[1])
                 y = int(period_label[-4:])
@@ -56,19 +56,21 @@ def _period_range(period_type: str, period_label: str | None) -> tuple[str, str,
     raise HTTPException(400, "period_type phải là week|month|quarter|year")
 
 
-def _generate_and_save(db: Session, period_type: str, period_label: str | None) -> models.SavedReport:
+def _generate_and_save(
+    db: Session, period_type: str, period_label: str | None, user_id: int
+) -> models.SavedReport:
     """Sinh bao cao; neu da co bao cao CUNG KY thi cap nhat de (update content + thoi gian)."""
     label, key, start, end = _period_range(period_type, period_label)
     try:
-        content = kpi_agent.period_report(db, period_type, label, start, end)
+        content = kpi_agent.period_report(db, period_type, label, start, end, user_id=user_id)
     except Exception as e:
         raise HTTPException(502, f"Lỗi khi gọi AI model: {e}")
     existing = db.scalars(
         select(models.SavedReport).where(
-            models.SavedReport.user_id == 1,
+            models.SavedReport.user_id == user_id,
             models.SavedReport.period_type == period_type,
             models.SavedReport.period_key == key,
-            )
+        )
     ).first()
     if existing:
         existing.content = content
@@ -77,7 +79,7 @@ def _generate_and_save(db: Session, period_type: str, period_label: str | None) 
         db.refresh(existing)
         return existing
     report = models.SavedReport(
-        user_id=1, period_type=period_type, period_label=label, period_key=key, content=content
+        user_id=user_id, period_type=period_type, period_label=label, period_key=key, content=content
     )
     db.add(report)
     db.commit()
@@ -86,46 +88,48 @@ def _generate_and_save(db: Session, period_type: str, period_label: str | None) 
 
 
 @router.get("/dashboard")
-def dashboard(db: Session = Depends(get_db)):
-    return kpi_service.build_dashboard(db)
+def dashboard(current_user: CurrentUser, db: Session = Depends(get_db)):
+    return kpi_service.build_dashboard(db, user_id=current_user.id)
 
 
 @router.get("/weekly")
-def weekly(db: Session = Depends(get_db)):
+def weekly(current_user: CurrentUser, db: Session = Depends(get_db)):
     """Ban tong ket tuan nhanh (nut tren Dashboard)."""
-    return {"report": kpi_agent.weekly_report(db)}
+    return {"report": kpi_agent.weekly_report(db, user_id=current_user.id)}
 
 
 @router.post("/generate", response_model=schemas.SavedReportOut)
-def generate_report(payload: schemas.ReportGenerateRequest, db: Session = Depends(get_db)):
+def generate_report(
+    payload: schemas.ReportGenerateRequest, current_user: CurrentUser, db: Session = Depends(get_db)
+):
     """Agent viet bao cao ky (so sanh voi ke hoach SMART). Cung ky -> cap nhat ban cu."""
-    return _generate_and_save(db, payload.period_type, payload.period_label)
+    return _generate_and_save(db, payload.period_type, payload.period_label, user_id=current_user.id)
 
 
 @router.post("/saved/{report_id}/regenerate", response_model=schemas.SavedReportOut)
-def regenerate_report(report_id: int, db: Session = Depends(get_db)):
+def regenerate_report(report_id: int, current_user: CurrentUser, db: Session = Depends(get_db)):
     """Tao lai bao cao da co voi du lieu moi nhat (giu nguyen ky)."""
     report = db.get(models.SavedReport, report_id)
-    if not report:
+    if not report or report.user_id != current_user.id:
         raise HTTPException(404, "Không tìm thấy báo cáo")
-    return _generate_and_save(db, report.period_type, report.period_key or None)
+    return _generate_and_save(db, report.period_type, report.period_key or None, user_id=current_user.id)
 
 
 @router.get("/saved", response_model=list[schemas.SavedReportOut])
-def list_saved(db: Session = Depends(get_db)):
+def list_saved(current_user: CurrentUser, db: Session = Depends(get_db)):
     return list(
         db.scalars(
             select(models.SavedReport)
-            .where(models.SavedReport.user_id == 1)
+            .where(models.SavedReport.user_id == current_user.id)
             .order_by(models.SavedReport.created_at.desc())
         )
     )
 
 
 @router.delete("/saved/{report_id}")
-def delete_saved(report_id: int, db: Session = Depends(get_db)):
+def delete_saved(report_id: int, current_user: CurrentUser, db: Session = Depends(get_db)):
     report = db.get(models.SavedReport, report_id)
-    if not report:
+    if not report or report.user_id != current_user.id:
         raise HTTPException(404, "Không tìm thấy báo cáo")
     db.delete(report)
     db.commit()
@@ -133,8 +137,8 @@ def delete_saved(report_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/export")
-def export_excel(db: Session = Depends(get_db)):
-    data = report_service.export_evaluation_excel(db)
+def export_excel(current_user: CurrentUser, db: Session = Depends(get_db)):
+    data = report_service.export_evaluation_excel(db, user_id=current_user.id)
     filename = f"bao-cao-kpi-{date.today().isoformat()}.xlsx"
     return Response(
         content=data,

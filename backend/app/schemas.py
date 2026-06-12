@@ -1,6 +1,20 @@
+import re
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# Email: cho phep local-part ASCII + domain + TLD it nhat 2 ky tu
+_EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
+_ALLOWED_EMAIL_DOMAINS = {"gmail.com", "vng.com.vn"}
+
+# Ky tu cam trong ten nguoi dung:
+#   < > " ' / \ &  {}  — HTML/script injection
+#   \x00-\x1f \x7f    — control characters (null, CR, LF, tab...)
+#   ​‌‍﻿ — zero-width space / ZWNJ / ZWJ / BOM (hay an trong text tieng Viet)
+#   ‪-‮      — bidi override (LRE RLE PDF LRO RLO — co the dao nguoc hien thi)
+_UNSAFE_CHARS_RE = re.compile(
+    r'[<>"\'/\\&{}\x00-\x1f\x7f​‌‍﻿‪-‮]'
+)
 
 WORK_STATUSES = ["da_lam", "dang_lam", "se_lam", "phat_sinh", "loai_bo"]
 STATUS_LABELS = {
@@ -199,6 +213,83 @@ class SavedReportOut(BaseModel):
     period_label: str
     content: str
     created_at: datetime
+
+
+# ---------- Auth ----------
+class UserCreate(BaseModel):
+    email: str
+    password: str
+    name: str = ""
+
+    @field_validator("email")
+    @classmethod
+    def _validate_email(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not v:
+            raise ValueError("Email không được để trống")
+        if len(v) > 254:
+            raise ValueError("Email quá dài (tối đa 254 ký tự)")
+        if not _EMAIL_RE.match(v):
+            raise ValueError("Email không đúng định dạng (vd: ten@vng.com.vn)")
+        domain = v.split("@")[1]
+        if domain not in _ALLOWED_EMAIL_DOMAINS:
+            raise ValueError("Chỉ chấp nhận email @gmail.com hoặc @vng.com.vn")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def _validate_password(cls, v: str) -> str:
+        if not v:
+            raise ValueError("Mật khẩu không được để trống")
+        if len(v) < 6:
+            raise ValueError("Mật khẩu tối thiểu 6 ký tự")
+        if len(v) > 100:
+            raise ValueError("Mật khẩu quá dài (tối đa 100 ký tự)")
+        if "\x00" in v:
+            raise ValueError("Mật khẩu chứa ký tự không hợp lệ")
+        return v
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) > 100:
+            raise ValueError("Tên quá dài (tối đa 100 ký tự)")
+        if _UNSAFE_CHARS_RE.search(v):
+            raise ValueError('Tên chứa ký tự không hợp lệ (không dùng: < > " \' / \\ & { })')
+        return v
+
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+    @field_validator("email")
+    @classmethod
+    def _normalize_email(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not v:
+            raise ValueError("Email không được để trống")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def _check_password_nonempty(cls, v: str) -> str:
+        if not v:
+            raise ValueError("Mật khẩu không được để trống")
+        return v
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user_id: int
+    name: str
+    picture: str = ""
+
+
+class GoogleTokenRequest(BaseModel):
+    credential: str  # Google ID token từ @react-oauth/google
 
 
 # ---------- Dashboard ----------

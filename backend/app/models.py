@@ -21,6 +21,9 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(100), default="Người dùng")
+    email: Mapped[str | None] = mapped_column(String(254), unique=True, nullable=True, index=True)
+    hashed_password: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    picture: Mapped[str] = mapped_column(String(500), default="")
 
     kpis: Mapped[list["KPI"]] = relationship(back_populates="user")
 
