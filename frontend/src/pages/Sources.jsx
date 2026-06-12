@@ -1,12 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
+import { useLang } from '../LangContext'
 import ProposalList from '../components/ProposalList'
-
-const SOURCES = [
-  { key: 'gmail', label: '✉️ Gmail', desc: 'Email giao việc, báo cáo đã gửi/nhận' },
-  { key: 'calendar', label: '📅 Google Calendar', desc: 'Cuộc họp, sự kiện đã tham gia' },
-  { key: 'sheets', label: '📊 Google Sheets', desc: 'Timesheet, log công việc trên Sheet' },
-]
 
 function lastMonday() {
   const d = new Date()
@@ -16,6 +11,14 @@ function lastMonday() {
 }
 
 export default function Sources() {
+  const { tr } = useLang()
+
+  const SOURCES = [
+    { key: 'gmail', label: '✉️ Gmail', descKey: 'sources.source_gmail_desc' },
+    { key: 'calendar', label: '📅 Google Calendar', descKey: 'sources.source_calendar_desc' },
+    { key: 'sheets', label: '📊 Google Sheets', descKey: 'sources.source_sheets_desc' },
+  ]
+
   const [status, setStatus] = useState(null)
   const [selected, setSelected] = useState(['gmail', 'calendar', 'sheets'])
   const [start, setStart] = useState(lastMonday())
@@ -58,45 +61,49 @@ export default function Sources() {
   return (
     <div className="page">
       <header className="page-header">
-        <h1>🔌 Nguồn dữ liệu</h1>
-        <p>Agent tự quét dữ liệu công việc, bạn chỉ cần xác nhận kết quả phân loại.</p>
+        <h1>{tr('sources.title')}</h1>
+        <p>{tr('sources.subtitle')}</p>
       </header>
 
       {status && (
         <div className={`mode-banner ${status.gmail === 'mock' ? 'mock' : 'real'}`}>
           {status.gmail === 'mock'
-            ? '🧪 Đang chạy chế độ DEMO (mock data). ' + status.note
-            : '🟢 Đã kết nối Google API thật.'}
+            ? tr('sources.demo_banner', { note: status.note })
+            : tr('sources.real_banner')}
         </div>
       )}
 
       <div className="card">
-        <h3>Quét từ Google</h3>
+        <h3>{tr('sources.google_section')}</h3>
         <div className="source-list">
           {SOURCES.map((s) => (
             <label key={s.key} className={`source-item ${selected.includes(s.key) ? 'on' : ''}`}>
               <input type="checkbox" checked={selected.includes(s.key)} onChange={() => toggle(s.key)} />
               <div>
                 <div className="source-name">{s.label}</div>
-                <div className="muted">{s.desc}</div>
+                <div className="muted">{tr(s.descKey)}</div>
               </div>
-              {status && <span className={`badge ${status[s.key]}`}>{status[s.key] === 'mock' ? 'demo' : 'thật'}</span>}
+              {status && (
+                <span className={`badge ${status[s.key]}`}>
+                  {status[s.key] === 'mock' ? tr('sources.demo_badge') : tr('sources.real_badge')}
+                </span>
+              )}
             </label>
           ))}
         </div>
         <div className="form-row">
-          <label>Từ ngày <input type="date" value={start} onChange={(e) => setStart(e.target.value)} /></label>
-          <label>Đến ngày <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} /></label>
+          <label>{tr('sources.from_date')} <input type="date" value={start} onChange={(e) => setStart(e.target.value)} /></label>
+          <label>{tr('sources.to_date')} <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} /></label>
           <button className="btn primary" onClick={sync} disabled={busy || selected.length === 0}>
-            {busy ? 'Agent đang quét và phân loại…' : '🔍 Quét ngay'}
+            {busy ? tr('sources.scanning') : tr('sources.scan_btn')}
           </button>
         </div>
       </div>
 
       <div className="card">
-        <h3>Hoặc upload file Excel / CSV</h3>
-        <p className="muted">Timesheet, log công việc — cần cột: Ngày, Công việc, Trạng thái, Ghi chú (tên cột linh hoạt, Agent tự nhận diện).</p>
-        <button className="btn" onClick={() => fileRef.current?.click()} disabled={busy}>📤 Chọn file</button>
+        <h3>{tr('sources.upload_section')}</h3>
+        <p className="muted">{tr('sources.upload_desc')}</p>
+        <button className="btn" onClick={() => fileRef.current?.click()} disabled={busy}>{tr('sources.upload_btn')}</button>
         <input ref={fileRef} type="file" accept=".xlsx,.csv" hidden onChange={upload} />
       </div>
 
@@ -108,7 +115,7 @@ export default function Sources() {
           {result.proposed_items?.length > 0 ? (
             <ProposalList
               items={result.proposed_items}
-              onConfirmed={() => setResult({ ...result, proposed_items: [], reply: '✅ Đã lưu và cập nhật tiến độ KPI. Xem Dashboard để thấy thay đổi.' })}
+              onConfirmed={() => setResult({ ...result, proposed_items: [], reply: tr('sources.success') })}
               onDismiss={() => setResult(null)}
             />
           ) : null}

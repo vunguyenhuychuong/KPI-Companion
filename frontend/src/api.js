@@ -86,8 +86,8 @@ export const api = {
   deleteObjective: (id) => request(`/objectives/${id}`, { method: 'DELETE' }),
 
   // Chat
-  sendChat: (message, sessionId = null, timeoutMs = 90000) =>
-      request('/chat', { method: 'POST', body: JSON.stringify({ message, session_id: sessionId }) }, timeoutMs),
+  sendChat: (message, sessionId = null, lang = 'vi', timeoutMs = 90000) =>
+      request('/chat', { method: 'POST', body: JSON.stringify({ message, session_id: sessionId, lang }) }, timeoutMs),
   chatHistory: (sessionId) => request(`/chat/history${sessionId ? `?session_id=${sessionId}` : ''}`),
   chatSessions: () => request('/chat/sessions'),
   newChatSession: () => request('/chat/sessions', { method: 'POST' }),

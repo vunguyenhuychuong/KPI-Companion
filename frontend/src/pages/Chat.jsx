@@ -1,17 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { marked } from 'marked'
 import { api } from '../api'
+import { useLang } from '../LangContext'
 import ProposalList from '../components/ProposalList'
 import KpiProposal from '../components/KpiProposal'
 
-const SUGGESTIONS = [
-    'Tuần này tôi đã hoàn thành báo cáo ITGC quý 2, đang xử lý ticket workflow bị kẹt, tuần sau bắt đầu chuẩn bị tài liệu audit. Ngoài ra phát sinh thêm việc hỗ trợ dự án ISO.',
-    'Cập nhật tuần này từ Gmail và Calendar',
-    'KPI nào đang chậm tiến độ?',
-    'Tổng kết tuần này giúp tôi',
-]
-
-function Message({ msg, onConfirmed, onEdit, onResend }) {
+function Message({ msg, onConfirmed, onEdit, onResend, tr }) {
     const html = { __html: marked.parse(msg.content || '') }
     return (
         <div className={`msg ${msg.role}`}>
@@ -20,12 +14,12 @@ function Message({ msg, onConfirmed, onEdit, onResend }) {
                 <div className="msg-content" dangerouslySetInnerHTML={html} />
                 {msg.role === 'user' && (
                     <div className="msg-tools">
-                        <button className="msg-tool" title="Sửa rồi gửi lại" onClick={() => onEdit(msg.content)}>✏️ Sửa</button>
-                        <button className="msg-tool" title="Gửi lại nguyên văn" onClick={() => onResend(msg.content)}>↻ Hỏi lại</button>
+                        <button className="msg-tool" title={tr('chat.edit_title')} onClick={() => onEdit(msg.content)}>{tr('chat.edit_btn')}</button>
+                        <button className="msg-tool" title={tr('chat.resend_title')} onClick={() => onResend(msg.content)}>{tr('chat.resend_btn')}</button>
                     </div>
                 )}
                 {msg.duration != null && (
-                    <div className="msg-duration">⏱ trả lời sau {msg.duration}s</div>
+                    <div className="msg-duration">{tr('chat.response_time', { secs: msg.duration })}</div>
                 )}
                 {msg.proposed_items?.length > 0 && !msg.confirmed && (
                     <ProposalList
@@ -43,17 +37,15 @@ function Message({ msg, onConfirmed, onEdit, onResend }) {
                     />
                 )}
                 {msg.confirmed === 'saved' && (
-                    <div className="confirmed-note">
-                        ✅ Đã lưu vào hệ thống — xem ở trang KPI của tôi / Dashboard
-                    </div>
+                    <div className="confirmed-note">{tr('chat.saved')}</div>
                 )}
-                {msg.confirmed === 'dismissed' && <div className="confirmed-note muted">Đã bỏ qua</div>}
+                {msg.confirmed === 'dismissed' && <div className="confirmed-note muted">{tr('chat.dismissed')}</div>}
             </div>
         </div>
     )
 }
 
-function Thinking() {
+function Thinking({ tr }) {
     const [secs, setSecs] = useState(0)
     useEffect(() => {
         const t = setInterval(() => setSecs((s) => s + 1), 1000)
@@ -65,8 +57,8 @@ function Thinking() {
             <div className="msg-body">
                 <div className="typing">
                     <span className="typing-dots"><span></span><span></span><span></span></span>
-                    Agent đang suy nghĩ… <b>{secs}s</b>
-                    {secs >= 30 && <span className="typing-slow"> (mạng/model đang chậm, tối đa chờ 90s)</span>}
+                    {tr('chat.thinking')} <b>{secs}s</b>
+                    {secs >= 30 && <span className="typing-slow"> {tr('chat.slow_warning')}</span>}
                 </div>
             </div>
         </div>
@@ -74,8 +66,16 @@ function Thinking() {
 }
 
 export default function Chat() {
+    const { tr, lang } = useLang()
+    const SUGGESTIONS = [
+        tr('chat.sug_1'),
+        tr('chat.sug_2'),
+        tr('chat.sug_3'),
+        tr('chat.sug_4'),
+    ]
+
     const [sessions, setSessions] = useState([])
-    const [activeId, setActiveId] = useState(null) // null = phien moi chua tao
+    const [activeId, setActiveId] = useState(null)
     const [messages, setMessages] = useState([])
     const [input, setInput] = useState('')
     const [busy, setBusy] = useState(false)
@@ -96,12 +96,11 @@ export default function Chat() {
                 proposed_items: m.meta?.proposed_items || [],
                 proposed_kpis: m.meta?.proposed_kpis || [],
                 weight_changes: m.meta?.weight_changes || [],
-                confirmed: 'history', // khong cho xac nhan lai tu lich su
+                confirmed: 'history',
             })),
         )
     }
 
-    // mo phien gan nhat khi vao trang (neu co)
     useEffect(() => {
         api.chatSessions().then((list) => {
             setSessions(list)
@@ -122,7 +121,7 @@ export default function Chat() {
 
     const removeSession = async (e, id) => {
         e.stopPropagation()
-        if (!confirm('Xóa phiên chat này? (Đầu việc đã xác nhận vẫn được giữ)')) return
+        if (!confirm(tr('chat.delete_confirm'))) return
         await api.deleteChatSession(id)
         if (id === activeId) newChat()
         loadSessions()
@@ -136,11 +135,11 @@ export default function Chat() {
         setBusy(true)
         const started = Date.now()
         try {
-            const res = await api.sendChat(message, activeId)
+            const res = await api.sendChat(message, activeId, lang)
             const duration = Math.round((Date.now() - started) / 10) / 100
             if (res.session_id && res.session_id !== activeId) {
                 setActiveId(res.session_id)
-                loadSessions() // phien moi vua duoc tao + dat ten
+                loadSessions()
             }
             setMessages((m) => [
                 ...m,
@@ -155,8 +154,8 @@ export default function Chat() {
             ])
         } catch (e) {
             const msg = e.name === 'AbortError'
-                ? '⚠️ Agent không phản hồi sau 90 giây. Kiểm tra kết nối tới LLM endpoint (backend/.env) rồi thử lại.'
-                : `⚠️ Lỗi: ${e.message}`
+                ? tr('chat.timeout_error')
+                : tr('chat.error_prefix', { message: e.message })
             setMessages((m) => [...m, { role: 'assistant', content: msg }])
         } finally {
             setBusy(false)
@@ -177,7 +176,7 @@ export default function Chat() {
     return (
         <div className="chat-layout">
             <aside className="chat-sessions">
-                <button className="btn primary new-chat-btn" onClick={newChat}>＋ Chat mới</button>
+                <button className="btn primary new-chat-btn" onClick={newChat}>{tr('chat.new_session')}</button>
                 <div className="session-list">
                     {sessions.map((s) => (
                         <div
@@ -188,23 +187,23 @@ export default function Chat() {
                         >
                             <span className="session-title">{s.title}</span>
                             <span className="session-date">{s.created_at?.slice(0, 16).replace('T', ' ')}</span>
-                            <button className="btn-icon session-del" title="Xóa phiên" onClick={(e) => removeSession(e, s.id)}>✕</button>
+                            <button className="btn-icon session-del" title={tr('chat.delete_session')} onClick={(e) => removeSession(e, s.id)}>✕</button>
                         </div>
                     ))}
-                    {sessions.length === 0 && <p className="muted session-empty">Chưa có phiên chat nào.</p>}
+                    {sessions.length === 0 && <p className="muted session-empty">{tr('chat.no_sessions')}</p>}
                 </div>
             </aside>
 
             <div className="chat-page">
                 <header className="page-header">
-                    <h1>💬 Trợ lý AI</h1>
-                    <p>Kể công việc của bạn bằng tiếng Việt, hoặc ra lệnh quét dữ liệu từ Gmail / Calendar / Sheets.</p>
+                    <h1>{tr('chat.title')}</h1>
+                    <p>{tr('chat.subtitle')}</p>
                 </header>
                 <div className="chat-messages">
                     {messages.length === 0 && (
                         <div className="chat-empty">
-                            <h3>👋 Xin chào! Tôi là KPI Companion.</h3>
-                            <p>Thử một trong các câu sau:</p>
+                            <h3>{tr('chat.greeting')}</h3>
+                            <p>{tr('chat.try_these')}</p>
                             <div className="suggestions">
                                 {SUGGESTIONS.map((s) => (
                                     <button key={s} className="suggestion" onClick={() => send(s)}>{s}</button>
@@ -213,27 +212,27 @@ export default function Chat() {
                         </div>
                     )}
                     {messages.map((m, i) => (
-                        <Message key={i} msg={m} onConfirmed={markConfirmed} onEdit={editMessage} onResend={send} />
+                        <Message key={i} msg={m} onConfirmed={markConfirmed} onEdit={editMessage} onResend={send} tr={tr} />
                     ))}
-                    {busy && <Thinking />}
+                    {busy && <Thinking tr={tr} />}
                     <div ref={bottomRef} />
                 </div>
                 <div className="chat-input">
-          <textarea
-              ref={inputRef}
-              rows={2}
-              placeholder="Mô tả công việc tuần này, hoặc gõ: Cập nhật tuần này từ Gmail và Calendar…"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      send()
-                  }
-              }}
-          />
+                    <textarea
+                        ref={inputRef}
+                        rows={2}
+                        placeholder={tr('chat.input_placeholder')}
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault()
+                                send()
+                            }
+                        }}
+                    />
                     <button className="btn primary" onClick={() => send()} disabled={busy || !input.trim()}>
-                        Gửi
+                        {tr('chat.send_btn')}
                     </button>
                 </div>
             </div>
