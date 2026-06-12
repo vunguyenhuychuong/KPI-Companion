@@ -22,7 +22,7 @@ _FETCHERS = {
 def fetch_activities(
     sources: list[str], start: date | None = None, end: date | None = None
 ) -> list[dict]:
-    end = end or datetime.now(timezone.utc).date()
+    end = end or date.today()
     start = start or (end - timedelta(days=7))
     activities: list[dict] = []
     for src in sources:

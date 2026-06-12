@@ -1,5 +1,6 @@
 """Logic tinh tien do, suc khoe KPI, dashboard va xac nhan dau viec."""
-from datetime import date, datetime, timezone
+import calendar
+from datetime import date, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -8,14 +9,46 @@ from .. import models, schemas
 
 
 def expected_progress(kpi: models.KPI, today: date | None = None) -> float:
-    """% tien do ky vong theo thoi gian troi qua (tu dau nam den deadline)."""
-    today = today or datetime.now(timezone.utc).date()
+    """% tien do ky vong.
+
+    Uu tien KE HOACH SMART: neu KPI da phan ra muc tieu thang, ky vong = noi suy
+    giua % cong don cuoi thang truoc va cuoi thang nay theo so ngay da troi qua
+    trong thang. Chua phan ra -> fallback tuyen tinh theo thoi gian (planned value).
+    """
+    today = today or date.today()
     start = date(kpi.year, 1, 1)
     end = kpi.deadline or date(kpi.year, 12, 31)
     if today <= start:
         return 0.0
     if today >= end:
         return 100.0
+
+    # ke hoach thang tu phan ra SMART: {(nam, thang): % cong don cuoi thang}
+    months: dict[tuple[int, int], float] = {}
+    for sg in kpi.sub_goals:
+        if sg.period_type != "month":
+            continue
+        try:
+            y, m = int(sg.period_label[:4]), int(sg.period_label[5:7])
+        except (ValueError, IndexError):
+            continue
+        months[(y, m)] = max(months.get((y, m), 0.0), sg.expected_progress)
+    if months:
+        cur_key = (today.year, today.month)
+        prev_val = 0.0
+        cur_val = None
+        for k in sorted(months):
+            if k < cur_key:
+                prev_val = months[k]
+            elif k == cur_key:
+                cur_val = months[k]
+        if cur_val is not None:
+            days_in_month = calendar.monthrange(today.year, today.month)[1]
+            frac = today.day / days_in_month
+            return round(min(100.0, prev_val + (cur_val - prev_val) * frac), 1)
+        # thang nay khong co trong ke hoach -> giu muc cong don cua thang gan nhat truoc do
+        return round(min(100.0, prev_val), 1)
+
     total = (end - start).days or 1
     return round((today - start).days / total * 100, 1)
 
@@ -40,14 +73,66 @@ def get_active_kpis(db: Session, user_id: int = 1) -> list[models.KPI]:
     )
 
 
+def _group_progress(kpis: list[models.KPI]) -> float:
+    """Tien do nhom = trung binh co trong so cua KPI con, moi KPI cap 100% (chuan OKR)."""
+    kpis = [k for k in kpis if not k.archived]
+    total_w = sum(k.weight for k in kpis)
+    if total_w > 0:
+        return round(sum(k.progress_capped * k.weight for k in kpis) / total_w, 1)
+    if kpis:
+        return round(sum(k.progress_capped for k in kpis) / len(kpis), 1)
+    return 0.0
+
+
+def objectives_with_progress(db: Session, user_id: int = 1) -> list[schemas.ObjectiveOut]:
+    """Danh sach Objective kem tien do tong hop tu KPI con."""
+    objs = list(
+        db.scalars(
+            select(models.Objective).where(
+                models.Objective.user_id == user_id,
+                models.Objective.archived == False,  # noqa: E712
+            )
+        )
+    )
+    out = []
+    for o in objs:
+        item = schemas.ObjectiveOut.model_validate(o)
+        item.progress = _group_progress(o.kpis)
+        item.kpi_count = len([k for k in o.kpis if not k.archived])
+        out.append(item)
+    return out
+
+
+def overall_progress(db: Session, user_id: int = 1) -> float:
+    """Diem tong nam = trung binh co trong so theo Objective.
+
+    KPI chua gan muc tieu duoc gop vao nhom ao "Khac" dung phan trong so con lai
+    (100% - tong trong so Objective) de khong KPI nao bi bo sot.
+    """
+    objs = objectives_with_progress(db, user_id)
+    ungrouped = [
+        k for k in get_active_kpis(db, user_id) if k.objective_id is None
+    ]
+    total = sum(o.weight * o.progress for o in objs)
+    denom = sum(o.weight for o in objs)
+    if ungrouped:
+        khac_weight = max(0.0, 100.0 - denom)
+        if khac_weight > 0:
+            total += khac_weight * _group_progress(ungrouped)
+            denom += khac_weight
+    if denom <= 0:
+        # chua phan bo trong so nao -> trung binh don gian
+        kpis = get_active_kpis(db, user_id)
+        return _group_progress(kpis) if kpis else 0.0
+    return round(total / denom, 1)
+
+
 def build_dashboard(db: Session, user_id: int = 1) -> schemas.DashboardOut:
     kpis = get_active_kpis(db, user_id)
-    today = datetime.now(timezone.utc).date()
+    today = date.today()
     statuses: list[schemas.KPIStatus] = []
     warnings: list[str] = []
-    total_weight = sum(k.weight for k in kpis) or len(kpis) or 1
 
-    overall = 0.0
     for k in kpis:
         health, gap = health_of(k, today)
         exp = expected_progress(k, today)
@@ -59,8 +144,11 @@ def build_dashboard(db: Session, user_id: int = 1) -> schemas.DashboardOut:
                 gap=gap,
             )
         )
-        w = k.weight if sum(x.weight for x in kpis) > 0 else 1
-        overall += k.progress * w
+        if k.objective_id is None:
+            warnings.append(
+                f"KPI \"{k.name}\" chưa được gắn vào mục tiêu (Objective) nào — "
+                f"đang tính điểm qua nhóm \"Khác\"."
+            )
         if health == "red":
             warnings.append(
                 f"KPI \"{k.name}\" đang chậm {abs(gap):.0f}% so với kế hoạch "
@@ -73,9 +161,9 @@ def build_dashboard(db: Session, user_id: int = 1) -> schemas.DashboardOut:
 
     counts: dict[str, int] = {s: 0 for s in schemas.WORK_STATUSES}
     for status_value, cnt in db.execute(
-        select(models.WorkItem.status, func.count())
-        .where(models.WorkItem.user_id == user_id, models.WorkItem.confirmed == True)  # noqa: E712
-        .group_by(models.WorkItem.status)
+            select(models.WorkItem.status, func.count())
+                    .where(models.WorkItem.user_id == user_id, models.WorkItem.confirmed == True)  # noqa: E712
+                    .group_by(models.WorkItem.status)
     ).all():
         counts[status_value] = cnt
 
@@ -88,19 +176,56 @@ def build_dashboard(db: Session, user_id: int = 1) -> schemas.DashboardOut:
         )
     )
 
+    # viec can lam: se lam (uu tien hien truoc) + dang lam
+    todos = list(
+        db.scalars(
+            select(models.WorkItem)
+            .where(
+                models.WorkItem.user_id == user_id,
+                models.WorkItem.confirmed == True,  # noqa: E712
+                models.WorkItem.status.in_(["se_lam", "dang_lam"]),
+                )
+            .order_by(models.WorkItem.work_date.asc().nullslast(), models.WorkItem.created_at.asc())
+            .limit(20)
+        )
+    )
+    todos.sort(key=lambda w: 0 if w.status == "se_lam" else 1)
+
+    # nhip ghi nhan 8 tuan gan nhat (theo ngay thuc hien viec)
+    all_items = list(
+        db.scalars(
+            select(models.WorkItem).where(
+                models.WorkItem.user_id == user_id, models.WorkItem.confirmed == True  # noqa: E712
+            )
+        )
+    )
+    this_monday = today - timedelta(days=today.weekday())
+    weekly = []
+    for i in range(7, -1, -1):
+        wk_start = this_monday - timedelta(weeks=i)
+        wk_end = wk_start + timedelta(days=6)
+        count = sum(
+            1 for w in all_items
+            if wk_start <= (w.work_date or w.created_at.date()) <= wk_end
+        )
+        weekly.append({"label": wk_start.strftime("%d/%m"), "count": count})
+
     statuses.sort(key=lambda s: {"red": 0, "yellow": 1, "green": 2}[s.health])
     return schemas.DashboardOut(
         year=kpis[0].year if kpis else today.year,
-        overall_progress=round(overall / total_weight, 1),
+        overall_progress=overall_progress(db, user_id),
+        objectives=objectives_with_progress(db, user_id),
         kpi_statuses=statuses,
         warnings=warnings,
         counts_by_status=counts,
         recent_items=[schemas.WorkItemOut.model_validate(w) for w in recent],
+        todo_items=[schemas.WorkItemOut.model_validate(w) for w in todos],
+        weekly_activity=weekly,
     )
 
 
 def confirm_items(
-    db: Session, items: list[schemas.ProposedWorkItem], user_id: int = 1
+        db: Session, items: list[schemas.ProposedWorkItem], user_id: int = 1
 ) -> list[models.WorkItem]:
     """Luu dau viec da xac nhan va cong tien do vao KPI tuong ung."""
     saved: list[models.WorkItem] = []
@@ -111,17 +236,18 @@ def confirm_items(
             title=it.title,
             detail=it.detail,
             status=it.status if it.status in schemas.WORK_STATUSES else "da_lam",
-            progress_delta=it.progress_delta,
+            progress_delta=it.value_delta,  # luu theo don vi cua KPI
             source=it.source,
             source_ref=it.source_ref,
             work_date=it.work_date,
             confirmed=True,
         )
         db.add(wi)
-        if it.kpi_id and it.progress_delta:
+        if it.kpi_id and it.value_delta:
             kpi = db.get(models.KPI, it.kpi_id)
             if kpi:
-                kpi.progress = min(100.0, round(kpi.progress + it.progress_delta, 1))
+                # cong vao THUC DAT theo don vi; cho phep vuot chi tieu (>100%)
+                kpi.current_value = max(0.0, round(kpi.current_value + it.value_delta, 2))
         saved.append(wi)
     db.commit()
     return saved
@@ -133,25 +259,104 @@ def kpi_list_text(kpis: list[models.KPI]) -> str:
         return "(Chưa có KPI nào)"
     lines = []
     for k in kpis:
+        obj = f" | thuộc mục tiêu: {k.objective_name}" if k.objective_name else ""
         lines.append(
-            f"- id={k.id} | {k.name} | mục tiêu: {k.target or k.description or 'n/a'} | "
-            f"trọng số {k.weight:.0f}% | deadline {k.deadline or f'{k.year}-12-31'} | "
-            f"tiến độ hiện tại {k.progress:.0f}%"
+            f"- id={k.id} | {k.name} | chỉ tiêu: {k.target or k.description or 'n/a'}{obj} | "
+            f"đơn vị đo: \"{k.unit}\" | chỉ tiêu số: {k.target_value:g} | "
+            f"thực đạt hiện tại: {k.current_value:g} {k.unit} (= {k.progress:.0f}%) | "
+            f"deadline {k.deadline or f'{k.year}-12-31'}"
         )
     return "\n".join(lines)
+
+
+def period_context_text(
+        db: Session, start: date, end: date, period_type: str, user_id: int = 1
+) -> str:
+    """Boi canh cho bao cao ky: KPI + dau viec TRONG KY + ke hoach sub-goals cua ky do."""
+    kpis = get_active_kpis(db, user_id)
+    today = date.today()
+    parts = ["## Trạng thái KPI hiện tại:"]
+    for k in kpis:
+        health, gap = health_of(k, today)
+        exp = expected_progress(k, today)
+        obj = f", mục tiêu \"{k.objective_name}\"" if k.objective_name else ""
+        over = " — VƯỢT CHỈ TIÊU" if k.progress > 100 else ""
+        parts.append(
+            f"- [{k.id}] {k.name}: thực đạt {k.current_value:g}/{k.target_value:g} {k.unit} "
+            f"= {k.progress:.0f}%{over}, kỳ vọng theo thời gian {exp:.0f}% (lệch {gap:+.0f}%, {health}){obj}"
+        )
+
+    # ke hoach da phan ra SMART roi vao ky bao cao
+    month_labels = set()
+    quarter_labels = set()
+    cur = start
+    while cur <= end:
+        month_labels.add(f"{cur.year}-{cur.month:02d}")
+        quarter_labels.add(f"Q{(cur.month - 1) // 3 + 1}")
+        cur = date(cur.year + (cur.month // 12), cur.month % 12 + 1, 1)
+    parts.append("\n## Kế hoạch đã phân rã SMART rơi vào kỳ này:")
+    found_plan = False
+    for k in kpis:
+        for sg in k.sub_goals:
+            label = sg.period_label.strip()
+            hit = (
+                    (sg.period_type == "month" and label in month_labels)
+                    or (sg.period_type == "quarter" and any(q in label for q in quarter_labels))
+            )
+            if hit:
+                found_plan = True
+                parts.append(
+                    f"- KPI \"{k.name}\" — {label}: {sg.description} "
+                    f"(kỳ vọng cộng dồn {sg.expected_progress:.0f}%; thực tế hiện tại {k.progress:.0f}%)"
+                )
+    if not found_plan:
+        parts.append("(Chưa có KPI nào được phân rã SMART cho kỳ này)")
+
+    # dau viec trong ky
+    items = list(
+        db.scalars(
+            select(models.WorkItem)
+            .where(
+                models.WorkItem.user_id == user_id,
+                models.WorkItem.confirmed == True,  # noqa: E712
+            )
+            .order_by(models.WorkItem.created_at.desc())
+            .limit(200)
+        )
+    )
+    parts.append(f"\n## Đầu việc đã ghi nhận trong kỳ ({start} → {end}):")
+    count = 0
+    for w in items:
+        d = w.work_date or w.created_at.date()
+        if not (start <= d <= end):
+            continue
+        count += 1
+        kpi_name = w.kpi.name if w.kpi else "không gắn KPI"
+        parts.append(
+            f"- [{schemas.STATUS_LABELS.get(w.status, w.status)}] {w.title} "
+            f"(KPI: {kpi_name}; ngày {d}; nguồn: {w.source}"
+            + (f" — {w.source_ref}" if w.source_ref else "")
+            + ")"
+        )
+    if count == 0:
+        parts.append("(Không có đầu việc nào trong kỳ)")
+    return "\n".join(parts)
 
 
 def full_context_text(db: Session, user_id: int = 1) -> str:
     """Toan bo boi canh KPI + dau viec gan day cho prompt tra loi cau hoi."""
     kpis = get_active_kpis(db, user_id)
-    today = datetime.now(timezone.utc).date()
+    today = date.today()
     parts = ["## KPI năm:"]
     for k in kpis:
         health, gap = health_of(k, today)
         exp = expected_progress(k, today)
+        obj = f", thuộc mục tiêu \"{k.objective_name}\"" if k.objective_name else ""
+        over = " — VƯỢT CHỈ TIÊU" if k.progress > 100 else ""
         parts.append(
-            f"- [{k.id}] {k.name}: tiến độ {k.progress:.0f}% / kỳ vọng {exp:.0f}% "
-            f"(lệch {gap:+.0f}%, trạng thái {health}), trọng số {k.weight:.0f}%, "
+            f"- [{k.id}] {k.name}: thực đạt {k.current_value:g}/{k.target_value:g} {k.unit} "
+            f"= {k.progress:.0f}%{over} / kỳ vọng theo thời gian {exp:.0f}% "
+            f"(lệch {gap:+.0f}%, trạng thái {health}){obj}, "
             f"deadline {k.deadline or f'{k.year}-12-31'}"
         )
     items = list(
