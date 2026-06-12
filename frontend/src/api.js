@@ -69,6 +69,7 @@ export const api = {
       request('/kpis/balance', { method: 'POST', body: JSON.stringify({ objective_id: objectiveId }) }),
   confirmKpiProposal: (payload) =>
       request('/kpis/confirm-proposal', { method: 'POST', body: JSON.stringify(payload) }),
+  analyzeConflicts: () => request('/kpis/conflicts/analyze', { method: 'POST' }, 120000),
   kpiChangelog: (id) => request(`/kpis/${id}/changelog`),
   allChangelog: () => request('/kpis/changelog/all'),
   archivedKpis: () => request('/kpis/archived'),

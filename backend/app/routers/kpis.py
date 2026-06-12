@@ -286,6 +286,24 @@ def decompose_kpi(kpi_id: int, current_user: CurrentUser, db: Session = Depends(
     return kpi
 
 
+@router.post("/conflicts/analyze", response_model=schemas.ConflictAnalysisOut)
+def analyze_conflicts(current_user: CurrentUser, db: Session = Depends(get_db)):
+    """Phat hien cac KPI mau thuan nhau (goi LLM) va goi y cach can bang."""
+    kpis = list(db.scalars(
+        select(models.KPI).where(
+            models.KPI.user_id == current_user.id,
+            models.KPI.archived == False,  # noqa: E712
+        )
+    ))
+    if len(kpis) < 2:
+        return schemas.ConflictAnalysisOut(conflicts=[], analyzed_kpis=len(kpis))
+    try:
+        conflicts = kpi_agent.detect_conflicts(kpis)
+    except Exception:
+        raise HTTPException(502, "Agent không phân tích được xung đột lúc này, thử lại sau.")
+    return schemas.ConflictAnalysisOut(conflicts=conflicts, analyzed_kpis=len(kpis))
+
+
 @router.get("/changelog/all", response_model=list[schemas.ChangeLogOut])
 def all_changelog(current_user: CurrentUser, limit: int = 300, db: Session = Depends(get_db)):
     """Toan bo lich su thay doi KPI — bao gom ca KPI da go bo."""
