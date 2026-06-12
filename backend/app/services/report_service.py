@@ -1,6 +1,6 @@
 """Xuat bao cao Excel theo mau danh gia: KPI, tien do, bang chung, viec phat sinh, lich su."""
 import io
-from datetime import datetime, timezone
+from datetime import date
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -33,7 +33,7 @@ def _style_header(ws, row: int, n_cols: int):
 
 def export_evaluation_excel(db: Session, user_id: int = 1) -> bytes:
     kpis = kpi_service.get_active_kpis(db, user_id)
-    today = datetime.now(timezone.utc).date()
+    today = date.today()
     wb = Workbook()
 
     # ===== Sheet 1: Tong quan KPI =====
@@ -42,34 +42,49 @@ def export_evaluation_excel(db: Session, user_id: int = 1) -> bytes:
     ws["A1"] = f"BÁO CÁO ĐÁNH GIÁ KPI NĂM {kpis[0].year if kpis else today.year}"
     ws["A1"].font = TITLE_FONT
     ws["A2"] = f"Ngày xuất: {today.isoformat()}"
-    headers = ["STT", "KPI", "Mô tả / Chỉ tiêu", "Trọng số (%)", "Deadline",
-               "Tiến độ thực tế (%)", "Tiến độ kỳ vọng (%)", "Chênh lệch", "Trạng thái"]
+    headers = ["STT", "Mục tiêu (Objective)", "KPI", "Mô tả / Chỉ tiêu",
+               "Trọng số trong mục tiêu (%)", "Đơn vị", "Chỉ tiêu số", "Thực đạt", "Deadline",
+               "Tiến độ (%)", "Kỳ vọng (%)", "Chênh lệch", "Trạng thái"]
     ws.append([])
     ws.append(headers)
     _style_header(ws, 4, len(headers))
-    for i, k in enumerate(kpis, 1):
+    # nhom theo muc tieu de doc de hon
+    kpis_sorted = sorted(kpis, key=lambda k: (k.objective_name or "ZZZ (chưa gắn mục tiêu)", k.id))
+    for i, k in enumerate(kpis_sorted, 1):
         health, gap = kpi_service.health_of(k, today)
         exp = kpi_service.expected_progress(k, today)
         label = {"green": "Đúng tiến độ", "yellow": "Cần chú ý", "red": "Rủi ro"}[health]
-        ws.append([i, k.name, k.target or k.description, k.weight,
+        if k.progress > 100:
+            label = "Vượt chỉ tiêu ★"
+        ws.append([i, k.objective_name or "(chưa gắn mục tiêu)", k.name, k.target or k.description,
+                   k.weight, k.unit, k.target_value, k.current_value,
                    str(k.deadline or f"{k.year}-12-31"), k.progress, exp, gap, label])
         row = ws.max_row
         for c in range(1, len(headers) + 1):
             ws.cell(row=row, column=c).border = BORDER
             ws.cell(row=row, column=c).alignment = Alignment(vertical="top", wrap_text=True)
-        ws.cell(row=row, column=9).fill = HEALTH_FILLS[health]
-    widths = [5, 35, 40, 12, 12, 16, 16, 12, 14]
+        ws.cell(row=row, column=13).fill = (
+            PatternFill("solid", fgColor="D9E1F2") if k.progress > 100 else HEALTH_FILLS[health]
+        )
+    widths = [5, 26, 32, 34, 13, 10, 10, 10, 12, 11, 11, 11, 14]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[ws.cell(row=4, column=i).column_letter].width = w
     dash = kpi_service.build_dashboard(db, user_id)
     ws.append([])
-    ws.append(["", "TỔNG TIẾN ĐỘ (có trọng số)", "", "", "", dash.overall_progress])
+    ws.append(["", "TỔNG TIẾN ĐỘ NĂM (theo trọng số mục tiêu, KPI vượt tính tối đa 100%)",
+               "", "", "", "", "", "", "", dash.overall_progress])
     ws.cell(row=ws.max_row, column=2).font = Font(bold=True)
-    ws.cell(row=ws.max_row, column=6).font = Font(bold=True)
+    ws.cell(row=ws.max_row, column=10).font = Font(bold=True)
+    # bang tom tat theo muc tieu
+    ws.append([])
+    ws.append(["", "TIẾN ĐỘ THEO MỤC TIÊU (OBJECTIVE)", "Trọng số (%)", "Số KPI", "Tiến độ (%)"])
+    ws.cell(row=ws.max_row, column=2).font = Font(bold=True, color="1F4E79")
+    for o in dash.objectives:
+        ws.append(["", o.name, o.weight, o.kpi_count, o.progress])
 
     # ===== Sheet 2: Bang chung cong viec =====
     ws2 = wb.create_sheet("Bằng chứng công việc")
-    headers2 = ["Ngày", "Đầu việc", "Chi tiết", "Trạng thái", "KPI", "+Tiến độ (%)", "Nguồn", "Nguồn gốc dữ liệu"]
+    headers2 = ["Ngày", "Đầu việc", "Chi tiết", "Trạng thái", "KPI", "+Thực đạt (theo đơn vị KPI)", "Nguồn", "Nguồn gốc dữ liệu"]
     ws2.append(headers2)
     _style_header(ws2, 1, len(headers2))
     items = list(

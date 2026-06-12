@@ -12,6 +12,31 @@ STATUS_LABELS = {
 }
 
 
+# ---------- Objective ----------
+class ObjectiveCreate(BaseModel):
+    name: str
+    description: str = ""
+    weight: float = 0.0
+    year: int = 2026
+
+
+class ObjectiveUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    weight: float | None = None
+
+
+class ObjectiveOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    description: str
+    weight: float = 0.0
+    year: int
+    progress: float = 0.0  # trung binh co trong so cua cac KPI con (da cap 100%)
+    kpi_count: int = 0
+
+
 # ---------- KPI ----------
 class SubGoalOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -30,6 +55,10 @@ class KPIBase(BaseModel):
     weight: float = 0.0
     year: int = 2026
     deadline: date | None = None
+    objective_id: int | None = None
+    unit: str = "%"
+    target_value: float = 100.0
+    current_value: float = 0.0
 
 
 class KPICreate(KPIBase):
@@ -42,16 +71,22 @@ class KPIUpdate(BaseModel):
     target: str | None = None
     weight: float | None = None
     deadline: date | None = None
-    progress: float | None = None
+    unit: str | None = None
+    target_value: float | None = None
+    current_value: float | None = None
+    objective_id: int | None = None
+    clear_objective: bool = False  # true -> go KPI khoi muc tieu (vi None nghia la "khong doi")
     reason: str = ""  # ly do thay doi -> ghi vao change log
 
 
 class KPIOut(KPIBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
-    progress: float
+    progress: float  # co the vuot 100%
+    progress_capped: float  # dung khi tong hop
     archived: bool
     created_at: datetime
+    objective_name: str | None = None
     sub_goals: list[SubGoalOut] = []
 
 
@@ -64,7 +99,8 @@ class ProposedWorkItem(BaseModel):
     status: str = Field(description="da_lam|dang_lam|se_lam|phat_sinh|loai_bo")
     kpi_id: int | None = None
     kpi_name: str | None = None
-    progress_delta: float = 0.0
+    kpi_unit: str | None = None  # don vi cua KPI de hien thi (vd: khoa hoc, %, bao cao)
+    value_delta: float = 0.0  # cong them vao THUC DAT theo don vi KPI (am de tru)
     source: str = "chat"
     source_ref: str = ""
     work_date: date | None = None
@@ -74,6 +110,7 @@ class WorkItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     kpi_id: int | None
+    kpi_name: str | None = None
     title: str
     detail: str
     status: str
@@ -89,15 +126,48 @@ class ConfirmItemsRequest(BaseModel):
     items: list[ProposedWorkItem]
 
 
+class BalanceRequest(BaseModel):
+    objective_id: int | None = None  # None = nhom KPI chua gan muc tieu
+
+
+# ---------- De xuat tao KPI tu chat (cho nguoi dung xac nhan) ----------
+class ProposedKPI(BaseModel):
+    name: str
+    description: str = ""
+    target: str = ""
+    unit: str = "%"
+    target_value: float = 100.0
+    weight: float = 0.0
+    deadline: date | None = None
+    objective_id: int | None = None
+    objective_name: str | None = None
+
+
+class WeightChange(BaseModel):
+    kpi_id: int
+    kpi_name: str | None = None
+    old_weight: float | None = None
+    new_weight: float
+
+
+class KPIProposalConfirm(BaseModel):
+    kpis: list[ProposedKPI] = []
+    weight_changes: list[WeightChange] = []
+
+
 # ---------- Chat ----------
 class ChatRequest(BaseModel):
     message: str
+    session_id: int | None = None  # None -> tu tao phien moi
 
 
 class ChatResponse(BaseModel):
     reply: str
     intent: str = "chat"
     proposed_items: list[ProposedWorkItem] = []
+    proposed_kpis: list[ProposedKPI] = []
+    weight_changes: list[WeightChange] = []
+    session_id: int | None = None
 
 
 class ChatMessageOut(BaseModel):
@@ -106,6 +176,28 @@ class ChatMessageOut(BaseModel):
     role: str
     content: str
     meta: dict | None = None
+    created_at: datetime
+
+
+class ChatSessionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    title: str
+    created_at: datetime
+
+
+# ---------- Bao cao ky ----------
+class ReportGenerateRequest(BaseModel):
+    period_type: str = "week"  # week | month | quarter | year
+    period_label: str | None = None  # "2026-06" | "Q2/2026" | "2026"; None -> ky hien tai
+
+
+class SavedReportOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    period_type: str
+    period_label: str
+    content: str
     created_at: datetime
 
 
@@ -120,10 +212,13 @@ class KPIStatus(BaseModel):
 class DashboardOut(BaseModel):
     year: int
     overall_progress: float  # co trong so
+    objectives: list[ObjectiveOut] = []
     kpi_statuses: list[KPIStatus]
     warnings: list[str]
     counts_by_status: dict[str, int]
     recent_items: list[WorkItemOut]
+    todo_items: list[WorkItemOut] = []  # viec can lam: se_lam + dang_lam
+    weekly_activity: list[dict] = []  # 8 tuan gan nhat: [{"label": "08/06", "count": n}]
 
 
 # ---------- Sync ----------
@@ -137,6 +232,7 @@ class ChangeLogOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     kpi_id: int
+    kpi_name: str | None = None
     changed_at: datetime
     field: str
     old_value: str

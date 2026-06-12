@@ -9,19 +9,31 @@ from ..config import settings
 
 
 def get_llm(temperature: float | None = None) -> ChatOpenAI:
+    kwargs = {}
+    if settings.llm_disable_thinking:
+        # Tat thinking mode cua Qwen3 — giam latency tu ~12s xuong <1s moi call.
+        # Gui ca 2 dang de tuong thich vLLM (chat_template_kwargs) lan DashScope (enable_thinking).
+        kwargs["extra_body"] = {
+            "enable_thinking": False,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
     return ChatOpenAI(
         base_url=settings.llm_base_url,
         api_key=settings.llm_api_key,
         model=settings.llm_model,
         temperature=settings.llm_temperature if temperature is None else temperature,
-        timeout=60,
-        max_retries=2,
+        timeout=45,
+        max_retries=1,
+        **kwargs,
     )
 
+def strip_think(text: str) -> str:
+    """Bo block <think>...</think> neu model van tra ve reasoning."""
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 def extract_json(text: str):
     """Lay JSON tu output cua LLM — chiu duoc code fence, van ban thua truoc/sau."""
-    text = text.strip()
+    text = strip_think(text)
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if fence:
         text = fence.group(1).strip()
@@ -68,9 +80,18 @@ def call_json(system_prompt: str, user_prompt: str, temperature: float | None = 
     raise last_err
 
 
-def call_text(system_prompt: str, user_prompt: str, temperature: float | None = None) -> str:
+def call_text(
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float | None = None,
+        history: list[dict] | None = None,
+) -> str:
+    """Goi LLM tra ve text; history = [{"role": "user"|"assistant", "content": ...}] de hieu hoi thoai noi tiep."""
     llm = get_llm(temperature)
-    result = llm.invoke(
-        [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
-    )
-    return result.content
+    messages: list = [SystemMessage(content=system_prompt)]
+    for h in history or []:
+        cls = HumanMessage if h.get("role") == "user" else AIMessage
+        messages.append(cls(content=h.get("content", "")))
+    messages.append(HumanMessage(content=user_prompt))
+    result = llm.invoke(messages)
+    return strip_think(result.content)

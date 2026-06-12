@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     llm_api_key: str = "vn-8VHFt_8Og6s-j8GyfKTG88axZG_Uv978d89acf2ac9478194be8bc2586bea17Qxwo4UM_54UYD8JnITQc2NIVZC_L-4u"
     llm_model: str = "qwen3.5-plus"
     llm_temperature: float = 0.2
+    # Tat thinking mode cua Qwen3 (giam latency ~24 lan). Dat false neu endpoint bao loi tham so la.
+    llm_disable_thinking: bool = True
 
     database_url: str = f"sqlite:///{BASE_DIR / 'kpi_companion.db'}"
 

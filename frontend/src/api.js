@@ -1,10 +1,18 @@
 const BASE = '/api'
 
-async function request(path, options = {}) {
-  const res = await fetch(BASE + path, {
-    headers: options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' },
-    ...options,
-  })
+async function request(path, options = {}, timeoutMs = 0) {
+  const controller = timeoutMs > 0 ? new AbortController() : null
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
+  let res
+  try {
+    res = await fetch(BASE + path, {
+      headers: options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' },
+      signal: controller?.signal,
+      ...options,
+    })
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
   if (!res.ok) {
     let detail = `Lỗi ${res.status}`
     try {
@@ -22,21 +30,40 @@ export const api = {
   createKpi: (data) => request('/kpis', { method: 'POST', body: JSON.stringify(data) }),
   updateKpi: (id, data) => request(`/kpis/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteKpi: (id, reason) => request(`/kpis/${id}?reason=${encodeURIComponent(reason || '')}`, { method: 'DELETE' }),
-  decomposeKpi: (id) => request(`/kpis/${id}/decompose`, { method: 'POST' }),
+  decomposeKpi: (id) => request(`/kpis/${id}/decompose`, { method: 'POST' }, 120000),
+  balanceWeights: (objectiveId) =>
+      request('/kpis/balance', { method: 'POST', body: JSON.stringify({ objective_id: objectiveId }) }),
+  confirmKpiProposal: (payload) =>
+      request('/kpis/confirm-proposal', { method: 'POST', body: JSON.stringify(payload) }),
   kpiChangelog: (id) => request(`/kpis/${id}/changelog`),
+  allChangelog: () => request('/kpis/changelog/all'),
+  archivedKpis: () => request('/kpis/archived'),
+  restoreKpi: (id) => request(`/kpis/${id}/restore`, { method: 'POST' }),
   importKpis: (file) => {
     const fd = new FormData()
     fd.append('file', file)
     return request('/kpis/import', { method: 'POST', body: fd })
   },
 
+  // Objectives
+  listObjectives: () => request('/objectives'),
+  createObjective: (data) => request('/objectives', { method: 'POST', body: JSON.stringify(data) }),
+  updateObjective: (id, data) => request(`/objectives/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteObjective: (id) => request(`/objectives/${id}`, { method: 'DELETE' }),
+
   // Chat
-  sendChat: (message) => request('/chat', { method: 'POST', body: JSON.stringify({ message }) }),
-  chatHistory: () => request('/chat/history'),
+  sendChat: (message, sessionId = null, timeoutMs = 90000) =>
+      request('/chat', { method: 'POST', body: JSON.stringify({ message, session_id: sessionId }) }, timeoutMs),
+  chatHistory: (sessionId) => request(`/chat/history${sessionId ? `?session_id=${sessionId}` : ''}`),
+  chatSessions: () => request('/chat/sessions'),
+  newChatSession: () => request('/chat/sessions', { method: 'POST' }),
+  deleteChatSession: (id) => request(`/chat/sessions/${id}`, { method: 'DELETE' }),
 
   // Work items
   listWorkItems: (params = '') => request('/work-items' + params),
   confirmItems: (items) => request('/work-items/confirm', { method: 'POST', body: JSON.stringify({ items }) }),
+  updateWorkItemStatus: (id, status, valueDelta = 0) =>
+      request(`/work-items/${id}/status?status=${status}&value_delta=${valueDelta}`, { method: 'PUT' }),
 
   // Sources
   sourcesStatus: () => request('/sources/status'),
@@ -50,6 +77,14 @@ export const api = {
   // Reports
   dashboard: () => request('/reports/dashboard'),
   weeklyReport: () => request('/reports/weekly'),
+  generateReport: (periodType, periodLabel = null) =>
+      request('/reports/generate', {
+        method: 'POST',
+        body: JSON.stringify({ period_type: periodType, period_label: periodLabel }),
+      }, 120000),
+  savedReports: () => request('/reports/saved'),
+  regenerateReport: (id) => request(`/reports/saved/${id}/regenerate`, { method: 'POST' }, 120000),
+  deleteReport: (id) => request(`/reports/saved/${id}`, { method: 'DELETE' }),
   exportUrl: BASE + '/reports/export',
 }
 
