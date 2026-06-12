@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.2
     # Tat thinking mode cua Qwen3 (giam latency ~24 lan). Dat false neu endpoint bao loi tham so la.
     llm_disable_thinking: bool = True
+    # Tu tao bo KPI mau khi DB trong (tat sau khi da nhap du lieu that)
+    seed_demo_data: bool = True
 
     database_url: str = f"sqlite:///{BASE_DIR / 'kpi_companion.db'}"
 

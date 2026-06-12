@@ -92,6 +92,8 @@ def migrate():
 
 def seed_objectives():
     """Tao 3 muc tieu mau va gan cac KPI seed vao (chi chay khi chua co objective nao)."""
+    if not settings.seed_demo_data:
+        return  # SEED_DEMO_DATA=false -> giu DB sach de nhap du lieu that
     db = SessionLocal()
     try:
         if db.scalars(select(models.Objective).limit(1)).first():
@@ -136,6 +138,8 @@ def seed_demo_data():
             user.hashed_password = hash_password("demo")
             db.commit()
 
+        if not settings.seed_demo_data:
+            return  # SEED_DEMO_DATA=false -> khong tao KPI mau, chi dam bao tai khoan demo
         if db.scalars(select(models.KPI).limit(1)).first():
             return
         samples = [
