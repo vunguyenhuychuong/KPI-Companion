@@ -7,17 +7,17 @@ import Journal from './pages/Journal'
 import Reports from './pages/Reports'
 import Sources from './pages/Sources'
 import Login from './pages/Login'
+import { LangProvider, useLang } from './LangContext'
 
 function loadUser() {
   try { return JSON.parse(localStorage.getItem('kpi_user') || 'null') } catch { return null }
 }
 
-export default function App() {
+function AppContent() {
   const [user, setUser] = useState(loadUser)
+  const { tr, lang, toggleLang } = useLang()
 
-  function handleLogin(userData) {
-    setUser(userData)
-  }
+  function handleLogin(userData) { setUser(userData) }
 
   function handleLogout() {
     localStorage.removeItem('kpi_token')
@@ -25,9 +25,7 @@ export default function App() {
     setUser(null)
   }
 
-  if (!user) {
-    return <Login onLogin={handleLogin} />
-  }
+  if (!user) return <Login onLogin={handleLogin} />
 
   return (
     <div className="layout">
@@ -35,17 +33,17 @@ export default function App() {
         <div className="logo">
           <span className="logo-icon">🎯</span>
           <div>
-            <div className="logo-title">KPI Companion</div>
-            <div className="logo-sub">Trợ lý KPI cá nhân</div>
+            <div className="logo-title">{tr('app.title')}</div>
+            <div className="logo-sub">{tr('app.subtitle')}</div>
           </div>
         </div>
         <nav>
-          <NavLink to="/dashboard">📊 Dashboard</NavLink>
-          <NavLink to="/chat">💬 Trợ lý AI</NavLink>
-          <NavLink to="/kpis">🎯 KPI của tôi</NavLink>
-          <NavLink to="/reports">📝 Báo cáo</NavLink>
-          <NavLink to="/journal">📒 Nhật ký</NavLink>
-          <NavLink to="/sources">🔌 Nguồn dữ liệu</NavLink>
+          <NavLink to="/dashboard">{tr('nav.dashboard')}</NavLink>
+          <NavLink to="/chat">{tr('nav.chat')}</NavLink>
+          <NavLink to="/kpis">{tr('nav.kpis')}</NavLink>
+          <NavLink to="/reports">{tr('nav.reports')}</NavLink>
+          <NavLink to="/journal">{tr('nav.journal')}</NavLink>
+          <NavLink to="/sources">{tr('nav.sources')}</NavLink>
         </nav>
         <div className="sidebar-footer" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -64,18 +62,33 @@ export default function App() {
               {user.name}
             </div>
           </div>
-          <button
-            onClick={handleLogout}
-            style={{
-              background: 'transparent', border: '1px solid #334155', color: '#94a3b8',
-              borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer',
-              transition: 'all 0.15s',
-            }}
-            onMouseEnter={e => { e.target.style.background = '#334155'; e.target.style.color = '#fff' }}
-            onMouseLeave={e => { e.target.style.background = 'transparent'; e.target.style.color = '#94a3b8' }}
-          >
-            Đăng xuất
-          </button>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              onClick={toggleLang}
+              style={{
+                background: 'transparent', border: '1px solid #334155', color: '#94a3b8',
+                borderRadius: 6, padding: '4px 8px', fontSize: 11, cursor: 'pointer',
+                fontWeight: 700, letterSpacing: 1, transition: 'all 0.15s',
+              }}
+              onMouseEnter={e => { e.target.style.background = '#334155'; e.target.style.color = '#fff' }}
+              onMouseLeave={e => { e.target.style.background = 'transparent'; e.target.style.color = '#94a3b8' }}
+              title={lang === 'vi' ? 'Switch to English' : 'Chuyển sang Tiếng Việt'}
+            >
+              🌐 {lang === 'vi' ? 'EN' : 'VI'}
+            </button>
+            <button
+              onClick={handleLogout}
+              style={{
+                flex: 1, background: 'transparent', border: '1px solid #334155', color: '#94a3b8',
+                borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer',
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={e => { e.target.style.background = '#334155'; e.target.style.color = '#fff' }}
+              onMouseLeave={e => { e.target.style.background = 'transparent'; e.target.style.color = '#94a3b8' }}
+            >
+              {tr('nav.logout')}
+            </button>
+          </div>
         </div>
       </aside>
       <main className="content">
@@ -90,5 +103,13 @@ export default function App() {
         </Routes>
       </main>
     </div>
+  )
+}
+
+export default function App() {
+  return (
+    <LangProvider>
+      <AppContent />
+    </LangProvider>
   )
 }

@@ -22,6 +22,13 @@ def _today() -> str:
 VALID_INTENTS = {"update_progress", "sync_request", "create_kpi", "question", "other"}
 
 
+def _lang_suffix(lang: str) -> str:
+    """Append to system prompts for LLM text responses when lang != vi."""
+    if lang == "en":
+        return "\n\nIMPORTANT: Your entire response MUST be written in English."
+    return ""
+
+
 def _history_block(history: list[dict] | None, max_msgs: int = 4) -> str:
     """Ghep lich su hoi thoai gan nhat thanh khoi van ban cho prompt."""
     if not history:
@@ -178,28 +185,46 @@ def _conflict_block(conflicts: list[schemas.KPIConflict]) -> str:
 
 
 def _kpi_proposal_reply(
-    proposed: list[schemas.ProposedKPI], changes: list[schemas.WeightChange]
+    proposed: list[schemas.ProposedKPI], changes: list[schemas.WeightChange], lang: str = "vi"
 ) -> str:
+    vi = lang != "en"
     if not proposed:
         return (
             "Tôi chưa trích xuất được KPI nào từ yêu cầu này. Bạn mô tả rõ hơn giúp tôi nhé — "
             "ví dụ: *\"Tạo KPI hoàn thành 3 khóa đào tạo nội bộ trong năm, trọng số 30%, "
             "thuộc mục tiêu Phát triển năng lực cá nhân\"*."
+        ) if vi else (
+            "I couldn't extract any KPIs from this request. Please describe more clearly — "
+            "e.g.: *\"Create a KPI to complete 3 internal training courses this year, weight 30%, "
+            "under the Personal Development objective\"*."
         )
-    lines = [f"🆕 Tôi đề xuất tạo **{len(proposed)} KPI mới**:"]
+    lines = [
+        f"🆕 {'Tôi đề xuất tạo' if vi else 'I propose creating'} **{len(proposed)} {'KPI mới' if vi else 'new KPIs'}**:"
+    ]
     for p in proposed:
-        obj = f" → mục tiêu *{p.objective_name}*" if p.objective_name else " → ⚠️ chưa gắn mục tiêu"
-        lines.append(
-            f"- **{p.name}**: chỉ tiêu {p.target_value:g} {p.unit}, trọng số {p.weight:g}%"
-            + (f", deadline {p.deadline}" if p.deadline else "") + obj
-        )
+        if vi:
+            obj = f" → mục tiêu *{p.objective_name}*" if p.objective_name else " → ⚠️ chưa gắn mục tiêu"
+            lines.append(
+                f"- **{p.name}**: chỉ tiêu {p.target_value:g} {p.unit}, trọng số {p.weight:g}%"
+                + (f", deadline {p.deadline}" if p.deadline else "") + obj
+            )
+        else:
+            obj = f" → objective *{p.objective_name}*" if p.objective_name else " → ⚠️ no objective"
+            lines.append(
+                f"- **{p.name}**: target {p.target_value:g} {p.unit}, weight {p.weight:g}%"
+                + (f", deadline {p.deadline}" if p.deadline else "") + obj
+            )
     if changes:
-        lines.append("\n⚖️ Kèm điều chỉnh trọng số KPI hiện có để tổng nhóm = 100%:")
+        lines.append(
+            f"\n⚖️ {'Kèm điều chỉnh trọng số KPI hiện có để tổng nhóm = 100%:' if vi else 'Also adjusting existing KPI weights so the group total = 100%:'}"
+        )
         for c in changes:
             lines.append(f"- {c.kpi_name}: {c.old_weight:g}% → **{c.new_weight:g}%**")
     lines.append(
-        "\n⚠️ **Chưa có gì được lưu.** Kiểm tra/chỉnh sửa rồi bấm **Xác nhận** bên dưới "
-        "để tôi ghi vào hệ thống (mọi điều chỉnh đều vào lịch sử thay đổi)."
+        "\n⚠️ **" + ("Chưa có gì được lưu." if vi else "Nothing saved yet.") + "** "
+        + ("Kiểm tra/chỉnh sửa rồi bấm **Xác nhận** bên dưới để tôi ghi vào hệ thống (mọi điều chỉnh đều vào lịch sử thay đổi)."
+           if vi else
+           "Review/edit then click **Confirm** below to save to the system (all changes are logged to history).")
     )
     return "\n".join(lines)
 
@@ -316,39 +341,54 @@ def decompose_kpi_smart(kpi: models.KPI) -> list[dict]:
     return data.get("sub_goals", [])
 
 
-def _proposal_reply(items: list[schemas.ProposedWorkItem], from_sync: bool = False) -> str:
+_STATUS_LABELS_EN = {
+    "da_lam": "Done", "dang_lam": "In Progress", "se_lam": "Planned",
+    "phat_sinh": "Ad-hoc", "loai_bo": "Dropped",
+}
+
+
+def _proposal_reply(items: list[schemas.ProposedWorkItem], from_sync: bool = False, lang: str = "vi") -> str:
+    vi = lang != "en"
     if not items:
         return (
             "Tôi chưa tách được đầu việc nào từ nội dung này. "
             "Bạn mô tả cụ thể hơn giúp tôi nhé (đã làm gì, đang làm gì, kế hoạch gì)?"
+        ) if vi else (
+            "I couldn't extract any work items from this. "
+            "Please describe more specifically (what you did, what you're doing, what you plan to do)."
         )
+    status_labels = schemas.STATUS_LABELS if vi else _STATUS_LABELS_EN
     by_status: dict[str, list[schemas.ProposedWorkItem]] = {}
     for it in items:
         by_status.setdefault(it.status, []).append(it)
     lines = []
-    if from_sync:
-        lines.append(f"Tôi đã quét dữ liệu và tách được **{len(items)} đầu việc**:")
+    if vi:
+        lines.append(f"{'Tôi đã quét dữ liệu và tách được' if from_sync else 'Tôi đã tách được'} **{len(items)} đầu việc**{'.' if from_sync else ' từ mô tả của bạn:'}")
+        no_kpi = "⚡ chưa gắn KPI"
+        confirm_note = "\nVui lòng kiểm tra và bấm **Xác nhận** để tôi lưu và cập nhật tiến độ KPI. Bạn có thể chỉnh sửa từng mục trước khi xác nhận."
     else:
-        lines.append(f"Tôi đã tách được **{len(items)} đầu việc** từ mô tả của bạn:")
+        lines.append(f"{'I scanned and found' if from_sync else 'I extracted'} **{len(items)} work items**{'.' if from_sync else ' from your description:'}")
+        no_kpi = "⚡ no KPI linked"
+        confirm_note = "\nPlease review and click **Confirm** to save and update KPI progress. You can edit each item before confirming."
     for status in schemas.WORK_STATUSES:
         group = by_status.get(status)
         if not group:
             continue
-        lines.append(f"\n**{schemas.STATUS_LABELS[status]}:**")
+        lines.append(f"\n**{status_labels[status]}:**")
         for it in group:
-            kpi_part = f" → KPI: *{it.kpi_name}*" if it.kpi_name else " → ⚡ chưa gắn KPI"
+            kpi_part = f" → KPI: *{it.kpi_name}*" if it.kpi_name else f" → {no_kpi}"
             delta_part = (
                 f" ({'+' if it.value_delta > 0 else ''}{it.value_delta:g} {it.kpi_unit or '%'})"
                 if it.value_delta else ""
             )
             ref_part = f" [{it.source_ref}]" if it.source_ref else ""
             lines.append(f"- {it.title}{kpi_part}{delta_part}{ref_part}")
-    lines.append("\nVui lòng kiểm tra và bấm **Xác nhận** để tôi lưu và cập nhật tiến độ KPI. Bạn có thể chỉnh sửa từng mục trước khi xác nhận.")
+    lines.append(confirm_note)
     return "\n".join(lines)
 
 
 def handle_message(
-    db: Session, text: str, user_id: int = 1, history: list[dict] | None = None
+    db: Session, text: str, user_id: int = 1, history: list[dict] | None = None, lang: str = "vi"
 ) -> schemas.ChatResponse:
     """Diem vao chinh cua Agent cho moi tin nhan chat. history giup hieu cau hoi noi tiep."""
     kpis = kpi_service.get_active_kpis(db, user_id)
@@ -357,23 +397,25 @@ def handle_message(
     if intent == "update_progress":
         items = extract_work_items(text, kpis, source="chat", history=history)
         return schemas.ChatResponse(
-            reply=_proposal_reply(items), intent=intent, proposed_items=items
+            reply=_proposal_reply(items, lang=lang), intent=intent, proposed_items=items
         )
 
     if intent == "sync_request":
         sources, start, end = parse_sync_command(text)
         activities = fetch_activities(sources, start, end)
         if not activities:
-            return schemas.ChatResponse(
-                reply=f"Tôi đã quét {', '.join(sources)} trong khoảng {start} → {end} "
-                "nhưng không tìm thấy hoạt động nào.",
-                intent=intent,
+            no_act = (
+                f"Tôi đã quét {', '.join(sources)} trong khoảng {start} → {end} nhưng không tìm thấy hoạt động nào."
+                if lang != "en" else
+                f"I scanned {', '.join(sources)} from {start} to {end} but found no activities."
             )
+            return schemas.ChatResponse(reply=no_act, intent=intent)
         items = extract_work_items("", kpis, activities=activities)
-        reply = (
-            f"🔍 Đã quét **{', '.join(sources)}** từ {start} đến {end}, "
-            f"tìm thấy {len(activities)} hoạt động.\n\n" + _proposal_reply(items, from_sync=True)
-        )
+        if lang == "en":
+            header = f"🔍 Scanned **{', '.join(sources)}** from {start} to {end}, found {len(activities)} activities.\n\n"
+        else:
+            header = f"🔍 Đã quét **{', '.join(sources)}** từ {start} đến {end}, tìm thấy {len(activities)} hoạt động.\n\n"
+        reply = header + _proposal_reply(items, from_sync=True, lang=lang)
         return schemas.ChatResponse(reply=reply, intent=intent, proposed_items=items)
 
     if intent == "create_kpi":
@@ -385,7 +427,7 @@ def handle_message(
             except Exception:
                 pass  # canh bao xung dot la tinh nang phu — khong duoc chan luong tao KPI
         return schemas.ChatResponse(
-            reply=_kpi_proposal_reply(proposed, changes) + _conflict_block(conflicts),
+            reply=_kpi_proposal_reply(proposed, changes, lang=lang) + _conflict_block(conflicts),
             intent=intent,
             proposed_kpis=proposed,
             weight_changes=changes,
@@ -395,23 +437,26 @@ def handle_message(
     if intent == "question":
         context = kpi_service.full_context_text(db, user_id)
         reply = call_text(
-            prompts.ANSWER_SYSTEM.format(context=context, today=_today()), text, history=history
+            prompts.ANSWER_SYSTEM.format(context=context, today=_today()) + _lang_suffix(lang),
+            text, history=history,
         )
         return schemas.ChatResponse(reply=reply, intent=intent)
 
     # other / chitchat
     brief = kpi_service.kpi_list_text(kpis)
     reply = call_text(
-        prompts.CHITCHAT_SYSTEM.format(context_brief=brief), text, temperature=0.7, history=history
+        prompts.CHITCHAT_SYSTEM.format(context_brief=brief) + _lang_suffix(lang),
+        text, temperature=0.7, history=history,
     )
     return schemas.ChatResponse(reply=reply, intent="other")
 
 
-def weekly_report(db: Session, user_id: int = 1) -> str:
+def weekly_report(db: Session, user_id: int = 1, lang: str = "vi") -> str:
     context = kpi_service.full_context_text(db, user_id)
+    prompt_text = "Write the weekly summary for me." if lang == "en" else "Viết bản tổng kết tuần này cho tôi."
     return call_text(
-        prompts.WEEKLY_REPORT_SYSTEM.format(context=context, today=_today()),
-        "Viết bản tổng kết tuần này cho tôi.",
+        prompts.WEEKLY_REPORT_SYSTEM.format(context=context, today=_today()) + _lang_suffix(lang),
+        prompt_text,
     )
 
 
@@ -425,6 +470,7 @@ def period_report(
     start: date,
     end: date,
     user_id: int = 1,
+    lang: str = "vi",
 ) -> str:
     context = kpi_service.period_context_text(db, start, end, period_type, user_id)
     system = prompts.PERIOD_REPORT_SYSTEM.format(
@@ -434,5 +480,11 @@ def period_report(
         period_label=period_label,
         start=start.isoformat(),
         end=end.isoformat(),
+    ) + _lang_suffix(lang)
+    period_name_lower = PERIOD_NAMES.get(period_type, "kỳ").lower()
+    prompt_text = (
+        f"Write the {period_type} report for {period_label}."
+        if lang == "en" else
+        f"Viết báo cáo {period_name_lower} {period_label} cho tôi."
     )
-    return call_text(system, f"Viết báo cáo {PERIOD_NAMES.get(period_type, 'kỳ').lower()} {period_label} cho tôi.")
+    return call_text(system, prompt_text)

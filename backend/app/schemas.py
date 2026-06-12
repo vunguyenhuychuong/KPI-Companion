@@ -195,6 +195,7 @@ class KPIProposalConfirm(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     session_id: int | None = None  # None -> tu tao phien moi
+    lang: str = "vi"  # "vi" | "en" — ngon ngu tra loi cua Agent
 
 
 class ChatResponse(BaseModel):

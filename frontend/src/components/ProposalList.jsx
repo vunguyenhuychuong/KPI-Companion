@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { STATUS_LABELS, STATUS_COLORS, SOURCE_LABELS, api } from '../api'
+import { STATUS_COLORS, SOURCE_LABELS, api } from '../api'
+import { useLang } from '../LangContext'
 
-/**
- * Danh sach dau viec Agent de xuat — nguoi dung chinh sua roi Xac nhan.
- * Buoc "human-in-the-loop": khong co gi duoc luu khi chua bam Xac nhan.
- */
 export default function ProposalList({ items, onConfirmed, onDismiss }) {
+  const { tr, statusLabels, sourceLabels } = useLang()
+  const SL = statusLabels()
+  const SRC = sourceLabels()
+
   const [rows, setRows] = useState(items)
   const [kpis, setKpis] = useState([])
   const [saving, setSaving] = useState(false)
@@ -38,7 +39,7 @@ export default function ProposalList({ items, onConfirmed, onDismiss }) {
   return (
     <div className="proposal-box">
       <div className="proposal-header">
-        ✅ {rows.length} đầu việc chờ xác nhận — kiểm tra và chỉnh sửa trước khi lưu
+        {tr('proposal.header', { count: rows.length })}
       </div>
       {rows.map((r, i) => (
         <div className="proposal-card" key={i}>
@@ -56,7 +57,7 @@ export default function ProposalList({ items, onConfirmed, onDismiss }) {
               style={{ borderColor: STATUS_COLORS[r.status], color: STATUS_COLORS[r.status] }}
               onChange={(e) => update(i, 'status', e.target.value)}
             >
-              {Object.entries(STATUS_LABELS).map(([k, v]) => (
+              {Object.entries(SL).map(([k, v]) => (
                 <option key={k} value={k}>{v}</option>
               ))}
             </select>
@@ -64,7 +65,7 @@ export default function ProposalList({ items, onConfirmed, onDismiss }) {
               value={r.kpi_id ?? ''}
               onChange={(e) => update(i, 'kpi_id', e.target.value ? Number(e.target.value) : null)}
             >
-              <option value="">— Không gắn KPI —</option>
+              <option value="">{tr('proposal.no_kpi')}</option>
               {kpis.map((k) => (
                 <option key={k.id} value={k.id}>{k.name}</option>
               ))}
@@ -80,18 +81,18 @@ export default function ProposalList({ items, onConfirmed, onDismiss }) {
               />
               %
             </label>
-            <span className="source-badge">{SOURCE_LABELS[r.source] || r.source}</span>
-            <button className="btn-icon" title="Bỏ mục này" onClick={() => remove(i)}>✕</button>
+            <span className="source-badge">{SRC[r.source] ?? SOURCE_LABELS[r.source] ?? r.source}</span>
+            <button className="btn-icon" title={tr('proposal.remove_item')} onClick={() => remove(i)}>✕</button>
           </div>
         </div>
       ))}
       {error && <div className="error-text">{error}</div>}
       <div className="proposal-actions">
         <button className="btn primary" disabled={saving || !rows.length} onClick={confirm}>
-          {saving ? 'Đang lưu…' : `Xác nhận ${rows.length} đầu việc`}
+          {saving ? tr('proposal.saving') : tr('proposal.confirm', { count: rows.length })}
         </button>
         {onDismiss && (
-          <button className="btn ghost" onClick={onDismiss}>Bỏ qua tất cả</button>
+          <button className="btn ghost" onClick={onDismiss}>{tr('proposal.dismiss_all')}</button>
         )}
       </div>
     </div>

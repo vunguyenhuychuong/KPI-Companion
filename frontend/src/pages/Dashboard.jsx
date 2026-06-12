@@ -1,12 +1,7 @@
 import { useEffect, useState } from 'react'
 import { marked } from 'marked'
-import { api, STATUS_LABELS, STATUS_COLORS, SOURCE_LABELS } from '../api'
-
-const HEALTH = {
-    green: { label: 'Đúng tiến độ', color: '#16a34a', bg: '#dcfce7' },
-    yellow: { label: 'Cần chú ý', color: '#ca8a04', bg: '#fef9c3' },
-    red: { label: 'Rủi ro', color: '#dc2626', bg: '#fee2e2' },
-}
+import { api, STATUS_COLORS, SOURCE_LABELS } from '../api'
+import { useLang } from '../LangContext'
 
 function WeeklyBars({ data }) {
     const max = Math.max(1, ...data.map((d) => d.count))
@@ -47,25 +42,29 @@ function GapBars({ statuses }) {
     const max = Math.max(10, ...rows.map((s) => Math.abs(s.gap)))
     return (
         <div className="gap-chart">
-            {rows.map(({ kpi, gap, health }) => (
-                <div className="gap-row" key={kpi.id} title={`${kpi.name}: lệch ${gap > 0 ? '+' : ''}${gap}% so với kỳ vọng`}>
-                    <span className="gap-name">{kpi.name}</span>
-                    <div className="gap-track">
-                        <div className="gap-mid" />
-                        <div
-                            className="gap-fill"
-                            style={{
-                                width: `${(Math.abs(gap) / max) * 50}%`,
-                                left: gap >= 0 ? '50%' : `${50 - (Math.abs(gap) / max) * 50}%`,
-                                background: HEALTH[health].color,
-                            }}
-                        />
+            {rows.map(({ kpi, gap, health }) => {
+                const colors = { green: '#16a34a', yellow: '#ca8a04', red: '#dc2626' }
+                const color = colors[health]
+                return (
+                    <div className="gap-row" key={kpi.id} title={`${kpi.name}: ${gap > 0 ? '+' : ''}${gap}%`}>
+                        <span className="gap-name">{kpi.name}</span>
+                        <div className="gap-track">
+                            <div className="gap-mid" />
+                            <div
+                                className="gap-fill"
+                                style={{
+                                    width: `${(Math.abs(gap) / max) * 50}%`,
+                                    left: gap >= 0 ? '50%' : `${50 - (Math.abs(gap) / max) * 50}%`,
+                                    background: color,
+                                }}
+                            />
+                        </div>
+                        <span className="gap-val" style={{ color }}>
+                            {gap > 0 ? '+' : ''}{gap}%
+                        </span>
                     </div>
-                    <span className="gap-val" style={{ color: HEALTH[health].color }}>
-            {gap > 0 ? '+' : ''}{gap}%
-          </span>
-                </div>
-            ))}
+                )
+            })}
         </div>
     )
 }
@@ -95,12 +94,22 @@ function Donut({ value }) {
 }
 
 export default function Dashboard() {
+    const { tr, statusLabels, sourceLabels } = useLang()
+    const SL = statusLabels()
+    const SRC = sourceLabels()
+
+    const HEALTH = {
+        green: { label: tr('dashboard.health_green'), color: '#16a34a', bg: '#dcfce7' },
+        yellow: { label: tr('dashboard.health_yellow'), color: '#ca8a04', bg: '#fef9c3' },
+        red: { label: tr('dashboard.health_red'), color: '#dc2626', bg: '#fee2e2' },
+    }
+
     const [data, setData] = useState(null)
     const [error, setError] = useState('')
     const [weekly, setWeekly] = useState('')
     const [loadingWeekly, setLoadingWeekly] = useState(false)
-    const [filterObj, setFilterObj] = useState(null) // null = tat ca; -1 = chua gan; id
-    const [completing, setCompleting] = useState(null) // {id, delta} - dang nhap +delta de hoan thanh
+    const [filterObj, setFilterObj] = useState(null)
+    const [completing, setCompleting] = useState(null)
 
     const load = () => api.dashboard().then(setData).catch((e) => setError(e.message))
     useEffect(() => { load() }, [])
@@ -118,44 +127,44 @@ export default function Dashboard() {
         }
     }
 
-    if (error) return <div className="page"><div className="error-text">⚠️ {error} — backend đã chạy chưa?</div></div>
-    if (!data) return <div className="page">Đang tải…</div>
+    if (error) return <div className="page"><div className="error-text">⚠️ {error} — {tr('dashboard.error')}</div></div>
+    if (!data) return <div className="page">{tr('dashboard.loading')}</div>
 
     return (
         <div className="page">
             <header className="page-header row">
                 <div>
-                    <h1>📊 Dashboard KPI năm {data.year}</h1>
-                    <p>Bức tranh tổng thể — nhìn 10 giây là biết KPI nào ổn, KPI nào rủi ro.</p>
+                    <h1>{tr('dashboard.title', { year: data.year })}</h1>
+                    <p>{tr('dashboard.subtitle')}</p>
                 </div>
                 <div className="header-actions">
                     <button className="btn" onClick={genWeekly} disabled={loadingWeekly}>
-                        {loadingWeekly ? 'Agent đang viết…' : '📝 Tổng kết tuần'}
+                        {loadingWeekly ? tr('dashboard.agent_writing') : tr('dashboard.btn_weekly')}
                     </button>
-                    <a className="btn primary" href={api.exportUrl}>📥 Xuất Excel đánh giá</a>
+                    <a className="btn primary" href={api.exportUrl}>{tr('dashboard.btn_export')}</a>
                 </div>
             </header>
 
             <div className="dash-top">
                 <div className="card overall">
-                    <h3>Tổng tiến độ (có trọng số)</h3>
+                    <h3>{tr('dashboard.card_progress')}</h3>
                     <Donut value={data.overall_progress} />
                 </div>
                 <div className="card counts">
-                    <h3>Đầu việc đã ghi nhận</h3>
+                    <h3>{tr('dashboard.card_items')}</h3>
                     <div className="count-grid">
                         {Object.entries(data.counts_by_status).map(([k, v]) => (
                             <div className="count-item" key={k}>
                                 <span className="count-num" style={{ color: STATUS_COLORS[k] }}>{v}</span>
-                                <span className="count-label">{STATUS_LABELS[k]}</span>
+                                <span className="count-label">{SL[k] ?? k}</span>
                             </div>
                         ))}
                     </div>
                 </div>
                 <div className="card warnings">
-                    <h3>⚠️ Cảnh báo</h3>
+                    <h3>{tr('dashboard.card_warnings')}</h3>
                     {data.warnings.length === 0 ? (
-                        <p className="muted">Không có cảnh báo — mọi KPI đang đúng tiến độ 🎉</p>
+                        <p className="muted">{tr('dashboard.no_warnings')}</p>
                     ) : (
                         <ul>{data.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
                     )}
@@ -170,7 +179,7 @@ export default function Dashboard() {
 
             {data.todo_items?.length > 0 && (
                 <>
-                    <h2 className="section-title">📌 Việc cần làm ({data.todo_items.length})</h2>
+                    <h2 className="section-title">{tr('dashboard.todo_title', { count: data.todo_items.length })}</h2>
                     <div className="card">
                         {data.todo_items.map((w) => {
                             const kpiOfItem = data.kpi_statuses.find((s) => s.kpi.id === w.kpi_id)?.kpi
@@ -182,7 +191,7 @@ export default function Dashboard() {
                                 <div className={`todo-row ${overdueDays > 0 ? 'overdue' : ''}`} key={w.id}>
                                     <button
                                         className="todo-check"
-                                        title="Đánh dấu đã hoàn thành"
+                                        title={tr('dashboard.mark_done')}
                                         onClick={() => {
                                             if (kpiOfItem) setCompleting({ id: w.id, delta: '' })
                                             else api.updateWorkItemStatus(w.id, 'da_lam').then(load)
@@ -191,36 +200,36 @@ export default function Dashboard() {
                                     <div className="todo-main">
                                         <span className="todo-title">{w.title}</span>
                                         <span className="muted">
-                      {w.work_date ? `📅 ${w.work_date} · ` : ''}
+                                            {w.work_date ? `📅 ${w.work_date} · ` : ''}
                                             {kpiOfItem ? `🎯 ${kpiOfItem.name} · ` : ''}
-                                            {SOURCE_LABELS[w.source] || w.source}
-                    </span>
+                                            {SRC[w.source] ?? SOURCE_LABELS[w.source] ?? w.source}
+                                        </span>
                                     </div>
                                     {overdueDays > 0 && (
-                                        <span className="overdue-badge">⏰ Quá hạn {overdueDays} ngày</span>
+                                        <span className="overdue-badge">{tr('dashboard.overdue', { days: overdueDays })}</span>
                                     )}
                                     {isCompleting ? (
                                         <span className="todo-complete-strip">
-                      +
-                      <input
-                          type="number" step="any" autoFocus placeholder="0"
-                          value={completing.delta}
-                          onChange={(e) => setCompleting({ ...completing, delta: e.target.value })}
-                          onKeyDown={(e) => e.key === 'Escape' && setCompleting(null)}
-                      />
+                                            +
+                                            <input
+                                                type="number" step="any" autoFocus placeholder="0"
+                                                value={completing.delta}
+                                                onChange={(e) => setCompleting({ ...completing, delta: e.target.value })}
+                                                onKeyDown={(e) => e.key === 'Escape' && setCompleting(null)}
+                                            />
                                             {kpiOfItem.unit}
                                             <button className="btn small primary"
-                                                    onClick={async () => {
-                                                        await api.updateWorkItemStatus(w.id, 'da_lam', Number(completing.delta) || 0)
-                                                        setCompleting(null)
-                                                        load()
-                                                    }}>Hoàn thành</button>
-                      <button className="btn small ghost" onClick={() => setCompleting(null)}>Hủy</button>
-                    </span>
+                                                onClick={async () => {
+                                                    await api.updateWorkItemStatus(w.id, 'da_lam', Number(completing.delta) || 0)
+                                                    setCompleting(null)
+                                                    load()
+                                                }}>{tr('dashboard.complete_btn')}</button>
+                                            <button className="btn small ghost" onClick={() => setCompleting(null)}>{tr('dashboard.cancel_btn')}</button>
+                                        </span>
                                     ) : (
                                         <span className="status-chip" style={{ color: STATUS_COLORS[w.status] }}>
-                      {STATUS_LABELS[w.status]}
-                    </span>
+                                            {SL[w.status] ?? w.status}
+                                        </span>
                                     )}
                                 </div>
                             )
@@ -231,18 +240,21 @@ export default function Dashboard() {
 
             <div className="charts-row">
                 <div className="card">
-                    <h3>📈 Nhịp ghi nhận 8 tuần gần nhất</h3>
+                    <h3>{tr('dashboard.chart_activity')}</h3>
                     <WeeklyBars data={data.weekly_activity || []} />
                 </div>
                 <div className="card">
-                    <h3>⚖️ Lệch so với kỳ vọng theo KPI</h3>
+                    <h3>{tr('dashboard.chart_gap')}</h3>
                     <GapBars statuses={data.kpi_statuses} />
                 </div>
             </div>
 
             {data.objectives?.length > 0 && (
                 <>
-                    <h2 className="section-title">Mục tiêu năm (Objectives) <span className="muted" style={{ fontWeight: 400 }}>— bấm vào thẻ để lọc KPI bên dưới</span></h2>
+                    <h2 className="section-title">
+                        {tr('dashboard.objectives_title')}
+                        <span className="muted" style={{ fontWeight: 400 }}> {tr('dashboard.objectives_hint')}</span>
+                    </h2>
                     <div className="objective-cards">
                         {data.objectives.map((o) => {
                             const children = data.kpi_statuses.filter((s) => s.kpi.objective_id === o.id)
@@ -260,17 +272,17 @@ export default function Dashboard() {
                                         <span className="kpi-count-badge">{o.kpi_count} KPI</span>
                                     </div>
                                     <div className="health-dist">
-                                        {dist.green > 0 && <span className="dist-chip green">🟢 {dist.green} đúng tiến độ</span>}
-                                        {dist.yellow > 0 && <span className="dist-chip yellow">🟡 {dist.yellow} cần chú ý</span>}
-                                        {dist.red > 0 && <span className="dist-chip red">🔴 {dist.red} rủi ro</span>}
-                                        {children.length === 0 && <span className="muted">chưa có KPI</span>}
+                                        {dist.green > 0 && <span className="dist-chip green">{tr('dashboard.health_on_track', { count: dist.green })}</span>}
+                                        {dist.yellow > 0 && <span className="dist-chip yellow">{tr('dashboard.health_attention', { count: dist.yellow })}</span>}
+                                        {dist.red > 0 && <span className="dist-chip red">{tr('dashboard.health_risk', { count: dist.red })}</span>}
+                                        {children.length === 0 && <span className="muted">{tr('dashboard.no_kpis')}</span>}
                                     </div>
                                     <div className="progress-track">
                                         <div className="progress-fill" style={{ width: `${Math.min(100, o.progress)}%`, background: '#4f46e5' }} />
                                     </div>
                                     <div className="progress-labels">
-                                        <span>Tiến độ: <b>{o.progress}%</b></span>
-                                        <span>Trọng số: {o.weight}%</span>
+                                        <span>{tr('dashboard.progress_label')} <b>{o.progress}%</b></span>
+                                        <span>{tr('dashboard.weight_label')} {o.weight}%</span>
                                     </div>
                                 </div>
                             )
@@ -280,10 +292,10 @@ export default function Dashboard() {
             )}
 
             <h2 className="section-title">
-                Chi tiết từng KPI
+                {tr('dashboard.kpi_detail_title')}
                 {filterObj !== null && (
                     <button className="btn small ghost" style={{ marginLeft: 10 }} onClick={() => setFilterObj(null)}>
-                        ✕ Bỏ lọc: {data.objectives.find((o) => o.id === filterObj)?.name}
+                        {tr('dashboard.filter_clear', { name: data.objectives.find((o) => o.id === filterObj)?.name })}
                     </button>
                 )}
             </h2>
@@ -297,42 +309,47 @@ export default function Dashboard() {
                                 <div className="kpi-card-head">
                                     <strong>{kpi.name}</strong>
                                     <span className="health-badge" style={{ color: h.color, background: h.bg }}>
-                  {kpi.progress > 100 ? '🌟 Vượt chỉ tiêu' : h.label}
-                </span>
+                                        {kpi.progress > 100 ? tr('dashboard.excellence') : h.label}
+                                    </span>
                                 </div>
                                 <div className="kpi-meta">
                                     {kpi.objective_name && <span className="meta-seg">🏁 {kpi.objective_name}</span>}
                                     <span className="meta-seg">
-                  Thực đạt {kpi.unit === '%' ? `${kpi.current_value}%` : `${kpi.current_value}/${kpi.target_value} ${kpi.unit}`}
-                </span>
-                                    <span className="meta-seg">Trọng số {kpi.weight}%</span>
+                                        {kpi.unit === '%'
+                                            ? tr('dashboard.actual_pct', { value: kpi.current_value })
+                                            : tr('dashboard.actual_num', { current: kpi.current_value, target: kpi.target_value, unit: kpi.unit })}
+                                    </span>
+                                    <span className="meta-seg">{tr('dashboard.weight_pct', { weight: kpi.weight })}</span>
                                     <span className="meta-seg">⏳ {kpi.deadline || `${data.year}-12-31`}</span>
                                 </div>
                                 <div className="progress-track">
                                     <div className="progress-fill" style={{ width: `${Math.min(100, kpi.progress)}%`, background: h.color }} />
-                                    <div className="progress-expected" style={{ left: `${Math.min(100, expected_progress)}%` }} title={`Kỳ vọng: ${expected_progress}%`} />
+                                    <div className="progress-expected" style={{ left: `${Math.min(100, expected_progress)}%` }} title={`${tr('dashboard.expected_label')} ${expected_progress}%`} />
                                 </div>
                                 <div className="progress-labels">
-                                    <span>Thực tế: <b>{kpi.progress}%</b></span>
-                                    <span>Kỳ vọng: {expected_progress}%</span>
-                                    <span style={{ color: h.color }}>Lệch: {gap > 0 ? '+' : ''}{gap}%</span>
+                                    <span>{tr('dashboard.actual_label')} <b>{kpi.progress}%</b></span>
+                                    <span>{tr('dashboard.expected_label')} {expected_progress}%</span>
+                                    <span style={{ color: h.color }}>{tr('dashboard.gap_label')} {gap > 0 ? '+' : ''}{gap}%</span>
                                 </div>
                             </div>
                         )
                     })}
             </div>
 
-            <h2 className="section-title">Hoạt động gần đây</h2>
+            <h2 className="section-title">{tr('dashboard.recent_title')}</h2>
             <div className="card">
                 {data.recent_items.length === 0 ? (
-                    <p className="muted">Chưa có đầu việc nào — hãy kể công việc của bạn cho Trợ lý AI! 💬</p>
+                    <p className="muted">{tr('dashboard.no_items')}</p>
                 ) : (
                     <table className="table">
                         <thead>
                         <tr>
-                            <th title="Ngày công việc được thực hiện (Agent suy ra từ mô tả hoặc nguồn dữ liệu)">Ngày thực hiện</th>
-                            <th title="Thời điểm bạn bấm Xác nhận để ghi vào hệ thống">Ghi nhận lúc</th>
-                            <th>Đầu việc</th><th>Trạng thái</th><th>Nguồn</th><th>+Thực đạt</th>
+                            <th>{tr('dashboard.col_work_date')}</th>
+                            <th>{tr('dashboard.col_recorded')}</th>
+                            <th>{tr('dashboard.col_task')}</th>
+                            <th>{tr('dashboard.col_status')}</th>
+                            <th>{tr('dashboard.col_source')}</th>
+                            <th>{tr('dashboard.col_delta')}</th>
                         </tr>
                         </thead>
                         <tbody>
@@ -341,8 +358,8 @@ export default function Dashboard() {
                                 <td className="nowrap">{w.work_date || <span className="muted">—</span>}</td>
                                 <td className="nowrap muted">{w.created_at?.slice(0, 16).replace('T', ' ')}</td>
                                 <td>{w.title}</td>
-                                <td><span className="status-chip" style={{ color: STATUS_COLORS[w.status] }}>{STATUS_LABELS[w.status]}</span></td>
-                                <td>{SOURCE_LABELS[w.source] || w.source}</td>
+                                <td><span className="status-chip" style={{ color: STATUS_COLORS[w.status] }}>{SL[w.status] ?? w.status}</span></td>
+                                <td>{SRC[w.source] ?? SOURCE_LABELS[w.source] ?? w.source}</td>
                                 <td>{w.progress_delta ? `${w.progress_delta > 0 ? '+' : ''}${w.progress_delta}` : '—'}</td>
                             </tr>
                         ))}
