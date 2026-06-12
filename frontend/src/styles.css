@@ -529,3 +529,24 @@ body {
   .kpi-actions { justify-content: flex-start; }
   .modal-grid { grid-template-columns: 1fr; }
 }
+
+/* ===== KPI Conflict Detector ===== */
+.conflict-panel { border-left: 4px solid #16a34a; }
+.conflict-panel.has-conflicts { border-left-color: #dc2626; }
+.conflict-panel .row { display: flex; justify-content: space-between; align-items: center; }
+.conflict-item { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-top: 10px; }
+.conflict-item.sev-high { background: rgba(220, 38, 38, 0.06); border-color: rgba(220, 38, 38, 0.35); }
+.conflict-item.sev-medium { background: rgba(234, 88, 12, 0.06); border-color: rgba(234, 88, 12, 0.35); }
+.conflict-item.sev-low { background: rgba(202, 138, 4, 0.06); border-color: rgba(202, 138, 4, 0.35); }
+.conflict-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+.sev-badge { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.sev-badge.sev-high { background: rgba(220, 38, 38, 0.12); color: #dc2626; }
+.sev-badge.sev-medium { background: rgba(234, 88, 12, 0.12); color: #ea580c; }
+.sev-badge.sev-low { background: rgba(202, 138, 4, 0.12); color: #ca8a04; }
+.conflict-item p { margin: 4px 0; }
+.conflict-suggestion { background: rgba(22, 163, 74, 0.07); border-radius: 8px; padding: 6px 10px; }
+.kpi-row.in-conflict { border: 1px solid rgba(220, 38, 38, 0.45); }
+.conflict-tag {
+  margin-left: 8px; font-size: 12px; font-weight: 600; color: #dc2626;
+  background: rgba(220, 38, 38, 0.1); padding: 2px 8px; border-radius: 999px;
+}

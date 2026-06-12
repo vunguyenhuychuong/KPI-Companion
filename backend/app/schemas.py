@@ -164,6 +164,28 @@ class WeightChange(BaseModel):
     new_weight: float
 
 
+CONFLICT_TYPES = {
+    "resource_tradeoff", "speed_vs_quality", "growth_vs_stability",
+    "time_overload", "metric_overlap",
+}
+
+
+class KPIConflict(BaseModel):
+    """Mot xung dot giua 2+ KPI do Agent phat hien."""
+
+    kpi_ids: list[int] = []  # id KPI hien co lien quan ([] neu chi dinh KPI dang de xuat)
+    kpi_names: list[str] = []
+    type: str = "resource_tradeoff"
+    severity: str = "medium"  # high | medium | low
+    explanation: str = ""
+    suggestion: str = ""
+
+
+class ConflictAnalysisOut(BaseModel):
+    conflicts: list[KPIConflict] = []
+    analyzed_kpis: int = 0
+
+
 class KPIProposalConfirm(BaseModel):
     kpis: list[ProposedKPI] = []
     weight_changes: list[WeightChange] = []
@@ -182,6 +204,7 @@ class ChatResponse(BaseModel):
     proposed_items: list[ProposedWorkItem] = []
     proposed_kpis: list[ProposedKPI] = []
     weight_changes: list[WeightChange] = []
+    conflicts: list[KPIConflict] = []  # xung dot phat hien giua KPI de xuat va KPI hien co
     session_id: int | None = None
 
 

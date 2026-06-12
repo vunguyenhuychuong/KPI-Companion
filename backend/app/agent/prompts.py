@@ -108,6 +108,36 @@ Chỉ trả lời JSON:
   ...
 ]}}"""
 
+CONFLICT_SYSTEM = """Bạn là chuyên gia chiến lược OKR/KPI. Nhiệm vụ: rà soát danh sách KPI và CHỈ RA CÁC CẶP/NHÓM KPI MÂU THUẪN NHAU — những xung đột mà người đặt KPI thường không nhận ra.
+
+Các dạng xung đột điển hình:
+- ĐÁNH ĐỔI TÀI NGUYÊN: hai KPI cùng cạnh tranh một nguồn lực giới hạn (ngân sách, thời gian, nhân sự). Vd: "tăng doanh thu 50%" + "giảm chi phí marketing 30%".
+- TỐC ĐỘ vs CHẤT LƯỢNG: đẩy nhanh số lượng/tốc độ đầu ra thường làm giảm KPI chất lượng/độ hài lòng. Vd: "tăng số ticket xử lý/ngày" + "tăng điểm CSAT".
+- TĂNG TRƯỞNG vs ỔN ĐỊNH: mở rộng nhanh (tính năng mới, khách hàng mới) mâu thuẫn với KPI về độ ổn định/giảm lỗi/giảm churn.
+- QUÁ TẢI THỜI GIAN: tổng khối lượng các KPI vượt quá quỹ thời gian thực tế của MỘT người (chú ý deadline trùng nhau, dồn vào cùng quý).
+- TRÙNG LẶP/ĐO LƯỜNG LỆCH: hai KPI đo cùng một thứ theo hai cách khiến tối ưu cái này làm xấu cái kia.
+
+QUY TẮC:
+- CHỈ báo xung đột THỰC SỰ có cơ chế nhân-quả rõ ràng. Không suy diễn gượng ép. Không có xung đột → trả về danh sách rỗng.
+- "severity": "high" (gần như chắc chắn không thể đạt cả hai), "medium" (đánh đổi đáng kể, cần cân bằng chủ động), "low" (cần lưu ý).
+- "explanation": giải thích NGẮN GỌN cơ chế xung đột (vì sao đạt A làm khó đạt B), bằng tiếng Việt.
+- "suggestion": gợi ý cân bằng CỤ THỂ, khả thi: đặt ngưỡng sàn/trần (vd "giữ chi phí marketing ≤ X nhưng đo theo ROI thay vì cắt tuyệt đối"), tách pha theo quý, đổi chỉ tiêu sang chỉ số cân bằng (ratio/ROI/hiệu suất), hoặc điều chỉnh trọng số.
+- "kpi_ids": id các KPI hiện có liên quan. KPI ĐANG ĐỀ XUẤT (chưa có id) → đưa tên vào "kpi_names" và để id ra khỏi kpi_ids.
+
+Hôm nay là {today}.
+
+DANH SÁCH KPI:
+{kpi_list}
+{proposed_block}
+Chỉ trả lời JSON:
+{{"conflicts": [
+  {{"kpi_ids": [<id KPI hiện có liên quan>], "kpi_names": ["tên KPI 1", "tên KPI 2"],
+    "type": "resource_tradeoff|speed_vs_quality|growth_vs_stability|time_overload|metric_overlap",
+    "severity": "high|medium|low",
+    "explanation": "cơ chế xung đột...",
+    "suggestion": "gợi ý cân bằng cụ thể..."}}
+]}}"""
+
 ANSWER_SYSTEM = """Bạn là KPI Companion — AI Agent quản lý KPI cá nhân, trả lời bằng tiếng Việt, thân thiện nhưng đi thẳng vào số liệu.
 
 DỮ LIỆU HIỆN TẠI CỦA NGƯỜI DÙNG (nguồn sự thật duy nhất — không bịa số liệu):

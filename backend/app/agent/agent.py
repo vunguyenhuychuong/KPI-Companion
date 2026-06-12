@@ -119,6 +119,71 @@ def extract_kpi_proposal(
     return proposed, changes
 
 
+SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+SEVERITY_LABELS = {"high": "🔴 Nghiêm trọng", "medium": "🟠 Đáng kể", "low": "🟡 Lưu ý"}
+
+
+def detect_conflicts(
+    kpis: list[models.KPI], proposed: list[schemas.ProposedKPI] | None = None
+) -> list[schemas.KPIConflict]:
+    """Phat hien xung dot giua cac KPI (va KPI dang de xuat neu co) bang LLM."""
+    if len(kpis) + len(proposed or []) < 2:
+        return []
+    proposed_block = ""
+    if proposed:
+        lines = [
+            f"- (ĐANG ĐỀ XUẤT, chưa có id) {p.name} | chỉ tiêu: {p.target or p.description or 'n/a'} | "
+            f"{p.target_value:g} {p.unit} | deadline {p.deadline or 'cuối năm'}"
+            for p in proposed
+        ]
+        proposed_block = "\nKPI ĐANG ĐƯỢC ĐỀ XUẤT TẠO MỚI (kiểm tra xung đột với KPI hiện có ở trên):\n" + "\n".join(lines) + "\n"
+    system = prompts.CONFLICT_SYSTEM.format(
+        today=_today(),
+        kpi_list=kpi_service.kpi_list_text(kpis),
+        proposed_block=proposed_block,
+    )
+    data = call_json(system, "Hãy rà soát và chỉ ra các xung đột giữa các KPI trên.", temperature=0.0)
+    valid_ids = {k.id for k in kpis}
+    out: list[schemas.KPIConflict] = []
+    for r in data.get("conflicts", []) if isinstance(data, dict) else []:
+        if not isinstance(r, dict) or not r.get("explanation"):
+            continue
+        ids = [i for i in r.get("kpi_ids", []) if isinstance(i, int) and i in valid_ids]
+        names = [str(n) for n in r.get("kpi_names", []) if n]
+        if not ids and not names:
+            continue
+        sev = r.get("severity")
+        out.append(
+            schemas.KPIConflict(
+                kpi_ids=ids,
+                kpi_names=names,
+                type=r.get("type") if r.get("type") in schemas.CONFLICT_TYPES else "resource_tradeoff",
+                severity=sev if sev in SEVERITY_ORDER else "medium",
+                explanation=str(r["explanation"]),
+                suggestion=str(r.get("suggestion") or ""),
+            )
+        )
+    out.sort(key=lambda c: SEVERITY_ORDER[c.severity])
+    return out
+
+
+def _conflict_block(conflicts: list[schemas.KPIConflict]) -> str:
+    """Khoi canh bao xung dot chen vao cau tra loi chat."""
+    if not conflicts:
+        return ""
+    lines = [f"\n\n⚔️ **Phát hiện {len(conflicts)} xung đột KPI tiềm ẩn:**"]
+    for c in conflicts:
+        lines.append(f"\n{SEVERITY_LABELS[c.severity]} — **{' ↔ '.join(c.kpi_names)}**")
+        lines.append(f"- Vì sao xung đột: {c.explanation}")
+        if c.suggestion:
+            lines.append(f"- 💡 Gợi ý cân bằng: {c.suggestion}")
+    lines.append(
+        "\nBạn vẫn có thể bấm **Xác nhận** nếu chấp nhận đánh đổi, "
+        "hoặc mô tả lại KPI theo gợi ý cân bằng ở trên."
+    )
+    return "\n".join(lines)
+
+
 def _kpi_proposal_reply(
     proposed: list[schemas.ProposedKPI], changes: list[schemas.WeightChange], lang: str = "vi"
 ) -> str:
@@ -355,11 +420,18 @@ def handle_message(
 
     if intent == "create_kpi":
         proposed, changes = extract_kpi_proposal(db, _history_block(history) + text, kpis, user_id)
+        conflicts: list[schemas.KPIConflict] = []
+        if proposed:
+            try:
+                conflicts = detect_conflicts(kpis, proposed)
+            except Exception:
+                pass  # canh bao xung dot la tinh nang phu — khong duoc chan luong tao KPI
         return schemas.ChatResponse(
-            reply=_kpi_proposal_reply(proposed, changes, lang=lang),
+            reply=_kpi_proposal_reply(proposed, changes, lang=lang) + _conflict_block(conflicts),
             intent=intent,
             proposed_kpis=proposed,
             weight_changes=changes,
+            conflicts=conflicts,
         )
 
     if intent == "question":

@@ -13,6 +13,8 @@ export default function Kpis() {
   const [expanded, setExpanded] = useState(null)
   const [changelog, setChangelog] = useState({})
   const [error, setError] = useState('')
+  const [conflicts, setConflicts] = useState(null) // null = chưa phân tích
+  const [analyzing, setAnalyzing] = useState(false)
   const fileRef = useRef(null)
 
   const load = () => api.listKpis().then(setKpis).catch((e) => setError(e.message))
@@ -63,6 +65,17 @@ export default function Kpis() {
     load()
   }
 
+  const analyzeConflicts = async () => {
+    setAnalyzing(true)
+    setError('')
+    try {
+      const res = await api.analyzeConflicts()
+      setConflicts(res.conflicts)
+    } catch (err) { setError(err.message) } finally { setAnalyzing(false) }
+  }
+
+  const conflictKpiIds = new Set((conflicts || []).flatMap((c) => c.kpi_ids))
+
   const toggleLog = async (id) => {
     if (changelog[id]) { setChangelog((c) => ({ ...c, [id]: null })); return }
     const logs = await api.kpiChangelog(id)
@@ -77,13 +90,41 @@ export default function Kpis() {
           <p>{tr('kpis.subtitle')}</p>
         </div>
         <div className="header-actions">
+          <button className="btn" disabled={analyzing || kpis.length < 2} onClick={analyzeConflicts}>
+          {analyzing ? '⏳ Agent đang rà soát…' : '⚔️ Phát hiện xung đột'}
+        </button>
           <button className="btn" onClick={() => fileRef.current?.click()}>{tr('kpis.btn_import')}</button>
+
+          <button className="btn" onClick={() => fileRef.current?.click()}>📤 Import Excel/CSV</button>
           <input ref={fileRef} type="file" accept=".xlsx,.csv" hidden onChange={importFile} />
           <button className="btn primary" onClick={() => setShowForm(!showForm)}>{tr('kpis.btn_add')}</button>
         </div>
       </header>
 
       {error && <div className="error-text">⚠️ {error}</div>}
+
+      {conflicts !== null && (
+        <div className={`card conflict-panel ${conflicts.length ? 'has-conflicts' : ''}`}>
+          <div className="row">
+            <h3>⚔️ Kết quả rà soát xung đột KPI</h3>
+            <button className="btn small ghost" onClick={() => setConflicts(null)}>Đóng</button>
+          </div>
+          {conflicts.length === 0 ? (
+            <p className="muted">✅ Không phát hiện xung đột nào giữa các KPI hiện tại. Bộ KPI của bạn nhất quán!</p>
+          ) : conflicts.map((c, i) => (
+            <div key={i} className={`conflict-item sev-${c.severity}`}>
+              <div className="conflict-head">
+                <span className={`sev-badge sev-${c.severity}`}>
+                  {c.severity === 'high' ? '🔴 Nghiêm trọng' : c.severity === 'medium' ? '🟠 Đáng kể' : '🟡 Lưu ý'}
+                </span>
+                <strong>{c.kpi_names.join(' ↔ ')}</strong>
+              </div>
+              <p><b>Vì sao xung đột:</b> {c.explanation}</p>
+              {c.suggestion && <p className="conflict-suggestion">💡 <b>Gợi ý cân bằng:</b> {c.suggestion}</p>}
+            </div>
+          ))}
+        </div>
+      )}
 
       {showForm && (
         <form className="card kpi-form" onSubmit={submit}>
@@ -108,10 +149,11 @@ export default function Kpis() {
       )}
 
       {kpis.map((kpi) => (
-        <div className="card kpi-row" key={kpi.id}>
+        <div className={`card kpi-row${conflictKpiIds.has(kpi.id) ? ' in-conflict' : ''}`} key={kpi.id}>
           <div className="kpi-row-head">
             <div>
               <strong>{kpi.name}</strong>
+              {conflictKpiIds.has(kpi.id) && <span className="conflict-tag">⚔️ Có xung đột</span>}
               <div className="kpi-meta">
                 {kpi.target && <>🎯 {kpi.target} · </>}
                 {tr('kpis.meta', { weight: kpi.weight, deadline: kpi.deadline || `${kpi.year}-12-31`, progress: kpi.progress })}
