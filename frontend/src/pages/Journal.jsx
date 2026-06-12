@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, STATUS_LABELS, STATUS_COLORS, SOURCE_LABELS } from '../api'
-
-const FIELD_LABELS = {
-  name: 'Tên', description: 'Mô tả', target: 'Chỉ tiêu', weight: 'Trọng số',
-  deadline: 'Deadline', unit: 'Đơn vị', target_value: 'Chỉ tiêu số',
-  current_value: 'Thực đạt', progress: 'Tiến độ', objective: 'Mục tiêu', archived: 'Gỡ bỏ/Khôi phục',
-}
+import { api, STATUS_COLORS } from '../api'
+import { useLang } from '../LangContext'
 
 function EvidenceTab() {
+  const { tr, statusLabels, sourceLabels } = useLang()
+  const SL = statusLabels()
+  const SRC = sourceLabels()
+
   const [items, setItems] = useState([])
   const [status, setStatus] = useState('')
   const [source, setSource] = useState('')
@@ -24,30 +23,36 @@ function EvidenceTab() {
   return (
     <>
       <div className="form-row" style={{ marginBottom: 12 }}>
-        <label>Trạng thái
+        <label>{tr('journal.filter_status')}
           <select value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">Tất cả</option>
-            {Object.entries(STATUS_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            <option value="">{tr('journal.filter_all')}</option>
+            {Object.entries(SL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
         </label>
-        <label>Nguồn
+        <label>{tr('journal.filter_source')}
           <select value={source} onChange={(e) => setSource(e.target.value)}>
-            <option value="">Tất cả</option>
-            {Object.entries(SOURCE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            <option value="">{tr('journal.filter_all')}</option>
+            {Object.entries(SRC).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
         </label>
-        <label style={{ flex: 1 }}>Tìm kiếm
-          <input placeholder="Tên việc, KPI, nguồn gốc…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <label style={{ flex: 1 }}>{tr('journal.filter_search')}
+          <input placeholder={tr('journal.search_placeholder')} value={search} onChange={(e) => setSearch(e.target.value)} />
         </label>
-        <span className="muted">{filtered.length}/{items.length} đầu việc</span>
+        <span className="muted">{tr('journal.count', { filtered: filtered.length, total: items.length })}</span>
       </div>
       <div className="card">
-        {filtered.length === 0 ? <p className="muted">Không có đầu việc nào khớp bộ lọc.</p> : (
+        {filtered.length === 0 ? <p className="muted">{tr('journal.no_match')}</p> : (
           <table className="table">
             <thead>
               <tr>
-                <th>Ngày thực hiện</th><th>Ghi nhận lúc</th><th>Đầu việc</th>
-                <th>Trạng thái</th><th>KPI</th><th>+Thực đạt</th><th>Nguồn</th><th>Nguồn gốc dữ liệu</th>
+                <th>{tr('journal.col_work_date')}</th>
+                <th>{tr('journal.col_recorded')}</th>
+                <th>{tr('journal.col_task')}</th>
+                <th>{tr('journal.col_status')}</th>
+                <th>{tr('journal.col_kpi')}</th>
+                <th>{tr('journal.col_delta')}</th>
+                <th>{tr('journal.col_source')}</th>
+                <th>{tr('journal.col_origin')}</th>
               </tr>
             </thead>
             <tbody>
@@ -56,10 +61,10 @@ function EvidenceTab() {
                   <td className="nowrap">{w.work_date || <span className="muted">—</span>}</td>
                   <td className="nowrap muted">{w.created_at?.slice(0, 16).replace('T', ' ')}</td>
                   <td>{w.title}</td>
-                  <td><span className="status-chip" style={{ color: STATUS_COLORS[w.status] }}>{STATUS_LABELS[w.status]}</span></td>
-                  <td>{w.kpi_name || <span className="muted">(chưa gắn)</span>}</td>
+                  <td><span className="status-chip" style={{ color: STATUS_COLORS[w.status] }}>{SL[w.status] ?? w.status}</span></td>
+                  <td>{w.kpi_name || <span className="muted">{tr('journal.no_kpi')}</span>}</td>
                   <td>{w.progress_delta ? `${w.progress_delta > 0 ? '+' : ''}${w.progress_delta}` : '—'}</td>
-                  <td className="nowrap">{SOURCE_LABELS[w.source] || w.source}</td>
+                  <td className="nowrap">{SRC[w.source] ?? w.source}</td>
                   <td className="muted">{w.source_ref}</td>
                 </tr>
               ))}
@@ -72,6 +77,22 @@ function EvidenceTab() {
 }
 
 function HistoryTab() {
+  const { tr } = useLang()
+
+  const FIELD_LABELS = {
+    name: tr('journal.field_name'),
+    description: tr('journal.field_description'),
+    target: tr('journal.field_target'),
+    weight: tr('journal.field_weight'),
+    deadline: tr('journal.field_deadline'),
+    unit: tr('journal.field_unit'),
+    target_value: tr('journal.field_target_value'),
+    current_value: tr('journal.field_current_value'),
+    progress: tr('journal.field_progress'),
+    objective: tr('journal.field_objective'),
+    archived: tr('journal.field_archived'),
+  }
+
   const [logs, setLogs] = useState([])
   const [archived, setArchived] = useState([])
   const [error, setError] = useState('')
@@ -83,7 +104,7 @@ function HistoryTab() {
   useEffect(() => { load() }, [])
 
   const restore = async (kpi) => {
-    if (!confirm(`Khôi phục KPI "${kpi.name}"? (nếu nhóm không còn đủ trọng số, trọng số sẽ tự hạ xuống phần còn trống)`)) return
+    if (!confirm(tr('journal.restore_confirm', { name: kpi.name }))) return
     try {
       await api.restoreKpi(kpi.id)
       load()
@@ -95,27 +116,34 @@ function HistoryTab() {
       {error && <div className="error-text">⚠️ {error}</div>}
       {archived.length > 0 && (
         <div className="card">
-          <h3>🗂 KPI đã gỡ bỏ ({archived.length})</h3>
+          <h3>{tr('journal.archived_kpis', { count: archived.length })}</h3>
           {archived.map((k) => (
             <div className="todo-row" key={k.id}>
               <div className="todo-main">
                 <span className="todo-title">{k.name}</span>
                 <span className="muted">
-                  {k.unit === '%' ? `Thực đạt ${k.current_value}%` : `Thực đạt ${k.current_value}/${k.target_value} ${k.unit}`}
+                  {k.unit === '%' ? `Actual ${k.current_value}%` : `Actual ${k.current_value}/${k.target_value} ${k.unit}`}
                   {k.objective_name ? ` · 🏁 ${k.objective_name}` : ''}
                 </span>
               </div>
-              <button className="btn small" onClick={() => restore(k)}>♻️ Khôi phục</button>
+              <button className="btn small" onClick={() => restore(k)}>{tr('journal.restore')}</button>
             </div>
           ))}
         </div>
       )}
       <div className="card">
-        <h3>🕒 Toàn bộ lịch sử thay đổi ({logs.length})</h3>
-        {logs.length === 0 ? <p className="muted">Chưa có thay đổi nào.</p> : (
+        <h3>{tr('journal.changelog_all', { count: logs.length })}</h3>
+        {logs.length === 0 ? <p className="muted">{tr('journal.no_changes')}</p> : (
           <table className="table">
             <thead>
-              <tr><th>Thời gian</th><th>KPI</th><th>Trường</th><th>Cũ</th><th>Mới</th><th>Lý do</th></tr>
+              <tr>
+                <th>{tr('journal.col_time')}</th>
+                <th>{tr('journal.col_kpi_name')}</th>
+                <th>{tr('journal.col_field')}</th>
+                <th>{tr('journal.col_old')}</th>
+                <th>{tr('journal.col_new')}</th>
+                <th>{tr('journal.col_reason')}</th>
+              </tr>
             </thead>
             <tbody>
               {logs.map((l) => (
@@ -137,22 +165,23 @@ function HistoryTab() {
 }
 
 export default function Journal() {
+  const { tr } = useLang()
   const [tab, setTab] = useState('evidence')
   return (
     <div className="page">
       <header className="page-header row">
         <div>
-          <h1>📒 Nhật ký</h1>
-          <p>Toàn bộ bằng chứng công việc và lịch sử thay đổi KPI — kể cả KPI đã gỡ bỏ.</p>
+          <h1>{tr('journal.title')}</h1>
+          <p>{tr('journal.subtitle')}</p>
         </div>
-        <a className="btn" href={api.exportUrl}>📥 Xuất Excel</a>
+        <a className="btn" href={api.exportUrl}>{tr('journal.export')}</a>
       </header>
       <div className="period-tabs">
         <button className={`period-tab ${tab === 'evidence' ? 'active' : ''}`} onClick={() => setTab('evidence')}>
-          📋 Bằng chứng công việc
+          {tr('journal.tab_evidence')}
         </button>
         <button className={`period-tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
-          🕒 Lịch sử KPI
+          {tr('journal.tab_history')}
         </button>
       </div>
       {tab === 'evidence' ? <EvidenceTab /> : <HistoryTab />}

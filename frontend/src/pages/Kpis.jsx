@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
+import { useLang } from '../LangContext'
 
 const EMPTY = { name: '', description: '', target: '', weight: 10, year: 2026, deadline: '' }
 
 export default function Kpis() {
+  const { tr } = useLang()
   const [kpis, setKpis] = useState([])
   const [form, setForm] = useState(EMPTY)
   const [showForm, setShowForm] = useState(false)
@@ -31,7 +33,7 @@ export default function Kpis() {
     if (!file) return
     try {
       const created = await api.importKpis(file)
-      alert(`Đã import ${created.length} KPI từ file.`)
+      alert(tr('kpis.import_success', { count: created.length }))
       load()
     } catch (err) { setError(err.message) } finally { e.target.value = '' }
   }
@@ -47,16 +49,16 @@ export default function Kpis() {
   }
 
   const archive = async (kpi) => {
-    const reason = prompt(`Lý do gỡ bỏ KPI "${kpi.name}"? (sẽ lưu vào lịch sử thay đổi)`)
+    const reason = prompt(tr('kpis.archive_prompt', { name: kpi.name }))
     if (reason === null) return
     await api.deleteKpi(kpi.id, reason)
     load()
   }
 
   const editWeight = async (kpi) => {
-    const w = prompt(`Trọng số mới cho "${kpi.name}" (hiện tại ${kpi.weight}%)?`)
+    const w = prompt(tr('kpis.weight_prompt', { name: kpi.name, weight: kpi.weight }))
     if (w === null || isNaN(Number(w))) return
-    const reason = prompt('Lý do thay đổi?') || ''
+    const reason = prompt(tr('kpis.reason_prompt')) || ''
     await api.updateKpi(kpi.id, { weight: Number(w), reason })
     load()
   }
@@ -71,13 +73,13 @@ export default function Kpis() {
     <div className="page">
       <header className="page-header row">
         <div>
-          <h1>🎯 KPI của tôi</h1>
-          <p>Khai báo KPI đầu năm, để Agent phân rã SMART theo quý / tháng.</p>
+          <h1>{tr('kpis.title')}</h1>
+          <p>{tr('kpis.subtitle')}</p>
         </div>
         <div className="header-actions">
-          <button className="btn" onClick={() => fileRef.current?.click()}>📤 Import Excel/CSV</button>
+          <button className="btn" onClick={() => fileRef.current?.click()}>{tr('kpis.btn_import')}</button>
           <input ref={fileRef} type="file" accept=".xlsx,.csv" hidden onChange={importFile} />
-          <button className="btn primary" onClick={() => setShowForm(!showForm)}>＋ Thêm KPI</button>
+          <button className="btn primary" onClick={() => setShowForm(!showForm)}>{tr('kpis.btn_add')}</button>
         </div>
       </header>
 
@@ -85,22 +87,22 @@ export default function Kpis() {
 
       {showForm && (
         <form className="card kpi-form" onSubmit={submit}>
-          <input required placeholder="Tên KPI *" value={form.name}
+          <input required placeholder={tr('kpis.placeholder_name')} value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          <input placeholder="Mô tả" value={form.description}
+          <input placeholder={tr('kpis.placeholder_desc')} value={form.description}
             onChange={(e) => setForm({ ...form, description: e.target.value })} />
-          <input placeholder="Chỉ tiêu đo lường (vd: 4/4 báo cáo đúng hạn)" value={form.target}
+          <input placeholder={tr('kpis.placeholder_target')} value={form.target}
             onChange={(e) => setForm({ ...form, target: e.target.value })} />
           <div className="form-row">
-            <label>Trọng số %
+            <label>{tr('kpis.weight_label')}
               <input type="number" min="0" max="100" value={form.weight}
                 onChange={(e) => setForm({ ...form, weight: e.target.value })} />
             </label>
-            <label>Deadline
+            <label>{tr('kpis.deadline_label')}
               <input type="date" value={form.deadline}
                 onChange={(e) => setForm({ ...form, deadline: e.target.value })} />
             </label>
-            <button className="btn primary" type="submit">Lưu KPI</button>
+            <button className="btn primary" type="submit">{tr('kpis.save_btn')}</button>
           </div>
         </form>
       )}
@@ -112,21 +114,21 @@ export default function Kpis() {
               <strong>{kpi.name}</strong>
               <div className="kpi-meta">
                 {kpi.target && <>🎯 {kpi.target} · </>}
-                Trọng số {kpi.weight}% · Deadline {kpi.deadline || `${kpi.year}-12-31`} · Tiến độ {kpi.progress}%
+                {tr('kpis.meta', { weight: kpi.weight, deadline: kpi.deadline || `${kpi.year}-12-31`, progress: kpi.progress })}
               </div>
             </div>
             <div className="kpi-row-actions">
               <button className="btn small" disabled={busyId === kpi.id} onClick={() => decompose(kpi.id)}>
-                {busyId === kpi.id ? 'Agent đang phân rã…' : kpi.sub_goals?.length ? '🔄 Phân rã lại' : '✨ Phân rã SMART'}
+                {busyId === kpi.id ? tr('kpis.agent_decomposing') : kpi.sub_goals?.length ? tr('kpis.redecompose_btn') : tr('kpis.decompose_btn')}
               </button>
               {kpi.sub_goals?.length > 0 && (
                 <button className="btn small ghost" onClick={() => setExpanded(expanded === kpi.id ? null : kpi.id)}>
-                  {expanded === kpi.id ? 'Thu gọn' : `Xem ${kpi.sub_goals.length} mục tiêu nhỏ`}
+                  {expanded === kpi.id ? tr('kpis.collapse') : tr('kpis.view_subgoals', { count: kpi.sub_goals.length })}
                 </button>
               )}
-              <button className="btn small ghost" onClick={() => editWeight(kpi)}>✏️ Trọng số</button>
-              <button className="btn small ghost" onClick={() => toggleLog(kpi.id)}>🕒 Lịch sử</button>
-              <button className="btn small danger" onClick={() => archive(kpi)}>Gỡ bỏ</button>
+              <button className="btn small ghost" onClick={() => editWeight(kpi)}>{tr('kpis.edit_weight')}</button>
+              <button className="btn small ghost" onClick={() => toggleLog(kpi.id)}>{tr('kpis.changelog')}</button>
+              <button className="btn small danger" onClick={() => archive(kpi)}>{tr('kpis.archive')}</button>
             </div>
           </div>
 
@@ -134,12 +136,12 @@ export default function Kpis() {
             <div className="subgoals">
               {['quarter', 'month'].map((pt) => (
                 <div key={pt}>
-                  <h4>{pt === 'quarter' ? 'Theo quý' : 'Theo tháng'}</h4>
+                  <h4>{pt === 'quarter' ? tr('kpis.quarter') : tr('kpis.month')}</h4>
                   <ul>
                     {kpi.sub_goals.filter((s) => s.period_type === pt).map((s) => (
                       <li key={s.id}>
                         <b>{s.period_label}</b>: {s.description}
-                        <span className="muted"> (kỳ vọng cộng dồn {s.expected_progress}%)</span>
+                        <span className="muted"> {tr('kpis.expected_progress', { value: s.expected_progress })}</span>
                       </li>
                     ))}
                   </ul>
@@ -150,10 +152,18 @@ export default function Kpis() {
 
           {changelog[kpi.id] && (
             <div className="changelog">
-              <h4>Lịch sử thay đổi</h4>
-              {changelog[kpi.id].length === 0 ? <p className="muted">Chưa có thay đổi nào.</p> : (
+              <h4>{tr('kpis.changelog_title')}</h4>
+              {changelog[kpi.id].length === 0 ? <p className="muted">{tr('kpis.no_changelog')}</p> : (
                 <table className="table">
-                  <thead><tr><th>Ngày</th><th>Trường</th><th>Cũ</th><th>Mới</th><th>Lý do</th></tr></thead>
+                  <thead>
+                    <tr>
+                      <th>{tr('kpis.col_date')}</th>
+                      <th>{tr('kpis.col_field')}</th>
+                      <th>{tr('kpis.col_old')}</th>
+                      <th>{tr('kpis.col_new')}</th>
+                      <th>{tr('kpis.col_reason')}</th>
+                    </tr>
+                  </thead>
                   <tbody>
                     {changelog[kpi.id].map((l) => (
                       <tr key={l.id}>

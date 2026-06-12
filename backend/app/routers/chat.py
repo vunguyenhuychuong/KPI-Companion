@@ -71,7 +71,7 @@ def chat(payload: schemas.ChatRequest, current_user: CurrentUser, db: Session = 
     db.add(models.ChatMessage(user_id=current_user.id, session_id=session.id, role="user", content=text))
     db.commit()
     try:
-        response = kpi_agent.handle_message(db, text, user_id=current_user.id, history=history)
+        response = kpi_agent.handle_message(db, text, user_id=current_user.id, history=history, lang=payload.lang)
     except Exception as e:
         response = schemas.ChatResponse(
             reply=f"⚠️ Có lỗi khi gọi AI model: {e}\n\nKiểm tra lại cấu hình LLM_BASE_URL / LLM_API_KEY / LLM_MODEL trong file .env.",

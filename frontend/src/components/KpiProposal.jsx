@@ -1,11 +1,9 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import { useLang } from '../LangContext'
 
-/**
- * The de xuat TAO KPI MOI tu Tro ly AI — nguoi dung chinh sua roi Xac nhan.
- * Khong co gi duoc ghi vao he thong truoc khi bam Xac nhan (human-in-the-loop).
- */
 export default function KpiProposal({ kpis: proposedKpis, weightChanges, onConfirmed, onDismiss }) {
+  const { tr } = useLang()
   const [rows, setRows] = useState(proposedKpis)
   const [changes, setChanges] = useState(weightChanges || [])
   const [objectives, setObjectives] = useState([])
@@ -45,7 +43,7 @@ export default function KpiProposal({ kpis: proposedKpis, weightChanges, onConfi
   return (
     <div className="proposal-box">
       <div className="proposal-header">
-        🆕 Đề xuất tạo {rows.length} KPI mới — kiểm tra và chỉnh sửa trước khi lưu
+        {tr('kpi_proposal.header', { count: rows.length })}
       </div>
       {rows.map((r, i) => (
         <div className="proposal-card" key={i}>
@@ -57,26 +55,26 @@ export default function KpiProposal({ kpis: proposedKpis, weightChanges, onConfi
           <div className="proposal-controls">
             <select value={r.objective_id ?? ''}
               onChange={(e) => update(i, 'objective_id', e.target.value ? Number(e.target.value) : null)}>
-              <option value="">— Chưa gắn mục tiêu —</option>
+              <option value="">{tr('kpi_proposal.no_objective')}</option>
               {objectives.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
             </select>
-            <label className="delta-label" title="Chỉ tiêu số + đơn vị đo">
+            <label className="delta-label" title={tr('kpi_proposal.target_tooltip')}>
               <input type="number" step="any" min="0" style={{ width: 60 }} value={r.target_value}
                 onChange={(e) => update(i, 'target_value', e.target.value)} />
               <input style={{ width: 84 }} value={r.unit}
                 onChange={(e) => update(i, 'unit', e.target.value)} />
             </label>
-            <label className="delta-label" title="Trọng số % trong mục tiêu">
+            <label className="delta-label" title={tr('kpi_proposal.weight_tooltip')}>
               ⚖
               <input type="number" min="0" max="100" value={r.weight}
                 onChange={(e) => update(i, 'weight', e.target.value)} />
               %
             </label>
-            <label className="delta-label" title="Deadline">
+            <label className="delta-label" title={tr('kpi_proposal.deadline_tooltip')}>
               <input type="date" value={r.deadline || ''}
                 onChange={(e) => update(i, 'deadline', e.target.value || null)} />
             </label>
-            <button className="btn-icon" title="Bỏ KPI này" onClick={() => removeRow(i)}>✕</button>
+            <button className="btn-icon" title={tr('kpi_proposal.remove_kpi')} onClick={() => removeRow(i)}>✕</button>
           </div>
         </div>
       ))}
@@ -84,7 +82,7 @@ export default function KpiProposal({ kpis: proposedKpis, weightChanges, onConfi
       {changes.length > 0 && (
         <div className="proposal-card">
           <div className="proposal-ref" style={{ marginBottom: 6 }}>
-            ⚖️ Điều chỉnh trọng số KPI hiện có (để tổng nhóm = 100%):
+            {tr('kpi_proposal.adjust_weights')}
           </div>
           {changes.map((c, i) => (
             <div className="proposal-controls" key={c.kpi_id}>
@@ -95,7 +93,7 @@ export default function KpiProposal({ kpis: proposedKpis, weightChanges, onConfi
                   onChange={(e) => updateChange(i, e.target.value)} />
                 %
               </label>
-              <button className="btn-icon" title="Bỏ điều chỉnh này" onClick={() => removeChange(i)}>✕</button>
+              <button className="btn-icon" title={tr('kpi_proposal.remove_change')} onClick={() => removeChange(i)}>✕</button>
             </div>
           ))}
         </div>
@@ -104,9 +102,9 @@ export default function KpiProposal({ kpis: proposedKpis, weightChanges, onConfi
       {error && <div className="error-text">⚠️ {error}</div>}
       <div className="proposal-actions">
         <button className="btn primary" disabled={saving || !rows.length} onClick={confirm}>
-          {saving ? 'Đang lưu…' : `Xác nhận tạo ${rows.length} KPI`}
+          {saving ? tr('kpi_proposal.saving') : tr('kpi_proposal.confirm', { count: rows.length })}
         </button>
-        {onDismiss && <button className="btn ghost" onClick={onDismiss}>Bỏ qua</button>}
+        {onDismiss && <button className="btn ghost" onClick={onDismiss}>{tr('kpi_proposal.dismiss')}</button>}
       </div>
     </div>
   )

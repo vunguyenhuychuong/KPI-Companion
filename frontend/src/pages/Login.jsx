@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
 import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google'
 import { api } from '../api'
+import { useLang } from '../LangContext'
 
 export default function Login({ onLogin }) {
+  const { tr } = useLang()
   const [mode, setMode] = useState('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -27,11 +29,11 @@ export default function Login({ onLogin }) {
 
   function clientValidate() {
     const e = email.trim()
-    if (!e) return 'Vui lòng nhập email'
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e)) return 'Email không đúng định dạng'
-    if (!password) return 'Vui lòng nhập mật khẩu'
-    if (mode === 'register' && password.length < 6) return 'Mật khẩu tối thiểu 6 ký tự'
-    if (mode === 'register' && /[<>"'/\\&{}]/.test(name)) return 'Tên chứa ký tự không hợp lệ'
+    if (!e) return tr('login.err_email_empty')
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e)) return tr('login.err_email_format')
+    if (!password) return tr('login.err_password_empty')
+    if (mode === 'register' && password.length < 6) return tr('login.err_password_short')
+    if (mode === 'register' && /[<>"'/\\&{}]/.test(name)) return tr('login.err_name_invalid')
     return null
   }
 
@@ -74,17 +76,16 @@ export default function Login({ onLogin }) {
       }}>
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
           <div style={{ fontSize: 40, marginBottom: 8 }}>🎯</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: '#1e40af' }}>KPI Companion</div>
-          <div style={{ fontSize: 13, color: '#6b7280', marginTop: 4 }}>Trợ lý KPI cá nhân</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: '#1e40af' }}>{tr('app.title')}</div>
+          <div style={{ fontSize: 13, color: '#6b7280', marginTop: 4 }}>{tr('login.subtitle')}</div>
         </div>
 
-        {/* Google OAuth button */}
         {googleClientId && (
           <GoogleOAuthProvider clientId={googleClientId}>
             <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 16 }}>
               <GoogleLogin
                 onSuccess={handleGoogleSuccess}
-                onError={() => setError('Đăng nhập Google thất bại')}
+                onError={() => setError(tr('login.google_error'))}
                 text="signin_with"
                 shape="rectangular"
                 locale="vi"
@@ -93,13 +94,12 @@ export default function Login({ onLogin }) {
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
               <div style={{ flex: 1, height: 1, background: '#e5e7eb' }} />
-              <span style={{ fontSize: 12, color: '#9ca3af', whiteSpace: 'nowrap' }}>hoặc đăng nhập bằng email</span>
+              <span style={{ fontSize: 12, color: '#9ca3af', whiteSpace: 'nowrap' }}>{tr('login.google_divider')}</span>
               <div style={{ flex: 1, height: 1, background: '#e5e7eb' }} />
             </div>
           </GoogleOAuthProvider>
         )}
 
-        {/* Email / Password tabs */}
         <div style={{ display: 'flex', marginBottom: 24, borderRadius: 8, overflow: 'hidden', border: '1px solid #e5e7eb' }}>
           {['login', 'register'].map(m => (
             <button
@@ -113,7 +113,7 @@ export default function Login({ onLogin }) {
                 transition: 'all 0.15s',
               }}
             >
-              {m === 'login' ? 'Đăng nhập' : 'Đăng ký'}
+              {m === 'login' ? tr('login.tab_login') : tr('login.tab_register')}
             </button>
           ))}
         </div>
@@ -121,19 +121,19 @@ export default function Login({ onLogin }) {
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           {mode === 'register' && (
             <div>
-              <label style={labelStyle}>Tên hiển thị</label>
-              <input type="text" placeholder="Nguyễn Văn A" value={name}
+              <label style={labelStyle}>{tr('login.name_label')}</label>
+              <input type="text" placeholder={tr('login.name_placeholder')} value={name}
                 onChange={e => setName(e.target.value)} style={inputStyle} />
             </div>
           )}
           <div>
-            <label style={labelStyle}>Email</label>
-            <input type="text" placeholder="ten@vng.com.vn hoặc @gmail.com"
+            <label style={labelStyle}>{tr('login.email_label')}</label>
+            <input type="text" placeholder={tr('login.email_placeholder')}
               value={email} onChange={e => setEmail(e.target.value)}
               autoFocus={!googleClientId} style={inputStyle} />
           </div>
           <div>
-            <label style={labelStyle}>Mật khẩu</label>
+            <label style={labelStyle}>{tr('login.password_label')}</label>
             <input type="password" placeholder="••••••••" value={password}
               onChange={e => setPassword(e.target.value)} style={inputStyle} />
           </div>
@@ -153,7 +153,7 @@ export default function Login({ onLogin }) {
             fontWeight: 700, fontSize: 15, cursor: loading ? 'not-allowed' : 'pointer',
             transition: 'background 0.15s',
           }}>
-            {loading ? 'Đang xử lý...' : mode === 'login' ? 'Đăng nhập' : 'Tạo tài khoản'}
+            {loading ? tr('login.loading') : mode === 'login' ? tr('login.submit_login') : tr('login.submit_register')}
           </button>
         </form>
 
