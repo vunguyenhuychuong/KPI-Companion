@@ -214,6 +214,19 @@ app.include_router(sources.router)
 app.include_router(reports.router)
 
 
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+import os  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+_static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
+if os.path.isdir(_static_dir):
+    app.mount("/", StaticFiles(directory=_static_dir, html=True), name="frontend")
