@@ -4,7 +4,7 @@ import { useLang } from '../LangContext'
 import { useView, matchView } from '../ViewContext'
 import { useCycle } from '../CycleContext'
 import ViewModeSwitch from '../components/ViewModeSwitch'
-import { ConfirmModal, PromptModal } from '../components/Modal'
+import { ConfirmModal, Modal, PromptModal } from '../components/Modal'
 import { useToast } from '../components/Toast'
 
 const EMPTY = {
@@ -891,6 +891,11 @@ export default function Kpis() {
   const [cloneExcludes, setCloneExcludes] = useState([]) // objective ids to exclude
   const [cloneBusy, setCloneBusy] = useState(false)
   const [cloneError, setCloneError] = useState('')
+  const [showShareModal, setShowShareModal] = useState(false)
+  const [shareLinks, setShareLinks] = useState([])
+  const [shareExpireDays, setShareExpireDays] = useState(7)
+  const [shareBusy, setShareBusy] = useState(false)
+  const [shareCopied, setShareCopied] = useState('')
 
   const openCloneModal = () => {
     const nextYear = new Date().getFullYear() + (activeCycle?.start_date
@@ -916,6 +921,41 @@ export default function Kpis() {
       setShowCloneModal(false)
       toast.success(`Đã clone thành công chu kỳ "${cloneForm.name}"`)
     } catch (e) { setCloneError(e.message) } finally { setCloneBusy(false) }
+  }
+
+  const loadShareLinks = async () => {
+    if (!activeCycleId) return
+    try { setShareLinks(await api.listShareLinks(activeCycleId)) } catch (_) { /* ignore */ }
+  }
+
+  const openShareModal = () => {
+    loadShareLinks()
+    setShowShareModal(true)
+  }
+
+  const createShareLink = async () => {
+    if (!activeCycleId) return
+    setShareBusy(true)
+    try {
+      await api.createShareLink(activeCycleId, shareExpireDays)
+      await loadShareLinks()
+    } catch (e) { setError(e.message) } finally { setShareBusy(false) }
+  }
+
+  const revokeShareLink = async (token) => {
+    try {
+      await api.revokeShareLink(token)
+      await loadShareLinks()
+    } catch (e) { setError(e.message) }
+  }
+
+  const copyShareLink = (token) => {
+    const url = `${window.location.origin}/shared/${token}`
+    navigator.clipboard.writeText(url).then(() => {
+      setShareCopied(token)
+      toast.success('Đã copy link chia sẻ')
+      setTimeout(() => setShareCopied(''), 2000)
+    })
   }
   const [smartResults, setSmartResults] = useState({}) // { [kpiId]: result | null }
   const [smartLoadingId, setSmartLoadingId] = useState(null)
@@ -1158,6 +1198,9 @@ export default function Kpis() {
           <button className="btn" onClick={() => api.exportEvaluation().catch((e) => setError(e.message))}>
             {tr('kpis.btn_export')}
           </button>
+          <button className="btn" onClick={openShareModal} disabled={!activeCycleId} title="Tạo link xem tổng quan KPI không cần đăng nhập">
+            Chia sẻ tổng quan
+          </button>
           <input ref={fileRef} type="file" accept=".xlsx,.csv" hidden onChange={importFile} />
           {activeCycleId && (
             <button className="btn" title="Nhân bản chu kỳ này sang chu kỳ mới" onClick={openCloneModal}>
@@ -1387,6 +1430,68 @@ export default function Kpis() {
         onConfirm={doArchive}
         onCancel={() => setArchivePrompt(null)}
       />
+
+      <Modal
+        open={showShareModal}
+        title="Chia sẻ tổng quan KPI"
+        onClose={() => setShowShareModal(false)}
+        actions={<button className="btn" onClick={() => setShowShareModal(false)}>Đóng</button>}
+      >
+        <div className="share-modal-intro">
+          <div className="share-modal-icon" aria-hidden="true">↗</div>
+          <div>
+            <b>Read-only link</b>
+            <p>Người nhận xem được tổng quan chu kỳ, Objective và KPI mà không cần đăng nhập; không có quyền chỉnh sửa.</p>
+          </div>
+        </div>
+        <div className="share-create-row">
+          <label>Hết hạn sau</label>
+          <select value={shareExpireDays} onChange={e => setShareExpireDays(Number(e.target.value))}
+            className="share-expiry-select">
+            {[1, 3, 7, 14, 30].map(d => <option key={d} value={d}>{d} ngày</option>)}
+          </select>
+          <button className="btn primary small" onClick={createShareLink} disabled={shareBusy || !activeCycleId}>
+            {shareBusy ? 'Đang tạo...' : 'Tạo link'}
+          </button>
+        </div>
+        {!activeCycleId && <p style={{ color: '#ca8a04', fontSize: 13 }}>Chọn chu kỳ ở thanh trên để tạo link chia sẻ.</p>}
+        {shareLinks.length === 0
+          ? <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Chưa có link nào.</p>
+          : shareLinks.map(link => {
+            const url = `${window.location.origin}/shared/${link.token}`
+            const expired = new Date(link.expires_at) < new Date()
+            const revoked = !!link.revoked_at
+            const invalid = expired || revoked
+            const state = revoked ? 'Đã hủy' : expired ? 'Hết hạn' : 'Đang hoạt động'
+            return (
+              <div key={link.token} className={`share-link-item${invalid ? ' invalid' : ''}`}>
+                <div className="share-link-main">
+                  <div className="share-link-head">
+                    <span className={`share-link-state${invalid ? ' invalid' : ''}`}>{state}</span>
+                    <span className="share-link-meta">Hết hạn {new Date(link.expires_at).toLocaleDateString('vi-VN')}</span>
+                  </div>
+                  <div className={`share-link-url${invalid ? ' share-link-revoked' : ''}`}>{url}</div>
+                  <div className="share-link-meta">
+                    {revoked && ' · Đã hủy'}{expired && !revoked && ' · Hết hạn'}
+                  </div>
+                </div>
+                <div className="share-link-actions">
+                  {!invalid && (
+                    <button className="btn small" onClick={() => copyShareLink(link.token)}>
+                      {shareCopied === link.token ? '✓ Đã copy' : 'Copy'}
+                    </button>
+                  )}
+                  {!revoked && (
+                    <button className="btn small" style={{ color: '#dc2626' }} onClick={() => revokeShareLink(link.token)}>
+                      Hủy
+                    </button>
+                  )}
+                </div>
+              </div>
+            )
+          })
+        }
+      </Modal>
 
       {groups.map(({ obj, kpis: groupKpis }) => {
         const sumW = Math.round(groupKpis.reduce((s, k) => s + (k.weight || 0), 0) * 10) / 10

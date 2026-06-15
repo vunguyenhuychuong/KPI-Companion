@@ -3,6 +3,7 @@
 Chu kỳ là đơn vị tổ chức cao nhất: Objectives thuộc về Cycle.
 Hỗ trợ: tạo/sửa/xóa cycle, chốt (lock), nhân bản từ cycle cũ.
 """
+import re
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -15,6 +16,27 @@ from ..auth import CurrentUser
 from ..database import get_db
 
 router = APIRouter(prefix="/api/cycles", tags=["cycles"])
+
+
+def _validate_cycle_dates(name: str, cycle_type: str | None, start_date: date | None, end_date: date | None):
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(400, "Ngày bắt đầu không được sau ngày kết thúc")
+
+    if not (name and start_date and end_date):
+        return
+
+    years = [int(y) for y in re.findall(r"\b(20\d{2}|19\d{2})\b", name)]
+    if not years:
+        return
+
+    expected_year = years[-1]
+    is_yearly_name = (cycle_type == "yearly") or bool(re.search(r"\b(năm|nam|year)\b", name, re.IGNORECASE))
+    if is_yearly_name and (start_date.year != expected_year or end_date.year != expected_year):
+        raise HTTPException(
+            400,
+            f'Tên chu kỳ "{name}" đang nhắc tới năm {expected_year}, '
+            f"nhưng khoảng ngày là {start_date:%d/%m/%Y} - {end_date:%d/%m/%Y}",
+        )
 
 
 def _get_cycle_or_404(db: Session, cycle_id: int, user_id: int) -> models.KPICycle:
@@ -49,6 +71,7 @@ def create_cycle(
     current_user: CurrentUser,
     db: Session = Depends(get_db),
 ):
+    _validate_cycle_dates(payload.name, payload.cycle_type, payload.start_date, payload.end_date)
     cycle = models.KPICycle(user_id=current_user.id, **payload.model_dump())
     db.add(cycle)
     db.commit()
@@ -109,7 +132,14 @@ def update_cycle(
     cycle = _get_cycle_or_404(db, cycle_id, current_user.id)
     if cycle.is_locked:
         raise HTTPException(400, "Chu kỳ đã chốt — không thể chỉnh sửa")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    patch = payload.model_dump(exclude_unset=True)
+    _validate_cycle_dates(
+        patch.get("name", cycle.name),
+        patch.get("cycle_type", cycle.cycle_type),
+        patch.get("start_date", cycle.start_date),
+        patch.get("end_date", cycle.end_date),
+    )
+    for field, value in patch.items():
         setattr(cycle, field, value)
     db.commit()
     db.refresh(cycle)
@@ -191,6 +221,7 @@ def clone_cycle(
     exclude_objective_ids: danh sách objective_id cần bỏ qua khi clone.
     """
     src = _get_cycle_or_404(db, cycle_id, current_user.id)
+    _validate_cycle_dates(payload.name, payload.cycle_type, payload.start_date, payload.end_date)
 
     new_cycle = models.KPICycle(
         user_id=current_user.id,

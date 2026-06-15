@@ -48,6 +48,7 @@ const DASH_CSS = `
 
   /* Hero */
   .ddb-hero {
+    position:relative; overflow:visible; z-index:5;
     background:
       radial-gradient(420px 220px at 18% 10%, rgba(124,92,255,.16), transparent 60%),
       radial-gradient(520px 260px at 85% 20%, rgba(20,184,166,.12), transparent 60%),
@@ -57,6 +58,7 @@ const DASH_CSS = `
     gap:24px; align-items:center;
     animation:ddb-up .35s ease both; box-shadow:var(--shadow-hover);
   }
+  .ddb-hero:hover { z-index:30; }
   [data-theme="dark"] .ddb-hero {
     background:
       radial-gradient(420px 220px at 18% 10%, rgba(124,92,255,.22), transparent 60%),
@@ -83,15 +85,17 @@ const DASH_CSS = `
   }
   .ddb-hero-sub { font-size:12px; line-height:1.35; color:var(--muted); margin-top:0 }
   .ddb-metrics-row {
+    overflow:visible;
     display:grid; grid-template-columns:repeat(4,minmax(82px,1fr));
     gap:12px; max-width:620px;
   }
   .ddb-metric {
-    display:flex; flex-direction:column; gap:4px;
+    position:relative; display:flex; flex-direction:column; gap:4px; z-index:1;
     padding:10px 12px; border:1px solid var(--border); border-radius:12px;
     background:rgba(99,102,241,.055);
     animation:ddb-pop .42s cubic-bezier(.2,.8,.2,1) both;
   }
+  .ddb-metric:hover { z-index:40; }
   [data-theme="dark"] .ddb-metric { background:rgba(255,255,255,.035); }
   .ddb-metric:nth-child(2){ animation-delay:.06s }
   .ddb-metric:nth-child(3){ animation-delay:.12s }
@@ -99,6 +103,24 @@ const DASH_CSS = `
   .ddb-metric-num { font-size:26px; font-weight:800; letter-spacing:-1px; line-height:1 }
   .ddb-metric-label { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; font-weight:600 }
   .ddb-metric-bar { height:3px; border-radius:2px; margin-top:4px; width:40px; opacity:.6 }
+  .ddb-metric-detail {
+    position:absolute; left:0; top:calc(100% + 8px); z-index:50; width:230px;
+    padding:10px 12px; border:1px solid var(--border); border-radius:10px;
+    background:var(--surface); color:var(--text); box-shadow:var(--shadow);
+    font-size:12px; line-height:1.45; opacity:0; pointer-events:none;
+    transform:translateY(-4px); transition:opacity .15s ease,transform .15s ease;
+  }
+  .ddb-metric:hover .ddb-metric-detail,
+  .ddb-metric:focus-within .ddb-metric-detail { opacity:1; transform:translateY(0); }
+  .ddb-score-detail {
+    position:absolute; left:0; top:calc(100% + 10px); z-index:50; width:270px;
+    padding:10px 12px; border:1px solid var(--border); border-radius:10px;
+    background:var(--surface); color:var(--text); box-shadow:var(--shadow);
+    font-size:12px; line-height:1.45; opacity:0; pointer-events:none;
+    transform:translateY(-4px); transition:opacity .15s ease,transform .15s ease;
+  }
+  .ddb-hero-ring:hover .ddb-score-detail,
+  .ddb-hero-ring:focus-within .ddb-score-detail { opacity:1; transform:translateY(0); }
 
   /* AI Insight strip */
   .ddb-insight {
@@ -470,13 +492,14 @@ function useCountUp(target, duration = 900) {
 }
 
 /* ─── Metric Tile (own hook per instance) ────────────────────────────────── */
-function MetricTile({ num, label, color }) {
+function MetricTile({ num, label, color, detail }) {
     const counted = useCountUp(num)
     return (
-        <div className="ddb-metric">
+        <div className="ddb-metric" title={detail} aria-label={`${label}: ${detail || ''}`}>
             <span className="ddb-metric-num" style={{ color }}>{counted}</span>
             <span className="ddb-metric-label">{label}</span>
             <div className="ddb-metric-bar" style={{ background: color }} />
+            {detail && <span className="ddb-metric-detail">{detail}</span>}
         </div>
     )
 }
@@ -498,7 +521,7 @@ function KpiHeroSection({ data, counts, visible, tr, onWeekly, loadingWeekly, on
     return (
         <div className="ddb-hero">
             {/* Animated ring */}
-            <div className="ddb-hero-ring">
+            <div className="ddb-hero-ring" tabIndex={0} aria-label="Health Score: điểm OKR tổng hợp có trọng số">
                 <svg viewBox="0 0 110 110" style={{ width: 110, height: 110 }}>
                     <defs>
                         <linearGradient id="heroGrad" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -515,6 +538,9 @@ function KpiHeroSection({ data, counts, visible, tr, onWeekly, loadingWeekly, on
                     <span style={{ fontSize: 22, fontWeight: 800, color: 'var(--text)', lineHeight: 1 }}>{val}%</span>
                     <span style={{ fontSize: 9, color: 'var(--muted)', marginTop: 2, textTransform: 'uppercase', letterSpacing: '.4px' }}>Health Score</span>
                 </div>
+                <span className="ddb-score-detail">
+                    Health Score = điểm OKR tổng hợp có trọng số theo Objective. Mỗi Objective lấy trung bình KPI con theo trọng số KPI, KPI vượt chỉ tiêu được cap 100% khi cộng điểm tổng.
+                </span>
             </div>
 
             {/* Right side */}
@@ -526,10 +552,30 @@ function KpiHeroSection({ data, counts, visible, tr, onWeekly, loadingWeekly, on
 
                 {/* 4 metric tiles */}
                 <div className="ddb-metrics-row">
-                    <MetricTile num={total} label="Tổng KPI" color="var(--text)" />
-                    <MetricTile num={counts.green} label="Đúng tiến độ" color={HC.green} />
-                    <MetricTile num={counts.yellow} label="Cần chú ý" color={HC.yellow} />
-                    <MetricTile num={counts.red} label="Rủi ro" color={HC.red} />
+                    <MetricTile
+                        num={total}
+                        label="Tổng KPI"
+                        color="var(--text)"
+                        detail="Số KPI đang hiển thị theo bộ lọc Work/Personal/Focus hiện tại."
+                    />
+                    <MetricTile
+                        num={counts.green}
+                        label="Đúng tiến độ"
+                        color={HC.green}
+                        detail="KPI có thực tế không chậm quá 5% so với kỳ vọng theo thời gian hoặc kế hoạch SMART."
+                    />
+                    <MetricTile
+                        num={counts.yellow}
+                        label="Cần chú ý"
+                        color={HC.yellow}
+                        detail="KPI chậm từ trên 5% đến 15% so với kỳ vọng theo thời gian hoặc kế hoạch SMART."
+                    />
+                    <MetricTile
+                        num={counts.red}
+                        label="Rủi ro"
+                        color={HC.red}
+                        detail="KPI chậm hơn 15% so với kỳ vọng theo thời gian hoặc kế hoạch SMART."
+                    />
                 </div>
 
                 {/* AI Insight strip */}

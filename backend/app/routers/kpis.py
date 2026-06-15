@@ -1,7 +1,7 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -851,18 +851,48 @@ def analyze_conflicts(current_user: CurrentUser, db: Session = Depends(get_db)):
     return schemas.ConflictAnalysisOut(conflicts=conflicts, analyzed_kpis=len(kpis))
 
 
-@router.get("/changelog/all", response_model=list[schemas.ChangeLogOut])
-def all_changelog(current_user: CurrentUser, limit: int = 300, db: Session = Depends(get_db)):
+@router.get("/changelog/all")
+def all_changelog(
+    current_user: CurrentUser,
+    limit: int = 300,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=5, le=100),
+    field: str | None = Query(None),
+    kpi_id: int | None = Query(None),
+    search: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
     """Toan bo lich su thay doi KPI — bao gom ca KPI da go bo."""
-    return list(
+    q = (
+        select(models.KPIChangeLog)
+        .join(models.KPI)
+        .where(models.KPI.user_id == current_user.id)
+    )
+    if field:
+        q = q.where(models.KPIChangeLog.field == field)
+    if kpi_id:
+        q = q.where(models.KPIChangeLog.kpi_id == kpi_id)
+    if search:
+        like = f"%{search.strip()}%"
+        q = q.where(
+            or_(
+                models.KPI.name.ilike(like),
+                models.KPIChangeLog.field.ilike(like),
+                models.KPIChangeLog.old_value.ilike(like),
+                models.KPIChangeLog.new_value.ilike(like),
+                models.KPIChangeLog.reason.ilike(like),
+            )
+        )
+    total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
+    size = min(page_size, limit)
+    logs = list(
         db.scalars(
-            select(models.KPIChangeLog)
-            .join(models.KPI)
-            .where(models.KPI.user_id == current_user.id)
-            .order_by(models.KPIChangeLog.changed_at.desc())
-            .limit(limit)
+            q.order_by(models.KPIChangeLog.changed_at.desc())
+            .offset((page - 1) * size)
+            .limit(size)
         )
     )
+    return {"items": [schemas.ChangeLogOut.model_validate(l) for l in logs], "total": total, "page": page, "page_size": size}
 
 
 @router.get("/archived", response_model=list[schemas.KPIOut])
@@ -913,6 +943,20 @@ def restore_kpi(kpi_id: int, current_user: CurrentUser, db: Session = Depends(ge
     db.commit()
     db.refresh(kpi)
     return kpi
+
+
+@router.delete("/{kpi_id}/permanent", status_code=204)
+def delete_kpi_permanent(kpi_id: int, current_user: CurrentUser, db: Session = Depends(get_db)):
+    """Xoa vinh vien KPI da archive. KPI dang hoat dong van phai archive truoc."""
+    kpi = db.get(models.KPI, kpi_id)
+    if not kpi or kpi.user_id != current_user.id:
+        raise HTTPException(404, "Không tìm thấy KPI")
+    if not kpi.archived:
+        raise HTTPException(400, "Chỉ có thể xoá vĩnh viễn KPI đã gỡ bỏ")
+    for item in list(kpi.work_items):
+        item.kpi_id = None
+    db.delete(kpi)
+    db.commit()
 
 
 @router.get("/{kpi_id}/changelog", response_model=list[schemas.ChangeLogOut])

@@ -53,7 +53,9 @@ async function request(path, options = {}, timeoutMs = 0) {
     } catch { /* ignore */ }
     throw new Error(detail)
   }
-  return res.json()
+  if (res.status === 204) return null
+  const text = await res.text()
+  return text ? JSON.parse(text) : null
 }
 
 export const api = {
@@ -103,9 +105,10 @@ export const api = {
   coachKpi: (id, lang = 'vi') => request(`/kpis/${id}/coach?lang=${lang}`, { method: 'POST' }, 120000),
   smartValidateKpi: (id) => request(`/kpis/${id}/validate-smart`, { method: 'POST' }, 60000),
   kpiChangelog: (id) => request(`/kpis/${id}/changelog`),
-  allChangelog: () => request('/kpis/changelog/all'),
+  allChangelog: (params = '') => request('/kpis/changelog/all' + params),
   archivedKpis: () => request('/kpis/archived'),
   restoreKpi: (id) => request(`/kpis/${id}/restore`, { method: 'POST' }),
+  deleteKpiPermanent: (id) => request(`/kpis/${id}/permanent`, { method: 'DELETE' }),
   previewImport: async (file) => {
     const fd = new FormData()
     fd.append('file', file)
@@ -224,6 +227,7 @@ export const api = {
 
   // Work items
   listWorkItems: (params = '') => request('/work-items' + params),
+  deleteWorkItem: (id) => request(`/work-items/${id}`, { method: 'DELETE' }),
   confirmItems: (items) => request('/work-items/confirm', { method: 'POST', body: JSON.stringify({ items }) }),
   confirmDeleteKpi: (payload) => request('/kpis/confirm-delete', { method: 'POST', body: JSON.stringify(payload) }),
   updateWorkItemStatus: (id, status, valueDelta = 0) =>
