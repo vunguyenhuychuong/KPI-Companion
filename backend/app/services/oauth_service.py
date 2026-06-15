@@ -442,13 +442,13 @@ def get_access_token(db: Session, user_id: int, provider: str) -> str | None:
 # ---------------------------------------------------------------- quan ly
 
 def source_modes(db: Session, user_id: int, google_mock: bool) -> dict[str, str]:
-    """Map moi 'source' -> 'real'|'mock' theo ket noi cua nguoi dung."""
+    """Map moi source cua user: real neu da ket noi, disconnected neu chua."""
     connected = {p for p in PROVIDERS if is_connected(db, user_id, p)}
     modes: dict[str, str] = {}
     for key, cfg in PROVIDERS.items():
         real = key in connected and (key != "google" or not google_mock)
         for src in cfg.sources:
-            modes[src] = "real" if real else "mock"
+            modes[src] = "real" if real else "disconnected"
     return modes
 
 

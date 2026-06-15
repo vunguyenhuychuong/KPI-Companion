@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import Dashboard from './pages/Dashboard'
 import Chat from './pages/Chat'
@@ -15,6 +15,7 @@ import { ViewProvider } from './ViewContext'
 import { CycleProvider, useCycle } from './CycleContext'
 import NotificationsBell from './components/NotificationsBell'
 import OnboardingWizard from './components/OnboardingWizard'
+import HelpPanel from './components/HelpPanel'
 import { ToastProvider } from './components/Toast'
 import { api } from './api'
 
@@ -101,6 +102,7 @@ function AppContent() {
   const { tr, lang, toggleLang } = useLang()
   const { theme, toggleTheme } = useTheme()
   const location = useLocation()
+  const mainRef = useRef(null)
   const [headerScrolled, setHeaderScrolled] = useState(false)
   const [showOnboardingHelp, setShowOnboardingHelp] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('kpi_sidebar_collapsed') === '1')
@@ -369,7 +371,7 @@ function AppContent() {
             </button>
           </div>
         </header>
-        <div className="content-body">
+        <div className="content-body" ref={mainRef}>
           <Routes>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<Dashboard />} />
@@ -397,6 +399,11 @@ function AppContent() {
             </div>
           </div>
         </footer>
+        <HelpPanel
+          targetRef={mainRef}
+          screenName={pageTitle}
+          position="right"
+        />
       </main>
     </div>
   )

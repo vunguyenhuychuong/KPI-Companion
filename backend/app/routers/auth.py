@@ -158,15 +158,9 @@ def google_login(payload: schemas.GoogleTokenRequest, db: Session = Depends(get_
         db.commit()
         db.refresh(user)
     else:
-        changed = False
-        if name and user.name != name:
-            user.name = name
-            changed = True
-        if picture and user.picture != picture:
-            user.picture = picture
-            changed = True
-        if changed:
-            db.commit()
+        # Do not overwrite profile fields the user changed inside KPI Companion.
+        # Google is the identity provider here, not the source of truth for app profile data.
+        pass
 
     return _token_response(user)
 

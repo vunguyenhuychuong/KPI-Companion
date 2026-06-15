@@ -12,6 +12,11 @@ function lastMonday() {
 
 export default function Sources() {
   const { tr } = useLang()
+  const sourceBadgeLabel = (mode) => (
+    mode === 'real' ? tr('sources.real_badge')
+      : mode === 'disconnected' ? tr('sources.disconnected_badge')
+        : tr('sources.demo_badge')
+  )
 
   const SOURCES = [
     { key: 'gmail', label: '✉️ Gmail', descKey: 'sources.source_gmail_desc' },
@@ -126,10 +131,10 @@ export default function Sources() {
       {oauthMsg && <div className="mode-banner real">{oauthMsg}</div>}
 
       {status && (
-        <div className={`mode-banner ${status.gmail === 'mock' ? 'mock' : 'real'}`}>
-          {status.gmail === 'mock'
-            ? tr('sources.demo_banner', { note: status.note })
-            : tr('sources.real_banner')}
+        <div className={`mode-banner ${Object.values(status).includes('real') ? 'real' : 'mock'}`}>
+          {Object.values(status).includes('real')
+            ? tr('sources.real_banner')
+            : tr('sources.disconnected_banner', { note: status.note })}
         </div>
       )}
 
@@ -207,7 +212,7 @@ export default function Sources() {
               </div>
               {status && (
                 <span className={`badge ${status[s.key]}`}>
-                  {status[s.key] === 'mock' ? tr('sources.demo_badge') : tr('sources.real_badge')}
+                  {sourceBadgeLabel(status[s.key])}
                 </span>
               )}
             </label>

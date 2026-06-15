@@ -100,10 +100,6 @@ def chat(
             intent="error",
         )
     response.session_id = session.id
-    has_proposals = bool(
-        response.proposed_items or response.proposed_objectives
-        or response.proposed_kpis or response.delete_proposal
-    )
     assistant_msg = models.ChatMessage(
         user_id=current_user.id,
         session_id=session.id,
@@ -111,17 +107,6 @@ def chat(
         content=response.reply,
         meta={
             "intent": response.intent,
-            "proposed_items": [i.model_dump(mode="json") for i in response.proposed_items],
-            "proposed_objectives": [o.model_dump(mode="json") for o in response.proposed_objectives],
-            "proposed_kpis": [k.model_dump(mode="json") for k in response.proposed_kpis],
-            "weight_changes": [w.model_dump(mode="json") for w in response.weight_changes],
-            "delete_proposal": (
-                response.delete_proposal.model_dump(mode="json")
-                if response.delete_proposal else None
-            ),
-            # trang thai the de xuat — cap nhat qua PATCH /messages/{id}/proposal-status
-            # de mo lai phien van biet nguoi dung da Xac nhan / Bo qua hay chua
-            **({"proposal_status": "pending"} if has_proposals else {}),
         },
     )
     db.add(assistant_msg)
@@ -129,7 +114,7 @@ def chat(
     response.message_id = assistant_msg.id
     # Agent tu hoc: trich thong tin ben vung tu luot trao doi nay (chay NEN sau khi
     # da tra loi — khong them do tre; loi trong buoc nay khong anh huong chat)
-    if response.intent != "error":
+    if response.intent != "error" and not response.proposed_items:
         background_tasks.add_task(
             agent_memory.learn_from_exchange, current_user.id, text, response.reply
         )

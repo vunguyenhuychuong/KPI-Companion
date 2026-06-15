@@ -11,7 +11,7 @@ from .auth import hash_password
 from .config import settings
 from .database import Base, SessionLocal, engine
 from .routers import auth as auth_router
-from .routers import burnout, chat, cycles, kpis, notification_settings, notifications, objectives, oauth, reports, settings as settings_router
+from .routers import burnout, chat, cycles, help, kpis, notification_settings, notifications, objectives, oauth, reports, settings as settings_router
 from .routers import share_links, sources, work_items
 
 
@@ -139,6 +139,46 @@ def migrate():
             conn.execute(text("ALTER TABLE kpi_cycles ADD COLUMN cloned_from_cycle_id INTEGER"))
 
         conn.commit()
+
+
+def cleanup_draft_data():
+    """Remove old draft/proposal payloads; only confirmed user tasks remain persisted."""
+    draft_meta_keys = {
+        "proposed_items",
+        "proposed_objectives",
+        "proposed_kpis",
+        "weight_changes",
+        "delete_proposal",
+    }
+    db = SessionLocal()
+    try:
+        draft_items = list(
+            db.scalars(
+                select(models.WorkItem).where(models.WorkItem.confirmed == False)  # noqa: E712
+            )
+        )
+        for item in draft_items:
+            db.delete(item)
+
+        messages = list(
+            db.scalars(
+                select(models.ChatMessage).where(models.ChatMessage.meta.isnot(None))
+            )
+        )
+        for msg in messages:
+            meta = msg.meta or {}
+            if not any(key in meta for key in draft_meta_keys):
+                continue
+            cleaned = {k: v for k, v in meta.items() if k not in draft_meta_keys}
+            if cleaned.get("proposal_status") == "pending":
+                cleaned["proposal_status"] = "dismissed"
+            msg.meta = cleaned or None
+
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
 
 
 def seed_objectives():
@@ -397,6 +437,7 @@ def seed_compare_demo():
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     migrate()
+    cleanup_draft_data()
     # nap cau hinh app-level da luu (vd google_mock_mode doi tu UI) de giu sau restart
     from .services import app_config
     db = SessionLocal()
@@ -436,6 +477,7 @@ app.include_router(notifications.router)
 app.include_router(burnout.router)
 app.include_router(notification_settings.router)
 app.include_router(share_links.router)
+app.include_router(help.router)
 app.include_router(share_links.public_router)
 
 

@@ -76,6 +76,9 @@
 | `LLM_BASE_URL` | Có | Endpoint vLLM (VNGCloud hoặc thay thế) |
 | `LLM_MODEL` | Có | Tên model, ví dụ `qwen/qwen3-5-27b` |
 | `LLM_API_KEY` | Có | API key cho endpoint |
+| `VISION_BASE_URL` | Không | Endpoint Vision OpenAI-compatible cho Help Panel |
+| `VISION_MODEL` | Không | Tên model vision, ví dụ `qwen-vl-max` |
+| `VISION_API_KEY` | Không | API key Vision; để trống thì dùng hướng dẫn fallback |
 | `DATABASE_URL` | Không | Mặc định `backend/kpi_companion.db` |
 
 > Khi thêm biến mới: cập nhật bảng này **và** `.env.example` cùng lúc.
@@ -93,6 +96,7 @@
 - [x] **AI Weekly Summary** — intent `weekly_summary` (8th intent); sinh báo cáo tuần đầy đủ + tự động lưu vào `saved_reports`; từ khóa: "tổng kết tuần", "báo cáo tuần", "weekly summary"
 - [x] **SMART Goal Validation** — `POST /api/kpis/{id}/validate-smart`; nút 🎯 trên KpiCard; panel hiển thị scores S/M/A/R/T + issues + suggestions; gọi LLM via `SMART_VALIDATE_SYSTEM`
 - [x] **Self-review PDF + Excel** — `POST /api/reports/self-review` sinh bản tự đánh giá (upsert theo năm); `GET /api/reports/saved/{id}/export?format=xlsx|pdf` xuất file; tab "📝 Tự đánh giá" trong Reports với nút ⬇ Excel / ⬇ PDF khi đang xem; `SELF_REVIEW_SYSTEM` prompt; `export_self_review_excel()` + `export_report_pdf()` trong `report_service.py`
+- [x] **AI Help Panel** — nút `?` nổi chụp vùng nội dung bằng `html2canvas`, gửi qua backend `/api/help/vision` tới Vision OpenAI-compatible nếu cấu hình `VISION_*`; chưa cấu hình thì hiển thị hướng dẫn fallback theo route; drawer desktop + bottom sheet mobile.
 
 ## Known Issues & TODO
 <!-- Cập nhật liên tục — KHÔNG xóa mục đã fix, đổi sang [x] -->

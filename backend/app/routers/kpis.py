@@ -444,6 +444,7 @@ def confirm_kpi_proposal(
     if not payload.kpis and not payload.weight_changes and not payload.objectives:
         raise HTTPException(400, "Đề xuất trống")
     try:
+        touched_objective_ids: set[int | None] = set()
         # 1) Tao cac Objective MOI truoc (dung thu tu: muc tieu co truoc, KPI gan vao sau)
         new_obj_by_name: dict[str, models.Objective] = {}
         if payload.objectives:
@@ -480,6 +481,7 @@ def confirm_kpi_proposal(
             if not kpi or kpi.archived or kpi.user_id != current_user.id:
                 raise HTTPException(404, f"Không tìm thấy KPI #{wc.kpi_id} để điều chỉnh trọng số")
             if kpi.weight != wc.new_weight:
+                touched_objective_ids.add(kpi.objective_id)
                 db.add(
                     models.KPIChangeLog(
                         kpi_id=kpi.id, field="weight",
@@ -506,6 +508,7 @@ def confirm_kpi_proposal(
                 obj = db.get(models.Objective, objective_id)
                 if not obj or obj.user_id != current_user.id:
                     raise HTTPException(404, f"Không tìm thấy mục tiêu #{objective_id}")
+            touched_objective_ids.add(objective_id)
             kpi = models.KPI(
                 user_id=current_user.id, name=p.name, description=p.description, target=p.target,
                 unit=p.unit or "%", target_value=p.target_value or 100.0,
@@ -516,7 +519,8 @@ def confirm_kpi_proposal(
             created.append(kpi)
         db.flush()
 
-        # kiem tra tong trong so tung nhom sau khi ap het thay doi
+        # Kiem tra tong trong so cac nhom bi tac dong sau khi ap het thay doi.
+        # Khong chan giao dich moi chi vi mot nhom cu, khong lien quan, da vuot 100% tu truoc.
         groups: dict[int | None, float] = {}
         for k in db.scalars(
             select(models.KPI).where(
@@ -524,6 +528,8 @@ def confirm_kpi_proposal(
                 models.KPI.archived == False,  # noqa: E712
             )
         ):
+            if k.objective_id not in touched_objective_ids:
+                continue
             groups[k.objective_id] = groups.get(k.objective_id, 0.0) + k.weight
         for obj_id, total in groups.items():
             if total > 100.001:
@@ -1004,10 +1010,13 @@ def confirm_delete(payload: schemas.ConfirmDeleteRequest, current_user: CurrentU
         ).all()
         for kpi in kpis:
             kpi.archived = True
+            log_reason = f"Lưu trữ theo mục tiêu đã xóa: {obj.name}"
+            if reason:
+                log_reason += f" — {reason}"
             db.add(
                 models.KPIChangeLog(
                     kpi_id=kpi.id, field="archived", old_value="False", new_value="True",
-                    reason=f"Lưu trữ theo mục tiêu đã xóa: {obj.name}"
+                    reason=log_reason
                 )
             )
         # Archive the objective

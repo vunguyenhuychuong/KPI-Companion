@@ -351,9 +351,14 @@ def confirm_items(
     """Luu dau viec da xac nhan va cong tien do vao KPI tuong ung."""
     saved: list[models.WorkItem] = []
     for it in items:
+        kpi = None
+        if it.kpi_id:
+            candidate = db.get(models.KPI, it.kpi_id)
+            if candidate and candidate.user_id == user_id and not candidate.archived:
+                kpi = candidate
         wi = models.WorkItem(
             user_id=user_id,
-            kpi_id=it.kpi_id,
+            kpi_id=kpi.id if kpi else None,
             title=it.title,
             detail=it.detail,
             status=it.status if it.status in schemas.WORK_STATUSES else "da_lam",
@@ -364,11 +369,9 @@ def confirm_items(
             confirmed=True,
         )
         db.add(wi)
-        if it.kpi_id and it.value_delta:
-            kpi = db.get(models.KPI, it.kpi_id)
-            if kpi:
-                # cong vao THUC DAT theo don vi; cho phep vuot chi tieu (>100%)
-                kpi.current_value = max(0.0, round(kpi.current_value + it.value_delta, 2))
+        if kpi and it.value_delta:
+            # cong vao THUC DAT theo don vi; cho phep vuot chi tieu (>100%)
+            kpi.current_value = max(0.0, round(kpi.current_value + it.value_delta, 2))
         saved.append(wi)
     db.commit()
     return saved

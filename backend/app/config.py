@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     outlook_client_id: str = ""
     outlook_client_secret: str = ""
 
+    # Vision Help Panel — OpenAI-compatible vision endpoint.
+    # De trong vision_api_key -> UI van hien huong dan fallback, khong goi AI.
+    vision_base_url: str = ""
+    vision_api_key: str = ""
+    vision_model: str = ""
+
     # Email (SMTP) — dùng để gửi email thật qua Gmail
     # App Password: lấy từ https://myaccount.google.com/apppasswords
     smtp_email: str = ""
