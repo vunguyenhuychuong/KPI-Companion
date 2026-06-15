@@ -169,22 +169,22 @@ def _dec(value: str) -> str:
 
 # ---- state (chong CSRF + mang user_id qua redirect, khong can luu DB) ----
 
-def _make_state(user_id: int, provider: str) -> str:
+def _make_state(user_id: int, provider: str, code_verifier: str = "") -> str:
     exp = datetime.utcnow() + timedelta(minutes=_STATE_TTL_MINUTES)
-    return jwt.encode(
-        {"uid": user_id, "provider": provider, "typ": "oauth_state", "exp": exp},
-        settings.jwt_secret_key, algorithm=settings.jwt_algorithm,
-    )
+    payload: dict = {"uid": user_id, "provider": provider, "typ": "oauth_state", "exp": exp}
+    if code_verifier:
+        payload["cv"] = code_verifier
+    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
-def _read_state(state: str, provider: str) -> int:
+def _read_state(state: str, provider: str) -> tuple[int, str]:
     try:
         payload = jwt.decode(state, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
     except JWTError:
         raise OAuthError("State không hợp lệ hoặc đã hết hạn. Vui lòng kết nối lại.")
     if payload.get("typ") != "oauth_state" or payload.get("provider") != provider:
         raise OAuthError("State không khớp provider.")
-    return int(payload["uid"])
+    return int(payload["uid"]), payload.get("cv", "")
 
 
 def _redirect_uri(provider: str, request_base: str = "") -> str:
@@ -211,11 +211,17 @@ def build_auth_url(provider: str, user_id: int, request_base: str = "") -> str:
     redirect_uri = _redirect_uri(provider, request_base)
 
     if provider == "google":
+        import base64, secrets as _secrets
         from google_auth_oauthlib.flow import Flow
+
+        # Sinh code_verifier tuong minh va luu vao state JWT de dung lai trong callback
+        code_verifier = base64.urlsafe_b64encode(_secrets.token_bytes(32)).decode("ascii").rstrip("=")
+        state = _make_state(user_id, provider, code_verifier=code_verifier)
 
         flow = Flow.from_client_secrets_file(
             str(settings.google_credentials_path), scopes=cfg.scopes, redirect_uri=redirect_uri
         )
+        flow.code_verifier = code_verifier
         auth_url, _ = flow.authorization_url(
             access_type="offline", include_granted_scopes="true", prompt="consent", state=state
         )
@@ -240,7 +246,7 @@ def handle_callback(
     db: Session, provider: str, code: str, state: str, request_base: str = ""
 ) -> models.UserIntegration:
     cfg = get_provider(provider)
-    user_id = _read_state(state, provider)
+    user_id, code_verifier = _read_state(state, provider)
     redirect_uri = _redirect_uri(provider, request_base)
 
     if provider == "google":
@@ -250,6 +256,8 @@ def handle_callback(
         flow = Flow.from_client_secrets_file(
             str(settings.google_credentials_path), scopes=cfg.scopes, redirect_uri=redirect_uri
         )
+        if code_verifier:
+            flow.code_verifier = code_verifier
         flow.fetch_token(code=code)
         creds = flow.credentials
         try:
@@ -396,6 +404,7 @@ def get_credentials(db: Session, user_id: int, provider: str = "google"):
         token_uri=node.get("token_uri", "https://oauth2.googleapis.com/token"),
         client_id=node["client_id"], client_secret=node.get("client_secret"),
         scopes=row.scopes.split() if row.scopes else None,
+        expiry=row.token_expiry,  # offset-naive UTC, google-auth so sanh voi utcnow()
     )
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())

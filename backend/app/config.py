@@ -54,6 +54,8 @@ class Settings(BaseSettings):
 
     # Google: mock mode khi chua co OAuth credentials
     google_mock_mode: bool = True
+    google_sheet_id: str = ""
+    google_sheet_range: str = "A2:D200"
     google_credentials_file: str = "credentials.json"
     google_token_file: str = "token.json"
 

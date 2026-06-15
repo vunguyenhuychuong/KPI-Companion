@@ -4,6 +4,7 @@ Dung LangChain (ChatOpenAI + LCEL) voi Qwen qua endpoint OpenAI-compatible.
 Khong dua vao native function-calling de tuong thich moi endpoint Qwen
 (DashScope / OpenRouter / vLLM noi bo) — thay vao do dung structured JSON output.
 """
+import re
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -11,13 +12,117 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..connectors import fetch_activities
+from ..connectors.sheets_conn import read_sheet_raw
 from ..services import kpi_service, oauth_service
 from . import memory, prompts
 from .llm import call_json, call_text
 
+# Trích sheet ID và gid từ Google Sheets URL
+_SHEET_ID_RE = re.compile(r"docs\.google\.com/spreadsheets/d/([A-Za-z0-9_-]+)")
+_SHEET_GID_RE = re.compile(r"[?&#]gid=(\d+)")
+
 
 def _today() -> str:
     return date.today().isoformat()
+
+
+_GOOGLE_SOURCE_KEYWORDS: dict[str, list[str]] = {
+    "calendar": [
+        "lịch", "lich", "calendar", "cuộc họp", "cuoc hop", "meeting",
+        "sự kiện", "su kien", "event", "lịch họp", "họp hôm", "họp tuần",
+        "hôm nay có", "hôm qua có", "schedule",
+    ],
+    "gmail": [
+        "email", "gmail", "thư", "mail", "inbox", "hộp thư", "hop thu",
+        "tin nhắn email", "nhận được", "nhan duoc", "gửi cho tôi",
+        "gửi mail", "có mail", "đọc mail", "unread",
+    ],
+    "sheets": [
+        "timesheet", "google sheets", "google sheet", "spreadsheet",
+        "sheets", "sheet của", "xem sheet", "đọc sheet", "doc sheet",
+        "bảng tính", "bang tinh", "log công việc", "ghi công",
+        "công việc đã log", "log giờ", "lịch làm việc", "lich lam viec",
+    ],
+}
+
+
+def _google_sources_for_query(text: str) -> list[str]:
+    """Trả về list Google sources phù hợp dựa trên keywords trong câu hỏi."""
+    text_lower = text.lower()
+    sources = [src for src, kws in _GOOGLE_SOURCE_KEYWORDS.items() if any(kw in text_lower for kw in kws)]
+    # URL Google Sheets trong tin nhắn -> thêm "sheets" nếu chưa có
+    if _SHEET_ID_RE.search(text) and "sheets" not in sources:
+        sources.append("sheets")
+    return sources
+
+
+def _extract_gsheets_from_text(text: str) -> list[tuple[str, str | None]]:
+    """Trích (sheet_id, gid?) từ Google Sheets URLs trong text. Giữ thứ tự, loại trùng.
+
+    Dùng finditer theo vị trí để match đúng gid với từng sheet ID.
+    """
+    seen: set[str] = set()
+    result: list[tuple[str, str | None]] = []
+    for m in _SHEET_ID_RE.finditer(text):
+        sid = m.group(1)
+        if sid in seen:
+            continue
+        seen.add(sid)
+        # Tìm gid trong ~200 ký tự ngay sau sheet ID (trước URL tiếp theo)
+        segment = text[m.end(): m.end() + 200]
+        gid_m = _SHEET_GID_RE.search(segment)
+        gid = gid_m.group(1) if gid_m else None
+        result.append((sid, gid))
+    return result
+
+
+def _date_range_for_query(text: str) -> tuple[date, date]:
+    """Suy ra date range từ câu hỏi. Default: tuần trước + 2 tuần tới (phù hợp lịch họp)."""
+    today = date.today()
+    t = text.lower()
+
+    # "tháng này" / "this month" / "tháng <số>"
+    month_names = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 4, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+    }
+    if "tháng này" in t or "this month" in t or f"tháng {today.month}" in t:
+        y, m = today.year, today.month
+        end_month = date(y, m + 1, 1) - timedelta(days=1) if m < 12 else date(y, 12, 31)
+        return date(y, m, 1), end_month
+
+    # "tháng trước" / "last month"
+    if "tháng trước" in t or "last month" in t:
+        first_this = today.replace(day=1)
+        end_prev = first_this - timedelta(days=1)
+        return end_prev.replace(day=1), end_prev
+
+    # "tuần này" / "this week"
+    if "tuần này" in t or "this week" in t or "tuần hiện tại" in t:
+        start = today - timedelta(days=today.weekday())  # Monday
+        return start, start + timedelta(days=6)
+
+    # "tuần tới" / "next week"
+    if "tuần tới" in t or "tuần sau" in t or "next week" in t:
+        start = today - timedelta(days=today.weekday()) + timedelta(days=7)
+        return start, start + timedelta(days=6)
+
+    # "tuần trước" / "last week"
+    if "tuần trước" in t or "last week" in t:
+        start = today - timedelta(days=today.weekday() + 7)
+        return start, start + timedelta(days=6)
+
+    # "hôm nay" / "today"
+    if "hôm nay" in t or "today" in t or "ngày hôm nay" in t:
+        return today, today + timedelta(days=1)
+
+    # "ngày mai" / "tomorrow"
+    if "ngày mai" in t or "tomorrow" in t:
+        return today + timedelta(days=1), today + timedelta(days=1)
+
+    # default: 7 ngày trước + 14 ngày tới (bao phủ lịch họp sắp tới)
+    return today - timedelta(days=7), today + timedelta(days=14)
 
 
 VALID_INTENTS = {"update_progress", "sync_request", "create_kpi", "delete_kpi", "coaching", "question", "weekly_summary", "other"}
@@ -915,9 +1020,74 @@ def handle_message(
 
     if intent == "question":
         context = kpi_service.full_context_text(db, user_id) + user_context
+
+        # Neu user hoi ve Google data (lich/email/sheets) -> fetch va inject vao context
+        google_sources = _google_sources_for_query(text)
+        if google_sources:
+            g_start, g_end = _date_range_for_query(text)
+            try:
+                activities = fetch_activities(
+                    google_sources,
+                    g_start,
+                    g_end,
+                    db=db,
+                    user_id=user_id,
+                )
+                real = [a for a in activities if a.get("ref") != "error"]
+                errors = [a for a in activities if a.get("ref") == "error"]
+                if real:
+                    lines = [
+                        f"[{a['source'].upper()} | {a['date']}] {a['text']}"
+                        for a in real[:40]
+                    ]
+                    context += (
+                        f"\n\n--- DỮ LIỆU TỪ TÀI KHOẢN GOOGLE ({g_start} → {g_end}) ---\n"
+                        + "\n".join(lines)
+                    )
+                elif errors:
+                    context += (
+                        f"\n\n(Lỗi khi tải dữ liệu Google: {errors[0]['text']})"
+                    )
+                else:
+                    context += (
+                        f"\n\n(Đã truy vấn {', '.join(google_sources)} từ {g_start} đến {g_end}"
+                        " nhưng không có sự kiện nào trong khoảng thời gian này.)"
+                    )
+            except Exception as exc:
+                context += (
+                    f"\n\n(Không thể tải dữ liệu Google [{', '.join(google_sources)}]: {exc})"
+                )
+
+        # Đọc trực tiếp các Google Sheet URL người dùng đề cập trong tin nhắn
+        gsheet_refs = _extract_gsheets_from_text(text)
+        if gsheet_refs:
+            if oauth_service.is_connected(db, user_id, "google"):
+                for sid, gid in gsheet_refs[:2]:  # giới hạn 2 sheet
+                    try:
+                        rows = read_sheet_raw(sid, db, user_id, gid=gid)
+                        if rows:
+                            preview = "\n".join(
+                                " | ".join(cell for cell in row[:12])
+                                for row in rows[:60]
+                            )
+                            context += (
+                                f"\n\n--- NỘI DUNG GOOGLE SHEET (ID: ...{sid[-6:]}) ---\n"
+                                + preview
+                            )
+                        else:
+                            context += f"\n\n(Sheet {sid[-6:]}... trống hoặc không có dữ liệu.)"
+                    except Exception as exc:
+                        context += f"\n\n(Không thể đọc sheet {sid[-6:]}...: {exc})"
+            else:
+                context += (
+                    "\n\n(Bạn đề cập đến Google Sheet nhưng chưa kết nối Google. "
+                    "Vào Nguồn dữ liệu → Kết nối Google để đọc sheet.)"
+                )
+
+        has_google_data = bool(google_sources or gsheet_refs)
         reply = call_text(
             prompts.ANSWER_SYSTEM.format(context=context, today=_today()) + _lang_suffix(lang),
-            text, history=history, max_tokens=900,
+            text, history=history, max_tokens=1500 if has_google_data else 900,
         )
         return schemas.ChatResponse(reply=reply, intent=intent)
 

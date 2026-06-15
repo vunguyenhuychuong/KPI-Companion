@@ -4,9 +4,9 @@ from datetime import date
 from ..config import settings
 from .google_base import get_service, google_available
 
-# Cau hinh sheet timesheet khi dung API that (co the dua vao settings sau)
-SHEET_ID = ""  # dien spreadsheet ID khi dung that
-SHEET_RANGE = "A2:D200"  # cot: ngay | cong viec | trang thai | ghi chu
+# Doc tu settings / .env (GOOGLE_SHEET_ID, GOOGLE_SHEET_RANGE)
+SHEET_ID = settings.google_sheet_id
+SHEET_RANGE = settings.google_sheet_range
 
 
 def _load_mock(start: date, end: date) -> list[dict]:
@@ -42,8 +42,9 @@ def fetch_sheets(start: date, end: date, db=None, user_id=None) -> list[dict]:
         .get(spreadsheetId=SHEET_ID, range=SHEET_RANGE)
         .execute()
     )
+    all_rows = resp.get("values", [])
     out = []
-    for i, row in enumerate(resp.get("values", []), start=2):
+    for i, row in enumerate(all_rows, start=2):
         if not row:
             continue
         try:
@@ -63,4 +64,53 @@ def fetch_sheets(start: date, end: date, db=None, user_id=None) -> list[dict]:
                 "ref": f"Google Sheet dòng {i}",
             }
         )
+
+    # Fallback: nếu không có dòng nào khớp date format, trả về raw data để LLM phân tích
+    if not out and all_rows:
+        preview_rows = all_rows[:40]
+        raw_text = "\n".join(" | ".join(str(c) for c in row[:10]) for row in preview_rows)
+        out.append(
+            {
+                "source": "sheets",
+                "date": end.isoformat(),
+                "text": f"Nội dung Google Sheet (raw):\n{raw_text}",
+                "ref": "Google Sheet raw preview",
+            }
+        )
     return out
+
+
+def read_sheet_raw(
+    sheet_id: str,
+    db,
+    user_id: int,
+    gid: str | None = None,
+    sheet_range: str = "A1:Z100",
+) -> list[list[str]]:
+    """Đọc dữ liệu thô từ Google Sheet bất kỳ theo ID (không giả định cấu trúc cột).
+
+    Nếu gid được cung cấp (và != 0), lấy tên tab từ metadata rồi dùng làm prefix range.
+    """
+    service = get_service("sheets", "v4", db, user_id)
+
+    range_prefix = ""
+    if gid and gid != "0":
+        try:
+            meta = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
+            for sheet in meta.get("sheets", []):
+                props = sheet.get("properties", {})
+                if str(props.get("sheetId")) == str(gid):
+                    tab_name = props["title"]
+                    range_prefix = f"'{tab_name}'!"
+                    break
+        except Exception:
+            pass
+
+    full_range = range_prefix + sheet_range
+    resp = (
+        service.spreadsheets()
+        .values()
+        .get(spreadsheetId=sheet_id, range=full_range)
+        .execute()
+    )
+    return [[str(cell) for cell in row] for row in resp.get("values", [])]
