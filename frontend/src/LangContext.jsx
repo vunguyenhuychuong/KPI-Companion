@@ -4,7 +4,7 @@ import { translations } from './i18n'
 const LangContext = createContext(null)
 
 const WORK_STATUSES = ['da_lam', 'dang_lam', 'se_lam', 'phat_sinh', 'loai_bo']
-const SOURCES = ['chat', 'csv', 'gmail', 'calendar', 'sheets']
+const SOURCES = ['chat', 'csv', 'gmail', 'calendar', 'sheets', 'notion', 'slack', 'outlook']
 
 export function LangProvider({ children }) {
   const [lang, setLang] = useState(() => localStorage.getItem('kpi_lang') || 'vi')
@@ -15,13 +15,20 @@ export function LangProvider({ children }) {
     localStorage.setItem('kpi_lang', next)
   }
 
-  return <LangContext.Provider value={{ lang, toggleLang }}>{children}</LangContext.Provider>
+  function setLangDirect(next) {
+    if (next !== 'vi' && next !== 'en') return
+    setLang(next)
+    localStorage.setItem('kpi_lang', next)
+  }
+
+  return <LangContext.Provider value={{ lang, toggleLang, setLangDirect }}>{children}</LangContext.Provider>
 }
 
 export function useLang() {
   const ctx = useContext(LangContext)
   const lang = ctx?.lang ?? 'vi'
   const toggleLang = ctx?.toggleLang ?? (() => {})
+  const setLangDirect = ctx?.setLangDirect ?? (() => {})
 
   function tr(key, vars = {}) {
     const str = translations[lang]?.[key] ?? translations.vi?.[key] ?? key
@@ -40,5 +47,5 @@ export function useLang() {
     return Object.fromEntries(SOURCES.map(k => [k, tr('source.' + k)]))
   }
 
-  return { lang, tr, toggleLang, statusLabels, sourceLabels }
+  return { lang, tr, toggleLang, setLangDirect, statusLabels, sourceLabels }
 }

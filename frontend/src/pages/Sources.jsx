@@ -17,9 +17,17 @@ export default function Sources() {
     { key: 'gmail', label: '✉️ Gmail', descKey: 'sources.source_gmail_desc' },
     { key: 'calendar', label: '📅 Google Calendar', descKey: 'sources.source_calendar_desc' },
     { key: 'sheets', label: '📊 Google Sheets', descKey: 'sources.source_sheets_desc' },
+    { key: 'notion', label: '📝 Notion', descKey: 'sources.source_notion_desc' },
+    { key: 'slack', label: '💬 Slack', descKey: 'sources.source_slack_desc' },
+    { key: 'outlook', label: '📧 Outlook', descKey: 'sources.source_outlook_desc' },
   ]
 
   const [status, setStatus] = useState(null)
+  const [conn, setConn] = useState(null)
+  const [integrations, setIntegrations] = useState([])
+  const [connecting, setConnecting] = useState('')
+  const [oauthMsg, setOauthMsg] = useState('')
+  const [switching, setSwitching] = useState(false)
   const [selected, setSelected] = useState(['gmail', 'calendar', 'sheets'])
   const [start, setStart] = useState(lastMonday())
   const [end, setEnd] = useState(new Date().toISOString().slice(0, 10))
@@ -28,7 +36,57 @@ export default function Sources() {
   const [error, setError] = useState('')
   const fileRef = useRef(null)
 
-  useEffect(() => { api.sourcesStatus().then(setStatus).catch(() => {}) }, [])
+  const loadAll = () => {
+    api.sourcesStatus().then(setStatus).catch(() => {})
+    api.getConnectionSettings().then(setConn).catch(() => {})
+    api.listIntegrations().then(setIntegrations).catch(() => {})
+  }
+
+  useEffect(() => {
+    loadAll()
+    // Doc ket qua tra ve sau khi OAuth redirect (?connected=google | ?oauth_error=...)
+    const params = new URLSearchParams(window.location.search)
+    const connected = params.get('connected')
+    const oauthError = params.get('oauth_error')
+    if (connected) setOauthMsg(tr('integrations.success', { provider: connected }))
+    else if (oauthError) setOauthMsg(tr('integrations.error', { error: oauthError }))
+    if (connected || oauthError) {
+      // don sach query string khoi URL
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const connect = async (provider) => {
+    setConnecting(provider)
+    setError('')
+    try {
+      const { auth_url } = await api.startOAuth(provider)
+      window.location.href = auth_url  // chuyen den trang dang nhap cua provider
+    } catch (e) {
+      setError(e.message)
+      setConnecting('')
+    }
+  }
+
+  const disconnect = async (provider) => {
+    if (!window.confirm(tr('integrations.disconnect_confirm'))) return
+    try {
+      await api.disconnectIntegration(provider)
+      loadAll()
+    } catch (e) { setError(e.message) }
+  }
+
+  const switchMode = async (toMock) => {
+    setSwitching(true)
+    setError('')
+    try {
+      const res = await api.setConnectionSettings(toMock)
+      setConn(res)
+      const st = await api.sourcesStatus()
+      setStatus(st)
+    } catch (e) { setError(e.message) } finally { setSwitching(false) }
+  }
 
   const toggle = (key) =>
     setSelected((s) => (s.includes(key) ? s.filter((x) => x !== key) : [...s, key]))
@@ -65,6 +123,8 @@ export default function Sources() {
         <p>{tr('sources.subtitle')}</p>
       </header>
 
+      {oauthMsg && <div className="mode-banner real">{oauthMsg}</div>}
+
       {status && (
         <div className={`mode-banner ${status.gmail === 'mock' ? 'mock' : 'real'}`}>
           {status.gmail === 'mock'
@@ -73,8 +133,70 @@ export default function Sources() {
         </div>
       )}
 
+      {/* ---- Ket noi tai khoan (OAuth) ---- */}
+      <div className="card">
+        <h3>{tr('integrations.section')}</h3>
+        <p className="muted">{tr('integrations.desc')}</p>
+        <div className="source-list">
+          {integrations.map((it) => (
+            <div key={it.provider} className={`source-item ${it.connected ? 'on' : ''}`}>
+              <div style={{ fontSize: '1.4rem' }}>{it.icon}</div>
+              <div style={{ flex: 1 }}>
+                <div className="source-name">{it.label}</div>
+                <div className="muted">
+                  {it.connected
+                    ? tr('integrations.connected_as', { email: it.account_email || it.account_name })
+                    : tr('integrations.provides', { sources: it.sources.join(', ') })}
+                </div>
+              </div>
+              {!it.enabled ? (
+                <span className="badge mock">{tr('integrations.not_configured')}</span>
+              ) : it.connected ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className="badge real">{tr('integrations.connected')}</span>
+                  <button className="btn" onClick={() => disconnect(it.provider)}>
+                    {tr('integrations.disconnect')}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  className="btn primary"
+                  onClick={() => connect(it.provider)}
+                  disabled={connecting === it.provider}
+                >
+                  {connecting === it.provider ? tr('integrations.connecting') : tr('integrations.connect')}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
       <div className="card">
         <h3>{tr('sources.google_section')}</h3>
+
+        {conn && (
+          <div className="conn-config">
+            <div className="conn-config-head">
+              <span className="setting-label">{tr('sources.conn_mode')}</span>
+              <div className="seg">
+                <button className={`seg-btn ${conn.google_mock_mode ? 'active' : ''}`}
+                  onClick={() => !conn.google_mock_mode && switchMode(true)} disabled={switching}>
+                  {tr('sources.mode_mock')}
+                </button>
+                <button className={`seg-btn ${!conn.google_mock_mode ? 'active' : ''}`}
+                  onClick={() => conn.google_mock_mode && switchMode(false)} disabled={switching}>
+                  {tr('sources.mode_real')}
+                </button>
+              </div>
+              <span className={`badge ${conn.effective_mode}`}>
+                {conn.effective_mode === 'real' ? tr('sources.real_badge') : tr('sources.demo_badge')}
+              </span>
+            </div>
+            <p className="muted conn-note">{switching ? tr('sources.switching') : conn.note}</p>
+          </div>
+        )}
+
         <div className="source-list">
           {SOURCES.map((s) => (
             <label key={s.key} className={`source-item ${selected.includes(s.key) ? 'on' : ''}`}>

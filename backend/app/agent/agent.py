@@ -4,14 +4,15 @@ Dung LangChain (ChatOpenAI + LCEL) voi Qwen qua endpoint OpenAI-compatible.
 Khong dua vao native function-calling de tuong thich moi endpoint Qwen
 (DashScope / OpenRouter / vLLM noi bo) — thay vao do dung structured JSON output.
 """
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..connectors import fetch_activities
 from ..services import kpi_service
-from . import prompts
+from . import memory, prompts
 from .llm import call_json, call_text
 
 
@@ -19,7 +20,7 @@ def _today() -> str:
     return date.today().isoformat()
 
 
-VALID_INTENTS = {"update_progress", "sync_request", "create_kpi", "question", "other"}
+VALID_INTENTS = {"update_progress", "sync_request", "create_kpi", "delete_kpi", "coaching", "question", "weekly_summary", "other"}
 
 
 def _lang_suffix(lang: str) -> str:
@@ -41,9 +42,48 @@ def _history_block(history: list[dict] | None, max_msgs: int = 4) -> str:
     return "NGỮ CẢNH HỘI THOẠI TRƯỚC ĐÓ:\n" + "\n".join(lines) + "\n\nTIN NHẮN MỚI CỦA NGƯỜI DÙNG:\n"
 
 
+def _has_any(text: str, words: list[str]) -> bool:
+    return any(w in text for w in words)
+
+
+def _classify_intent_fast(text: str, history: list[dict] | None = None) -> str | None:
+    """Nhan dien nhanh cac intent ro rang de tranh 1 call LLM moi tin nhan."""
+    low = text.strip().lower()
+    if not low:
+        return "other"
+
+    short_ack = {"ok", "oke", "yes", "ừ", "uh", "đồng ý", "dong y", "xác nhận", "xac nhan", "lưu", "luu"}
+    if low in short_ack:
+        return None  # can lich su de hieu dang dong y voi the de xuat nao
+
+    if _has_any(low, ["mật khẩu", "mat khau", "password", "đổi mật khẩu", "doi mat khau", "quên mật khẩu", "quen mat khau", "reset mật khẩu", "reset mat khau", "đổi avatar", "doi avatar", "ảnh đại diện", "anh dai dien", "hồ sơ", "ho so", "cài đặt", "cai dat"]):
+        return "question"
+    if _has_any(low, ["weekly summary", "báo cáo tuần", "bao cao tuan", "tổng kết tuần", "tong ket tuan"]):
+        return "weekly_summary"
+    if _has_any(low, ["gmail", "calendar", "sheets", "email", "lịch", "lich", "timesheet"]) and _has_any(low, ["quét", "quet", "kéo", "keo", "đồng bộ", "dong bo", "cập nhật", "cap nhat", "sync"]):
+        return "sync_request"
+    if _has_any(low, ["xóa", "xoá", "xoa", "gỡ", "go ", "bỏ ", "bo "]) and _has_any(low, ["kpi", "objective", "mục tiêu", "muc tieu"]):
+        return "delete_kpi"
+    if _has_any(low, ["tạo", "tao", "thêm", "them", "kpi mới", "kpi moi", "mục tiêu mới", "muc tieu moi", "objective mới", "objective moi"]) and _has_any(low, ["kpi", "objective", "mục tiêu", "muc tieu", "trọng số", "trong so"]):
+        return "create_kpi"
+    if _has_any(low, ["coach", "coaching", "gỡ rối", "go roi", "nguyên nhân", "nguyen nhan", "cải thiện", "cai thien", "nên làm gì", "nen lam gi"]) and _has_any(low, ["kpi", "chậm", "cham", "trễ", "tre", "đỏ", "do "]):
+        return "coaching"
+    if _has_any(low, ["kpi nào", "kpi nao", "tiến độ", "tien do", "trạng thái", "trang thai", "đang chậm", "dang cham", "bao nhiêu", "bao nhieu", "dashboard", "báo cáo", "bao cao", "tổng quan", "tong quan"]):
+        return "question"
+    if _has_any(low, ["đã ", "da ", "đang ", "dang ", "sẽ ", "se ", "hoàn thành", "hoan thanh", "xong", "tuần này", "tuan nay", "hôm nay", "hom nay"]) and not low.endswith("?"):
+        return "update_progress"
+    if len(low) <= 20 and _has_any(low, ["xin chào", "xin chao", "hello", "hi", "chào", "chao"]):
+        return "other"
+    return None
+
+
 def classify_intent(text: str, history: list[dict] | None = None) -> str:
+    fast = _classify_intent_fast(text, history)
+    if fast:
+        return fast
     try:
-        data = call_json(prompts.INTENT_SYSTEM, _history_block(history) + text, temperature=0.0)
+        # intent chi tra {"intent": "..."} — cap token nho de phan loai nhanh (chay truoc moi cau tra loi)
+        data = call_json(prompts.INTENT_SYSTEM, _history_block(history) + text, temperature=0.0, max_tokens=24)
         intent = data.get("intent", "other")
         return intent if intent in VALID_INTENTS else "other"
     except Exception:
@@ -52,19 +92,42 @@ def classify_intent(text: str, history: list[dict] | None = None) -> str:
 
 def extract_kpi_proposal(
     db: Session, text: str, kpis: list[models.KPI], user_id: int = 1
-) -> tuple[list[schemas.ProposedKPI], list[schemas.WeightChange]]:
-    """Trich xuat de xuat tao KPI moi (+ dieu chinh trong so KPI cu) tu yeu cau chat."""
+) -> tuple[list[schemas.ProposedObjective], list[schemas.ProposedKPI], list[schemas.WeightChange]]:
+    """Trich xuat de xuat tao Objective moi + KPI moi (+ dieu chinh trong so KPI cu)."""
     objectives = kpi_service.objectives_with_progress(db, user_id)
-    obj_text = "\n".join(
-        f"- id={o.id} | {o.name} | trọng số mục tiêu {o.weight:.0f}% | {o.kpi_count} KPI"
-        for o in objectives
-    ) or "(Chưa có mục tiêu nào)"
+    total_obj_w = sum(o.weight for o in objectives)
+    obj_text = (
+        "\n".join(
+            f"- id={o.id} | {o.name} | trọng số mục tiêu {o.weight:.0f}% | {o.kpi_count} KPI"
+            for o in objectives
+        )
+        or "(Chưa có mục tiêu nào)"
+    ) + f"\n=> Tổng trọng số mục tiêu hiện có: {total_obj_w:g}% (còn trống {max(0, 100 - total_obj_w):g}%)"
     system = prompts.KPI_CREATE_SYSTEM.format(
         objectives=obj_text, kpi_list=kpi_service.kpi_list_text(kpis), today=_today()
     )
     data = call_json(system, text)
     kpi_by_id = {k.id: k for k in kpis}
     obj_by_id = {o.id: o for o in objectives}
+    existing_names = {o.name.strip().lower(): o for o in objectives}
+
+    # muc tieu MOI Agent de xuat tao (truoc khi gan KPI vao)
+    new_objs: list[schemas.ProposedObjective] = []
+    new_obj_names: dict[str, str] = {}  # lower -> ten chuan
+    for r in data.get("new_objectives", []) or []:
+        if not isinstance(r, dict) or not str(r.get("name", "")).strip():
+            continue
+        name = str(r["name"]).strip()[:300]
+        if name.lower() in existing_names or name.lower() in new_obj_names:
+            continue  # trung ten muc tieu da co -> KPI se gan qua objective_id
+        try:
+            w = max(0.0, min(100.0, float(r.get("weight") or 0)))
+        except (TypeError, ValueError):
+            w = 0.0
+        new_objs.append(
+            schemas.ProposedObjective(name=name, description=str(r.get("description") or ""), weight=w)
+        )
+        new_obj_names[name.lower()] = name
 
     proposed: list[schemas.ProposedKPI] = []
     for r in data.get("kpis", []):
@@ -72,6 +135,11 @@ def extract_kpi_proposal(
             continue
         obj_id = r.get("objective_id")
         obj_id = obj_id if isinstance(obj_id, int) and obj_id in obj_by_id else None
+        # KPI thuoc muc tieu MOI -> tham chieu qua ten (objective_ref)
+        ref_raw = str(r.get("objective_name") or "").strip().lower()
+        obj_ref = new_obj_names.get(ref_raw)
+        if obj_ref is None and ref_raw and ref_raw in existing_names:
+            obj_id = obj_id or existing_names[ref_raw].id  # LLM ghi ten muc tieu cu vao objective_name
         dl = None
         if r.get("deadline"):
             try:
@@ -93,9 +161,14 @@ def extract_kpi_proposal(
                 unit=str(r.get("unit") or "%")[:50],
                 target_value=max(0.001, _num("target_value", 100.0)),
                 weight=max(0.0, min(100.0, _num("weight", 0.0))),
+                category=schemas._normalize_category(r.get("category")),
                 deadline=dl,
-                objective_id=obj_id,
-                objective_name=obj_by_id[obj_id].name if obj_id else None,
+                objective_id=obj_id if obj_ref is None else None,
+                objective_name=(
+                    obj_ref if obj_ref is not None
+                    else (obj_by_id[obj_id].name if obj_id else None)
+                ),
+                objective_ref=obj_ref,
             )
         )
 
@@ -116,11 +189,145 @@ def extract_kpi_proposal(
                 old_weight=kpi_by_id[kid].weight, new_weight=nw,
             )
         )
-    return proposed, changes
+    return new_objs, proposed, changes
 
 
 SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 SEVERITY_LABELS = {"high": "🔴 Nghiêm trọng", "medium": "🟠 Đáng kể", "low": "🟡 Lưu ý"}
+
+
+def extract_delete_request(
+    text: str, objectives: list, kpis: list
+) -> dict:
+    """Trich xuat yeu cau xoa KPI/Objective tu tin nhan nguoi dung."""
+    obj_text = "\n".join(
+        f"- id={o.id} | {o.name} | trọng số {o.weight:.0f}%"
+        for o in objectives
+    ) or "(Chưa có mục tiêu nào)"
+    kpi_text = "\n".join(
+        f"- id={k.id} | {k.name} | {k.unit}"
+        for k in kpis
+    ) or "(Chưa có KPI nào)"
+
+    system = prompts.DELETE_EXTRACT_SYSTEM.format(
+        objectives=obj_text, kpis=kpi_text
+    )
+    data = call_json(system, text, temperature=0.0)
+
+    target_type = data.get("target_type")
+    if target_type not in {"kpi", "objective"}:
+        target_type = "kpi"
+    target_name = str(data.get("target_name") or "")
+    # id do LLM tra ve phai ton tai that trong du lieu; neu sai -> thu khop theo ten
+    pool = objectives if target_type == "objective" else kpis
+    target_id = data.get("target_id")
+    if not (isinstance(target_id, int) and any(p.id == target_id for p in pool)):
+        match = next(
+            (p for p in pool if p.name.strip().lower() == target_name.strip().lower()),
+            None,
+        ) if target_name.strip() else None
+        target_id = match.id if match else None
+
+    return {
+        "target_type": target_type,
+        "target_id": target_id,
+        "target_name": target_name,
+        "reason": str(data.get("reason") or ""),
+    }
+
+
+def coach_kpi(
+    db: Session, kpi: models.KPI, user_id: int = 1, lang: str = "vi"
+) -> tuple[str, list[schemas.RootCause], list[schemas.ProposedWorkItem]]:
+    """Phan tich nguyen nhan goc re (RCA) + de xuat viec khac phuc cho mot KPI dang cham.
+
+    Tra ve (analysis, root_causes, proposed_items). Toan bo van ban do LLM sinh.
+    Viec khac phuc tra ve duoi dang ProposedWorkItem (se_lam, gan KPI) de tai dung
+    luong xac nhan — nguoi dung bam Xac nhan moi ghi vao ke hoach.
+    """
+    today = date.today()
+    health, gap = kpi_service.health_of(kpi, today)
+    exp = kpi_service.expected_progress(kpi, today)
+    obj = f', thuộc mục tiêu "{kpi.objective_name}"' if kpi.objective_name else ""
+    kpi_block = (
+        f'- Tên: "{kpi.name}"{obj}\n'
+        f"- Thực đạt: {kpi.current_value:g}/{kpi.target_value:g} {kpi.unit} = {kpi.progress:.0f}%\n"
+        f"- Kỳ vọng theo kế hoạch tới hôm nay: {exp:.0f}% (đang lệch {gap:+.0f}%, trạng thái {health})\n"
+        f"- Deadline: {kpi.deadline or f'{kpi.year}-12-31'}\n"
+        f"- Mô tả/chỉ tiêu: {kpi.target or kpi.description or 'n/a'}"
+    )
+    items = list(
+        db.scalars(
+            select(models.WorkItem)
+            .where(models.WorkItem.kpi_id == kpi.id, models.WorkItem.confirmed == True)  # noqa: E712
+            .order_by(models.WorkItem.created_at.desc())
+            .limit(10)
+        )
+    )
+    recent_text = "\n".join(
+        f"- [{schemas.STATUS_LABELS.get(w.status, w.status)}] {w.title}"
+        + (f" (+{w.progress_delta:g} {kpi.unit})" if w.progress_delta else "")
+        + (f" — ngày {w.work_date}" if w.work_date else "")
+        for w in items
+    ) or "(Chưa có đầu việc nào gắn KPI này)"
+
+    mem = memory.memories_text(db, user_id)
+    mem_block = f"\n\nGHI NHỚ VỀ NGƯỜI DÙNG:\n{mem}" if mem else ""
+
+    data = call_json(
+        prompts.COACH_SYSTEM.format(
+            kpi_block=kpi_block, recent_items=recent_text, today=_today(), memories=mem_block
+        ) + _lang_suffix(lang),
+        "Hãy phân tích nguyên nhân và đề xuất cách khắc phục KPI này.",
+    )
+    analysis = str(data.get("analysis") or "")
+    root_causes: list[schemas.RootCause] = []
+    for r in data.get("root_causes", []) or []:
+        if isinstance(r, dict) and str(r.get("cause", "")).strip():
+            root_causes.append(
+                schemas.RootCause(cause=str(r["cause"]), question=str(r.get("question") or ""))
+            )
+    proposed: list[schemas.ProposedWorkItem] = []
+    for r in data.get("actions", []) or []:
+        if not isinstance(r, dict) or not str(r.get("title", "")).strip():
+            continue
+        try:
+            delta = float(r.get("value_delta") or 0)
+        except (TypeError, ValueError):
+            delta = 0.0
+        proposed.append(
+            schemas.ProposedWorkItem(
+                title=str(r["title"])[:500], detail=str(r.get("detail") or ""),
+                status="se_lam", kpi_id=kpi.id, kpi_name=kpi.name, kpi_unit=kpi.unit,
+                value_delta=delta, source="chat",
+            )
+        )
+    return analysis, root_causes, proposed
+
+
+def _match_kpi(text: str, kpis: list[models.KPI]) -> models.KPI | None:
+    """Tim KPI nguoi dung nhac toi trong text (khop ten dai nhat)."""
+    low = text.lower()
+    best: models.KPI | None = None
+    for k in kpis:
+        if k.name and k.name.lower() in low and (best is None or len(k.name) > len(best.name)):
+            best = k
+    return best
+
+
+def _causes_block(causes: list[schemas.RootCause], lang: str = "vi") -> str:
+    """Render khoi nguyen nhan goc re vao cau tra loi chat (nhan UI; noi dung do LLM sinh)."""
+    if not causes:
+        return ""
+    vi = lang != "en"
+    head = (
+        "\n\n**Một số nguyên nhân có thể (cùng kiểm chứng):**" if vi
+        else "\n\n**Possible root causes (let's verify together):**"
+    )
+    lines = [head]
+    for c in causes:
+        lines.append(f"- {c.cause}" + (f" — *{c.question}*" if c.question else ""))
+    return "\n".join(lines)
 
 
 def detect_conflicts(
@@ -185,22 +392,36 @@ def _conflict_block(conflicts: list[schemas.KPIConflict]) -> str:
 
 
 def _kpi_proposal_reply(
-    proposed: list[schemas.ProposedKPI], changes: list[schemas.WeightChange], lang: str = "vi"
+    proposed: list[schemas.ProposedKPI],
+    changes: list[schemas.WeightChange],
+    lang: str = "vi",
+    new_objectives: list[schemas.ProposedObjective] | None = None,
 ) -> str:
     vi = lang != "en"
-    if not proposed:
+    if not proposed and not new_objectives:
         return (
             "Tôi chưa trích xuất được KPI nào từ yêu cầu này. Bạn mô tả rõ hơn giúp tôi nhé — "
-            "ví dụ: *\"Tạo KPI hoàn thành 3 khóa đào tạo nội bộ trong năm, trọng số 30%, "
-            "thuộc mục tiêu Phát triển năng lực cá nhân\"*."
+            "ví dụ: *\"Tạo mục tiêu Phát triển năng lực 30%, trong đó có KPI hoàn thành 3 khóa "
+            "đào tạo nội bộ\"*."
         ) if vi else (
             "I couldn't extract any KPIs from this request. Please describe more clearly — "
-            "e.g.: *\"Create a KPI to complete 3 internal training courses this year, weight 30%, "
-            "under the Personal Development objective\"*."
+            "e.g.: *\"Create a Personal Development objective at 30%, containing a KPI to complete "
+            "3 internal training courses\"*."
         )
-    lines = [
-        f"🆕 {'Tôi đề xuất tạo' if vi else 'I propose creating'} **{len(proposed)} {'KPI mới' if vi else 'new KPIs'}**:"
-    ]
+    lines = []
+    if new_objectives:
+        lines.append(
+            f"🏁 {'Tôi đề xuất tạo' if vi else 'I propose creating'} **{len(new_objectives)} "
+            f"{'mục tiêu (Objective) mới' if vi else 'new objective(s)'}**:"
+        )
+        for o in new_objectives:
+            lines.append(f"- **{o.name}** — {'trọng số' if vi else 'weight'} {o.weight:g}%")
+        lines.append("")
+    if proposed:
+        lines.append(
+            f"🆕 {'Kèm' if vi and new_objectives else ('Tôi đề xuất tạo' if vi else 'I propose creating')} "
+            f"**{len(proposed)} {'KPI mới' if vi else 'new KPIs'}**:"
+        )
     for p in proposed:
         if vi:
             obj = f" → mục tiêu *{p.objective_name}*" if p.objective_name else " → ⚠️ chưa gắn mục tiêu"
@@ -235,11 +456,16 @@ def extract_work_items(
     source: str = "chat",
     activities: list[dict] | None = None,
     history: list[dict] | None = None,
+    memories: str = "",
 ) -> list[schemas.ProposedWorkItem]:
     """Tach van ban (hoac danh sach hoat dong tu nguon ngoai) thanh dau viec co cau truc."""
     system = prompts.EXTRACT_SYSTEM.format(
         kpi_list=kpi_service.kpi_list_text(kpis), today=_today()
     )
+    if memories:
+        system += (
+            "\n\nGHI NHỚ VỀ NGƯỜI DÙNG (cách gọi tắt, quy ước — dùng để gán đúng KPI):\n" + memories
+        )
     if activities is None and history:
         text = _history_block(history) + text
     if activities is not None:
@@ -313,7 +539,7 @@ def extract_work_items(
 
 
 def parse_sync_command(text: str) -> tuple[list[str], date | None, date | None]:
-    data = call_json(prompts.SYNC_PARSE_SYSTEM.format(today=_today()), text, temperature=0.0)
+    data = call_json(prompts.SYNC_PARSE_SYSTEM.format(today=_today()), text, temperature=0.0, max_tokens=120)
     sources = [s for s in data.get("sources", []) if s in {"gmail", "calendar", "sheets"}]
     if not sources:
         sources = ["gmail", "calendar", "sheets"]
@@ -387,22 +613,146 @@ def _proposal_reply(items: list[schemas.ProposedWorkItem], from_sync: bool = Fal
     return "\n".join(lines)
 
 
+def _user_profile_context(db: Session, user_id: int, lang: str = "vi") -> str:
+    """Thong tin ho so/cai dat an toan de Agent co the ho tro ngoai KPI."""
+    user = db.get(models.User, user_id)
+    if not user:
+        return ""
+    has_avatar = bool(user.picture)
+    if lang == "en":
+        return (
+            "\n\n## USER PROFILE AND APP SETTINGS CONTEXT:\n"
+            f"- Display name: {user.name or '(not set)'}\n"
+            f"- Email: {user.email or '(not set)'}\n"
+            f"- Role/job title: {user.role or '(not set)'}\n"
+            f"- Avatar: {'configured' if has_avatar else 'not configured'}\n"
+            f"- Onboarding: {'completed' if user.onboarding_completed else 'not completed'}\n"
+            "- Profile settings are available in Settings > Account: display name, role, avatar URL/upload, and password.\n"
+            "- Change password: Settings > Account > Password, enter current password, new password, confirmation, then Save password. Password must be 6-100 characters.\n"
+            "- Forgot password: use Login > Forgot password; demo mode returns a reset URL/token if SMTP is not configured.\n"
+            "- Change avatar: Settings > Account > Profile, paste an image URL or upload JPG/PNG/WebP/GIF up to 2MB, then save.\n"
+            "- Other settings: theme, language, Auto Coach, export defaults, manager recipient, email notifications, and Google mock/real connection mode.\n"
+            "- Never reveal or ask for secrets. Do not claim settings were changed unless the user actually used the UI/API."
+        )
+    return (
+        "\n\n## NGU CANH HO SO VA CAI DAT NGUOI DUNG:\n"
+        f"- Ten hien thi: {user.name or '(chua dat)'}\n"
+        f"- Email: {user.email or '(chua dat)'}\n"
+        f"- Vai tro/vi tri: {user.role or '(chua dat)'}\n"
+        f"- Anh dai dien: {'da cau hinh' if has_avatar else 'chua cau hinh'}\n"
+        f"- Onboarding: {'da hoan thanh' if user.onboarding_completed else 'chua hoan thanh'}\n"
+        "- Ho so nam o Cai dat > Tai khoan: ten hien thi, vai tro, URL anh dai dien/upload avatar, va mat khau.\n"
+        "- Doi mat khau: vao Cai dat > Tai khoan > Mat khau, nhap mat khau hien tai, mat khau moi, xac nhan, roi bam Luu mat khau. Mat khau dai 6-100 ky tu.\n"
+        "- Quen mat khau: dung Login > Quen mat khau; che do demo tra reset URL/token neu SMTP chua cau hinh.\n"
+        "- Doi avatar: vao Cai dat > Tai khoan > Ho so, dan URL anh hoac upload JPG/PNG/WebP/GIF toi da 2MB, roi luu.\n"
+        "- Cai dat khac: theme, ngon ngu, Auto Coach, mac dinh export, nguoi nhan quan ly, thong bao email, va che do Google mock/real.\n"
+        "- Khong hoi/lo secret. Khong noi da doi cai dat neu nguoi dung chua thao tac tren UI/API."
+    )
+
+
+def _account_help_reply(text: str, db: Session, user_id: int, lang: str = "vi") -> str | None:
+    """Tra loi nhanh cac cau hoi huong dan tai khoan/cai dat, khong can LLM."""
+    low = text.lower()
+    user = db.get(models.User, user_id)
+    if not _has_any(low, ["mật khẩu", "mat khau", "password", "avatar", "ảnh đại diện", "anh dai dien", "hồ sơ", "ho so", "profile", "cài đặt", "cai dat", "settings"]):
+        return None
+    password_terms = ["mật khẩu", "mat khau", "password"]
+    avatar_terms = ["avatar", "ảnh đại diện", "anh dai dien"]
+    profile_terms = ["hồ sơ", "ho so", "profile", "cài đặt", "cai dat", "settings"]
+    change_terms = ["đổi", "doi", "thay", "cập nhật", "cap nhat", "sửa", "sua", "reset", "quên", "quen", "hướng dẫn", "huong dan", "ở đâu", "o dau", "how", "where"]
+    secret_value_terms = ["là gì", "la gi", "xem", "hiển thị", "hien thi", "show", "cho tôi biết", "cho toi biet", "nói cho", "noi cho", "what is"]
+
+    if lang == "en":
+        if _has_any(low, password_terms) and _has_any(low, secret_value_terms) and not _has_any(low, change_terms):
+            return (
+                "I cannot access or display your password. For security, the app stores only a hashed password, "
+                "and the AI assistant is not allowed to read or reveal secrets.\n\n"
+                "If you know your current password, change it in **Settings > Account > Password**. "
+                "If you forgot it, use **Login > Forgot password** to reset it."
+            )
+        who = f" I can see your profile is **{user.name}**, role: **{user.role or 'not set'}**." if user else ""
+        if _has_any(low, password_terms) and _has_any(low, ["forgot", "quên", "quen"]):
+            return (
+                "If you forgot your password, use **Login > Forgot password** to request a reset link/token. "
+                "The assistant cannot recover or show the old password because the app only stores a hash."
+            )
+        if _has_any(low, password_terms) and _has_any(low, change_terms):
+            return (
+                f"You can change it in **Settings > Account > Password**.{who}\n\n"
+                "Enter your current password, type the new password twice, then click **Save password**. "
+                "The new password must be 6-100 characters and cannot match the current one. "
+                "If you forgot it, use **Login > Forgot password**."
+            )
+        if _has_any(low, avatar_terms) and _has_any(low, change_terms):
+            return (
+                f"Go to **Settings > Account > Profile**.{who}\n\n"
+                "You can paste an image URL or upload a JPG/PNG/WebP/GIF file up to 2MB, then save the profile."
+            )
+        if not _has_any(low, profile_terms) or not _has_any(low, change_terms):
+            return None
+        return (
+            f"Your account settings are in **Settings > Account**.{who}\n\n"
+            "There you can update display name, role, avatar, and password. Theme, language, Auto Coach, export defaults, notifications, and data connections are also on the Settings page."
+        )
+
+    if _has_any(low, password_terms) and _has_any(low, secret_value_terms) and not _has_any(low, change_terms):
+        return (
+            "Tôi không thể truy cập hoặc hiển thị mật khẩu của bạn. Vì lý do bảo mật, hệ thống chỉ lưu mật khẩu ở dạng băm, "
+            "và trợ lý AI không được phép đọc hay tiết lộ dữ liệu secret.\n\n"
+            "Nếu bạn còn nhớ mật khẩu hiện tại, hãy đổi tại **Cài đặt > Tài khoản > Mật khẩu**. "
+            "Nếu bạn quên mật khẩu, dùng **Đăng nhập > Quên mật khẩu** để đặt lại."
+        )
+    who = f" Tôi đang nhận diện hồ sơ của bạn là **{user.name}**, vai trò: **{user.role or 'chưa đặt'}**." if user else ""
+    if _has_any(low, password_terms) and _has_any(low, ["quên", "quen", "forgot"]):
+        return (
+            "Nếu bạn quên mật khẩu, hãy dùng **Đăng nhập > Quên mật khẩu** để nhận link/token đặt lại. "
+            "Tôi không thể khôi phục hoặc hiển thị mật khẩu cũ vì hệ thống chỉ lưu mật khẩu ở dạng băm."
+        )
+    if _has_any(low, password_terms) and _has_any(low, change_terms):
+        return (
+            f"Bạn đổi mật khẩu ở **Cài đặt > Tài khoản > Mật khẩu**.{who}\n\n"
+            "Nhập mật khẩu hiện tại, nhập mật khẩu mới hai lần, rồi bấm **Lưu mật khẩu**. "
+            "Mật khẩu mới cần dài 6-100 ký tự và không được trùng mật khẩu hiện tại. "
+            "Nếu quên mật khẩu, dùng **Đăng nhập > Quên mật khẩu** để nhận link/token đặt lại."
+        )
+    if _has_any(low, avatar_terms) and _has_any(low, change_terms):
+        return (
+            f"Bạn đổi ảnh đại diện ở **Cài đặt > Tài khoản > Hồ sơ**.{who}\n\n"
+            "Có thể dán URL ảnh hoặc upload file JPG/PNG/WebP/GIF tối đa 2MB, sau đó bấm **Lưu hồ sơ**."
+        )
+    if not _has_any(low, profile_terms) or not _has_any(low, change_terms):
+        return None
+    return (
+        f"Bạn chỉnh thông tin cá nhân ở **Cài đặt > Tài khoản**.{who}\n\n"
+        "Ở đó có tên hiển thị, vai trò, ảnh đại diện và mật khẩu. Các mục theme, ngôn ngữ, Auto Coach, export mặc định, thông báo email và kết nối dữ liệu cũng nằm trong trang Cài đặt."
+    )
+
+
 def handle_message(
     db: Session, text: str, user_id: int = 1, history: list[dict] | None = None, lang: str = "vi"
 ) -> schemas.ChatResponse:
     """Diem vao chinh cua Agent cho moi tin nhan chat. history giup hieu cau hoi noi tiep."""
     kpis = kpi_service.get_active_kpis(db, user_id)
     intent = classify_intent(text, history)
+    profile_context = _user_profile_context(db, user_id, lang)
+
+    # khoi ghi nho Agent da tu hoc — giup hieu cach goi tat, vai tro, thoi quen nguoi dung
+    mem = memory.memories_text(db, user_id)
+    mem_block = (
+        f"\n\n## GHI NHỚ VỀ NGƯỜI DÙNG (Agent đã tự học từ các hội thoại trước — dùng để hiểu cách gọi tắt, bối cảnh):\n{mem}"
+        if mem else ""
+    )
+    user_context = profile_context + mem_block
 
     if intent == "update_progress":
-        items = extract_work_items(text, kpis, source="chat", history=history)
+        items = extract_work_items(text, kpis, source="chat", history=history, memories=mem)
         return schemas.ChatResponse(
             reply=_proposal_reply(items, lang=lang), intent=intent, proposed_items=items
         )
 
     if intent == "sync_request":
         sources, start, end = parse_sync_command(text)
-        activities = fetch_activities(sources, start, end)
+        activities = fetch_activities(sources, start, end, db=db, user_id=user_id)
         if not activities:
             no_act = (
                 f"Tôi đã quét {', '.join(sources)} trong khoảng {start} → {end} nhưng không tìm thấy hoạt động nào."
@@ -419,7 +769,9 @@ def handle_message(
         return schemas.ChatResponse(reply=reply, intent=intent, proposed_items=items)
 
     if intent == "create_kpi":
-        proposed, changes = extract_kpi_proposal(db, _history_block(history) + text, kpis, user_id)
+        new_objs, proposed, changes = extract_kpi_proposal(
+            db, _history_block(history) + text, kpis, user_id
+        )
         conflicts: list[schemas.KPIConflict] = []
         if proposed:
             try:
@@ -427,26 +779,153 @@ def handle_message(
             except Exception:
                 pass  # canh bao xung dot la tinh nang phu — khong duoc chan luong tao KPI
         return schemas.ChatResponse(
-            reply=_kpi_proposal_reply(proposed, changes, lang=lang) + _conflict_block(conflicts),
+            reply=_kpi_proposal_reply(proposed, changes, lang=lang, new_objectives=new_objs)
+            + _conflict_block(conflicts),
             intent=intent,
+            proposed_objectives=new_objs,
             proposed_kpis=proposed,
             weight_changes=changes,
             conflicts=conflicts,
         )
 
+    if intent == "delete_kpi":
+        objectives = kpi_service.objectives_with_progress(db, user_id)
+        delete_req = extract_delete_request(
+            _history_block(history) + text, objectives, kpis
+        )
+
+        target_type = delete_req["target_type"]
+        target_id = delete_req["target_id"]
+        target_name = delete_req["target_name"]
+        reason = delete_req["reason"]
+
+        # khoi du lieu that ve muc bi xoa de LLM tu soan phan hoi (khong hardcode cau tra loi)
+        if target_id is None:
+            pool_text = (
+                kpi_service.kpi_list_text(kpis)
+                if target_type == "kpi"
+                else "\n".join(f"- {o.name} (trọng số {o.weight:g}%)" for o in objectives)
+                or "(Chưa có mục tiêu nào)"
+            )
+            target_block = (
+                f"KHÔNG TÌM THẤY {'KPI' if target_type == 'kpi' else 'mục tiêu'} nào khớp với "
+                f"yêu cầu của người dùng (tên người dùng nhắc tới: \"{target_name or 'không rõ'}\").\n"
+                f"Danh sách hiện có để gợi ý tên gần giống:\n{pool_text}"
+            )
+        elif target_type == "kpi":
+            k = next(k for k in kpis if k.id == target_id)
+            target_name = k.name
+            obj = next((o for o in objectives if o.id == k.objective_id), None)
+            target_block = (
+                f"ĐÃ TÌM THẤY KPI cần xóa:\n"
+                f"- Tên: {k.name}\n"
+                f"- Tiến độ hiện tại: {k.current_value:g}/{k.target_value:g} {k.unit}\n"
+                f"- Trọng số trong nhóm: {k.weight:g}%\n"
+                f"- Thuộc mục tiêu: {obj.name if obj else '(chưa gắn mục tiêu)'}"
+                + (f"\n- Lý do người dùng đưa ra: {reason}" if reason else "")
+            )
+        else:
+            o = next(o for o in objectives if o.id == target_id)
+            target_name = o.name
+            inner = [k for k in kpis if k.objective_id == o.id]
+            inner_text = "\n".join(
+                f"  - {k.name} ({k.current_value:g}/{k.target_value:g} {k.unit}, trọng số {k.weight:g}%)"
+                for k in inner
+            ) or "  (không có KPI nào bên trong)"
+            target_block = (
+                f"ĐÃ TÌM THẤY MỤC TIÊU (Objective) cần xóa:\n"
+                f"- Tên: {o.name}\n"
+                f"- Trọng số mục tiêu: {o.weight:g}%\n"
+                f"- {len(inner)} KPI bên trong sẽ bị lưu trữ cùng:\n{inner_text}"
+                + (f"\n- Lý do người dùng đưa ra: {reason}" if reason else "")
+            )
+
+        reply = call_text(
+            prompts.DELETE_REPLY_SYSTEM.format(
+                target_block=target_block, today=_today(), memories=mem_block
+            ) + _lang_suffix(lang),
+            text, history=history,
+        )
+        return schemas.ChatResponse(
+            reply=reply,
+            intent=intent,
+            delete_proposal=schemas.DeleteProposal(
+                target_type=target_type,
+                target_id=target_id,
+                target_name=target_name,
+                reason=reason,
+            ) if target_id else None,
+        )
+
+    if intent == "coaching":
+        # tim KPI nguoi dung nhac toi; khong ro -> chon KPI tut ky vong nhat
+        target = _match_kpi(text, kpis)
+        if target is None and kpis:
+            target = min(kpis, key=lambda k: kpi_service.health_of(k)[1])
+        if target is None:
+            no_kpi = (
+                "Bạn chưa có KPI nào để tôi phân tích. Hãy tạo KPI trước nhé!"
+                if lang != "en" else
+                "You don't have any KPI yet for me to analyze. Create one first!"
+            )
+            return schemas.ChatResponse(reply=no_kpi, intent=intent)
+        analysis, causes, proposed = coach_kpi(db, target, user_id, lang)
+        return schemas.ChatResponse(
+            reply=analysis + _causes_block(causes, lang),
+            intent=intent,
+            proposed_items=proposed,
+        )
+
+    if intent == "weekly_summary":
+        # Sinh bao cao tuan va luu vao saved_reports
+        content = weekly_report(db, user_id, lang)
+        today_d = date.today()
+        start = today_d - timedelta(days=today_d.weekday())
+        end = start + timedelta(days=6)
+        period_key = start.isoformat()
+        period_label = f"Tuần {start.strftime('%d/%m')}–{end.strftime('%d/%m/%Y')}"
+        existing = db.scalars(
+            select(models.SavedReport).where(
+                models.SavedReport.user_id == user_id,
+                models.SavedReport.period_type == "week",
+                models.SavedReport.period_key == period_key,
+            )
+        ).first()
+        if existing:
+            existing.content = content
+            existing.created_at = models.utcnow()
+        else:
+            db.add(models.SavedReport(
+                user_id=user_id, period_type="week",
+                period_label=period_label, period_key=period_key, content=content,
+            ))
+        db.commit()
+        saved_note = (
+            f"\n\n---\n💾 *Đã lưu vào Báo cáo → {period_label}.*"
+            if lang != "en" else
+            f"\n\n---\n💾 *Saved to Reports → {period_label}.*"
+        )
+        return schemas.ChatResponse(reply=content + saved_note, intent="weekly_summary")
+
     if intent == "question":
-        context = kpi_service.full_context_text(db, user_id)
+        account_reply = _account_help_reply(text, db, user_id, lang)
+        if account_reply:
+            return schemas.ChatResponse(reply=account_reply, intent=intent)
+        context = kpi_service.full_context_text(db, user_id) + user_context
         reply = call_text(
             prompts.ANSWER_SYSTEM.format(context=context, today=_today()) + _lang_suffix(lang),
-            text, history=history,
+            text, history=history, max_tokens=900,
         )
         return schemas.ChatResponse(reply=reply, intent=intent)
 
     # other / chitchat
-    brief = kpi_service.kpi_list_text(kpis)
+    account_reply = _account_help_reply(text, db, user_id, lang)
+    if account_reply:
+        return schemas.ChatResponse(reply=account_reply, intent="question")
+    brief = kpi_service.kpi_list_text(kpis) + user_context
     reply = call_text(
         prompts.CHITCHAT_SYSTEM.format(context_brief=brief) + _lang_suffix(lang),
-        text, temperature=0.7, history=history,
+        text, temperature=0.7, history=history, max_tokens=500,
     )
     return schemas.ChatResponse(reply=reply, intent="other")
 
@@ -458,6 +937,15 @@ def weekly_report(db: Session, user_id: int = 1, lang: str = "vi") -> str:
         prompts.WEEKLY_REPORT_SYSTEM.format(context=context, today=_today()) + _lang_suffix(lang),
         prompt_text,
     )
+
+
+def self_review(db: Session, period_label: str, user_id: int = 1) -> str:
+    """Sinh ban tu danh gia cuoi ky bang LLM tu du lieu KPI hien tai."""
+    context = kpi_service.full_context_text(db, user_id)
+    system = prompts.SELF_REVIEW_SYSTEM.format(
+        context=context, today=_today(), period_label=period_label
+    )
+    return call_text(system, f"Viết bản tự đánh giá cho kỳ {period_label}.")
 
 
 PERIOD_NAMES = {"week": "TUẦN", "month": "THÁNG", "quarter": "QUÝ", "year": "NĂM"}

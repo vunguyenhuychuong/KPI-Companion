@@ -1,0 +1,39 @@
+# .claudeignore — Các file Claude Code KHÔNG cần đọc
+
+# Python virtual environment (chiếm ~12.500 dòng trong repo-structure)
+backend/.venv/
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyd
+
+# Node modules
+frontend/node_modules/
+
+# Build output
+frontend/dist/
+
+# Database backup
+backend/kpi_companion.backup-*.db
+
+# Git internals
+.git/
+
+# File tạm / output
+repo-structure.md
+repo-content.md
+
+# Demo data (chỉ đọc khi cần test demo — đọc thủ công)
+demo/
+
+# Backup UI
+frontend/src/pages/Dashboard_backup.jsx
+
+# Lock file (không cần đọc logic)
+frontend/package-lock.json
+
+# GitHub CI/CD (không liên quan đến dev thường ngày)
+.github/workflows/
+.github/dependabot.yml
+.github/FUNDING.yml

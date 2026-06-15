@@ -24,13 +24,36 @@ def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
-def create_access_token(user_id: int) -> str:
-    expire = datetime.utcnow() + timedelta(days=settings.jwt_expire_days)
+def _create_token(payload: dict, expire: datetime) -> str:
     return jwt.encode(
-        {"sub": str(user_id), "exp": expire},
+        {**payload, "exp": expire},
         settings.jwt_secret_key,
         algorithm=settings.jwt_algorithm,
     )
+
+
+def create_access_token(user_id: int) -> str:
+    expire = datetime.utcnow() + timedelta(days=settings.jwt_expire_days)
+    return _create_token({"sub": str(user_id), "typ": "access"}, expire)
+
+
+def create_password_reset_token(user_id: int) -> str:
+    expire = datetime.utcnow() + timedelta(minutes=30)
+    return _create_token({"sub": str(user_id), "typ": "password_reset"}, expire)
+
+
+def verify_password_reset_token(token: str) -> int:
+    try:
+        payload = jwt.decode(
+            token,
+            settings.jwt_secret_key,
+            algorithms=[settings.jwt_algorithm],
+        )
+        if payload.get("typ") != "password_reset":
+            raise ValueError("wrong token type")
+        return int(payload["sub"])
+    except (JWTError, KeyError, ValueError):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Token dat lai mat khau khong hop le hoac da het han")
 
 
 def get_current_user(

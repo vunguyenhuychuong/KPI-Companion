@@ -31,6 +31,129 @@ def _style_header(ws, row: int, n_cols: int):
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 
+APPRAISAL_BLUE = PatternFill("solid", fgColor="B8CCE4")
+RED_BOLD = Font(bold=True, color="FF0000", size=10)
+
+
+def export_appraisal_excel(db: Session, user: models.User) -> bytes:
+    """Xuat dung MAU PERFORMANCE APPRAISAL cua cong ty — import nguoc lai duoc.
+
+    Chua co KPI -> xuat template trong (giu nguyen tieu de, quy tac, header)
+    de nguoi dung dien tay hoac doi chieu.
+    """
+    kpis = kpi_service.get_active_kpis(db, user.id)
+    objectives = list(
+        db.scalars(
+            select(models.Objective).where(
+                models.Objective.user_id == user.id,
+                models.Objective.archived == False,  # noqa: E712
+            )
+        )
+    )
+    year = kpis[0].year if kpis else date.today().year
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Performance Appraisal"
+
+    # ===== Phan dau: thong tin nhan vien + quy tac =====
+    ws["A1"] = f"{year} Performance Appraisal"
+    ws["A1"].font = Font(bold=True, size=18)
+    ws["A2"] = "Mã nhân viên/Employee code"
+    ws["B2"] = ""  # nguoi dung tu dien ma nhan vien cong ty
+    ws["A3"] = "Họ tên nhân viên/Employee name"
+    ws["B3"] = user.name or ""
+    for r in (2, 3):
+        ws.cell(row=r, column=1).font = Font(bold=True)
+    ws["A4"] = (
+        "(*) Trường thông tin bắt buộc/required field\n"
+        "- Tổng tỷ trọng KPIs của mỗi Objectives phải bằng 100%/The sum of all KPIs of each Objective is 100%\n"
+        "- Tổng tỷ trọng tất cả Objectives phải bằng 100%/The sum of all objectives is 100%"
+    )
+    ws["A4"].font = RED_BOLD
+    ws["A4"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws.row_dimensions[4].height = 48
+    ws["A5"] = "Nhân viên nhận xét tổng quan (*)\nOverall Employee Comment"
+    ws["A6"] = "Nhu cầu phát triển của nhân viên (*)\nDevelopment Needs"
+    for r in (5, 6):
+        ws.cell(row=r, column=1).font = Font(bold=True)
+        ws.cell(row=r, column=1).alignment = Alignment(wrap_text=True, vertical="top")
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=6)
+        for c in range(1, 7):
+            ws.cell(row=r, column=c).border = BORDER
+        ws.row_dimensions[r].height = 32
+
+    # ===== Bang Objective / KPI =====
+    HEAD_ROW = 8
+    headers = [
+        "Objective (*)",
+        "Tỷ trọng Objective/Objective Proportion* (%)",
+        "KPI (*)",
+        "Tỷ trọng KPI/KPI Proportion* (%)",
+        "Nhân viên tự nhận xét/Employee self-assessment*",
+        "Nhân viên đánh giá/Self-KPI rating*",
+    ]
+    for c, h in enumerate(headers, 1):
+        cell = ws.cell(row=HEAD_ROW, column=c, value=h)
+        cell.fill = APPRAISAL_BLUE
+        cell.font = Font(bold=True, size=10)
+        cell.border = BORDER
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.row_dimensions[HEAD_ROW].height = 30
+
+    def kpi_row(r: int, kpi: models.KPI | None):
+        for c in range(1, 7):
+            ws.cell(row=r, column=c).border = BORDER
+            ws.cell(row=r, column=c).alignment = Alignment(vertical="top", wrap_text=True)
+        if kpi is None:
+            return
+        ws.cell(row=r, column=3, value=kpi.name)
+        ws.cell(row=r, column=4, value=kpi.weight)
+        over = " — VƯỢT CHỈ TIÊU" if kpi.progress > 100 else ""
+        note = (
+            f"{kpi.current_value:g}%" if kpi.unit == "%"
+            else f"Thực đạt {kpi.current_value:g}/{kpi.target_value:g} {kpi.unit} = {kpi.progress:.0f}%"
+        )
+        ws.cell(row=r, column=5, value=note + over)
+        # cot 6 (Self-KPI rating) de trong cho nhan vien tu cham theo thang diem cong ty
+
+    r = HEAD_ROW + 1
+    groups = [(o, [k for k in kpis if k.objective_id == o.id]) for o in objectives]
+    ungrouped = [k for k in kpis if k.objective_id is None]
+    if ungrouped:
+        groups.append((None, ungrouped))
+
+    if not kpis:
+        # Template trong: 8 dong ke san de dien tay
+        for _ in range(8):
+            kpi_row(r, None)
+            r += 1
+    else:
+        for obj, group in groups:
+            if not group:
+                continue
+            start = r
+            for k in group:
+                kpi_row(r, k)
+                r += 1
+            end = r - 1
+            if end > start:
+                ws.merge_cells(start_row=start, start_column=1, end_row=end, end_column=1)
+                ws.merge_cells(start_row=start, start_column=2, end_row=end, end_column=2)
+            ws.cell(row=start, column=1, value=obj.name if obj else "(Chưa gắn Objective)")
+            ws.cell(row=start, column=2, value=obj.weight if obj else "")
+            ws.cell(row=start, column=1).font = Font(bold=True)
+            ws.cell(row=start, column=1).alignment = Alignment(vertical="center", wrap_text=True)
+            ws.cell(row=start, column=2).alignment = Alignment(vertical="center", horizontal="center")
+
+    for i, w in enumerate([34, 16, 40, 14, 42, 16], 1):
+        ws.column_dimensions[ws.cell(row=HEAD_ROW, column=i).column_letter].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def export_evaluation_excel(db: Session, user_id: int = 1) -> bytes:
     kpis = kpi_service.get_active_kpis(db, user_id)
     today = date.today()
@@ -142,3 +265,146 @@ def export_evaluation_excel(db: Session, user_id: int = 1) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+# ===== Self-review export =====
+
+_SECTION_FILL = PatternFill("solid", fgColor="4472C4")
+_SECTION_FONT = Font(bold=True, color="FFFFFF", size=11)
+
+
+def export_self_review_excel(period_label: str, content: str) -> bytes:
+    """Xuat ban tu danh gia thanh file Excel co dinh dang dep."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Tự đánh giá"
+    ws.column_dimensions["A"].width = 3
+    ws.column_dimensions["B"].width = 90
+
+    # Tieu de chinh
+    ws.merge_cells("A1:B1")
+    c = ws["A1"]
+    c.value = f"BẢN TỰ ĐÁNH GIÁ — {period_label.upper()}"
+    c.font = Font(bold=True, size=14, color="FFFFFF")
+    c.fill = PatternFill("solid", fgColor="1F4E79")
+    c.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 30
+
+    ws.merge_cells("A2:B2")
+    c = ws["A2"]
+    c.value = f"Ngày xuất: {date.today().isoformat()}"
+    c.font = Font(italic=True, color="808080", size=10)
+    c.alignment = Alignment(horizontal="right")
+
+    row = 4
+    pending: list[str] = []
+
+    def _flush(r: int) -> int:
+        """Ghi cac dong noi dung dang cho vao sheet, tra ve row moi."""
+        for ln in pending:
+            stripped = ln.strip()
+            if not stripped:
+                continue
+            # Strip markdown bullet/bold markers
+            stripped = stripped.lstrip("- *")
+            stripped = stripped.replace("**", "").replace("*", "").replace("`", "")
+            ws[f"B{r}"] = stripped
+            ws[f"B{r}"].font = Font(size=10)
+            ws[f"B{r}"].alignment = Alignment(wrap_text=True, vertical="top")
+            ws.row_dimensions[r].height = 15
+            r += 1
+        pending.clear()
+        return r
+
+    for line in content.split("\n"):
+        if line.startswith("## ") or line.startswith("### "):
+            row = _flush(row)
+            row += 1  # khoang cach truoc section
+            header_text = line.lstrip("#").strip()
+            ws.merge_cells(f"A{row}:B{row}")
+            c = ws[f"A{row}"]
+            c.value = header_text
+            c.font = _SECTION_FONT
+            c.fill = _SECTION_FILL
+            c.alignment = Alignment(vertical="center")
+            ws.row_dimensions[row].height = 22
+            row += 1
+        else:
+            pending.append(line)
+
+    _flush(row)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _md_strip(text: str) -> str:
+    """Bỏ markdown inline (bold/italic/code/link) trả về plain text."""
+    import re
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)  # **bold**
+    text = re.sub(r"\*(.+?)\*", r"\1", text)       # *italic*
+    text = re.sub(r"`(.+?)`", r"\1", text)          # `code`
+    text = re.sub(r"\[(.+?)\]\(.+?\)", r"\1", text) # [link](url)
+    return text
+
+
+def export_report_pdf(period_label: str, content: str) -> bytes:
+    """Xuat noi dung bao cao (markdown) ra PDF co font Unicode."""
+    import re
+    from .export_service import _find_pdf_font
+    from fpdf import FPDF
+
+    reg, bold = _find_pdf_font()
+    pdf = FPDF()
+    pdf.set_auto_page_break(True, margin=15)
+    if reg:
+        pdf.add_font("Main", "", reg)
+        pdf.add_font("Main", "B", bold or reg)
+        fam = "Main"
+    else:
+        fam = "Helvetica"
+    pdf.add_page()
+    epw = pdf.w - 2 * pdf.l_margin
+
+    def _safe_cell(text: str, font_style: str = "", font_size: int = 10,
+                   line_h: float = 5, color: tuple = (0, 0, 0)):
+        """Render một đoạn text, bỏ qua dòng nếu gặp lỗi font."""
+        try:
+            pdf.set_font(fam, font_style, font_size)
+            pdf.set_text_color(*color)
+            # Lọc ký tự ngoài BMP (emoji, surrogate) để tránh lỗi fpdf2
+            safe = re.sub(r"[^ -￿]", "?", text)
+            pdf.multi_cell(epw, line_h, safe, new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(0, 0, 0)
+        except Exception:
+            pass  # bỏ qua dòng lỗi, không làm hỏng cả file
+
+    # Tieu de chinh
+    _safe_cell(f"BẢN TỰ ĐÁNH GIÁ — {period_label.upper()}", "B", 15, 9, (31, 78, 121))
+    try:
+        pdf.set_font(fam, "", 9)
+        pdf.set_text_color(130, 130, 130)
+        pdf.cell(0, 6, f"Ngày xuất: {date.today().isoformat()}", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(0, 0, 0)
+    except Exception:
+        pass
+    pdf.ln(3)
+
+    for line in content.split("\n"):
+        if line.startswith("## "):
+            pdf.ln(3)
+            _safe_cell(_md_strip(line[3:].strip()), "B", 12, 8, (31, 78, 121))
+            pdf.ln(1)
+        elif line.startswith("### "):
+            pdf.ln(1)
+            _safe_cell(_md_strip(line[4:].strip()), "B", 10, 6, (68, 114, 196))
+        elif line.startswith("- ") or line.startswith("* "):
+            _safe_cell("  • " + _md_strip(line[2:].strip()), "", 10, 5)
+        elif line.strip():
+            _safe_cell(_md_strip(line.strip()), "", 10, 5)
+        else:
+            pdf.ln(2)
+
+    out = pdf.output()
+    return bytes(out)

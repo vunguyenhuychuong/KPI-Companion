@@ -10,18 +10,29 @@ from datetime import date, datetime, timezone, timedelta
 
 from .calendar_conn import fetch_calendar
 from .gmail_conn import fetch_gmail
+from .notion_conn import fetch_notion
+from .outlook_conn import fetch_outlook
 from .sheets_conn import fetch_sheets
+from .slack_conn import fetch_slack
 
 _FETCHERS = {
     "gmail": fetch_gmail,
     "calendar": fetch_calendar,
     "sheets": fetch_sheets,
+    "notion": fetch_notion,
+    "slack": fetch_slack,
+    "outlook": fetch_outlook,
 }
 
 
 def fetch_activities(
-    sources: list[str], start: date | None = None, end: date | None = None
+    sources: list[str],
+    start: date | None = None,
+    end: date | None = None,
+    db=None,
+    user_id=None,
 ) -> list[dict]:
+    """db + user_id: de connector lay token OAuth rieng cua nguoi dung (None -> dung mock)."""
     end = end or date.today()
     start = start or (end - timedelta(days=7))
     activities: list[dict] = []
@@ -30,7 +41,7 @@ def fetch_activities(
         if not fetcher:
             continue
         try:
-            activities.extend(fetcher(start, end))
+            activities.extend(fetcher(start, end, db=db, user_id=user_id))
         except Exception as e:  # mot nguon loi khong lam hong ca dot quet
             activities.append(
                 {

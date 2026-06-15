@@ -1,18 +1,140 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { marked } from 'marked'
+import Highcharts from 'highcharts'
 import { api } from '../api'
 import { useLang } from '../LangContext'
+import { useCycle } from '../CycleContext'
+import { prefs } from '../prefs'
+import { Modal, ConfirmModal } from '../components/Modal'
+import { useToast } from '../components/Toast'
 
 function now() { return new Date() }
 
+function CycleCompareChart({ tr }) {
+  const [cycles, setCycles] = useState([])
+  const [selected, setSelected] = useState([])
+  const [compareData, setCompareData] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const chartRef = useRef(null)
+  const chartInstance = useRef(null)
+
+  useEffect(() => {
+    api.listCycles().then(setCycles).catch((e) => setError(e.message))
+  }, [])
+
+  const toggle = (id) => setSelected((prev) =>
+    prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+  )
+
+  const doCompare = async () => {
+    if (selected.length < 2) return
+    setLoading(true); setError('')
+    try {
+      const data = await api.compareCycles(selected)
+      setCompareData(data)
+    } catch (e) { setError(e.message) } finally { setLoading(false) }
+  }
+
+  // Collect all unique objective names across all selected cycles
+  const allObjectiveNames = compareData
+    ? [...new Set(compareData.flatMap((c) => c.objectives.map((o) => o.name)))]
+    : []
+
+  useEffect(() => {
+    if (!compareData || !chartRef.current) return
+    if (chartInstance.current) chartInstance.current.destroy()
+
+    const series = compareData.map((cycle) => ({
+      name: cycle.name,
+      data: allObjectiveNames.map((name) => {
+        const obj = cycle.objectives.find((o) => o.name === name)
+        return obj ? obj.progress : null
+      }),
+    }))
+
+    // Append avg_progress as an extra point
+    const avgSeries = {
+      name: tr('reports.compare_avg'),
+      type: 'spline',
+      dashStyle: 'Dash',
+      marker: { symbol: 'diamond', radius: 5 },
+      data: compareData.map((c) => ({ name: c.name, y: c.avg_progress })),
+      xAxis: 1,
+    }
+
+    const categories = allObjectiveNames
+
+    chartInstance.current = Highcharts.chart(chartRef.current, {
+      chart: { type: 'column', style: { fontFamily: 'inherit' }, backgroundColor: 'transparent' },
+      title: { text: tr('reports.compare_chart_title'), style: { color: 'var(--text)', fontSize: '14px' } },
+      xAxis: [
+        { categories, crosshair: true, labels: { style: { color: 'var(--text-muted)' } } },
+        { categories: compareData.map((c) => c.name), opposite: true, labels: { style: { color: 'var(--text-muted)' } } },
+      ],
+      yAxis: {
+        min: 0, max: 100,
+        title: { text: tr('reports.compare_y_axis'), style: { color: 'var(--text-muted)' } },
+        labels: { format: '{value}%', style: { color: 'var(--text-muted)' } },
+        plotLines: [{ value: 100, color: '#22c55e', width: 1, dashStyle: 'Dot' }],
+      },
+      tooltip: { valueSuffix: '%', shared: true },
+      plotOptions: { column: { grouping: true, pointPadding: 0.1, borderWidth: 0 } },
+      legend: { itemStyle: { color: 'var(--text)' } },
+      series: [...series, avgSeries],
+      credits: { enabled: false },
+    })
+  }, [compareData])
+
+  // Cleanup on unmount
+  useEffect(() => () => { if (chartInstance.current) chartInstance.current.destroy() }, [])
+
+  if (cycles.length === 0 && !error) return <p className="muted">{tr('reports.compare_no_cycles')}</p>
+
+  return (
+    <div>
+      {error && <div className="error-text">⚠️ {error}</div>}
+      <p className="muted" style={{ marginBottom: 8 }}>{tr('reports.compare_hint')}</p>
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>{tr('reports.compare_select_label')}</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {cycles.map((c) => (
+            <label key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', padding: '4px 10px', borderRadius: 8, border: '1px solid var(--border)', background: selected.includes(c.id) ? 'var(--primary)' : 'var(--surface)', color: selected.includes(c.id) ? '#fff' : 'var(--text)', fontSize: 13 }}>
+              <input type="checkbox" checked={selected.includes(c.id)} onChange={() => toggle(c.id)} style={{ display: 'none' }} />
+              {c.name}
+              {c.is_locked && <span style={{ fontSize: 10, opacity: 0.7 }}>🔒</span>}
+            </label>
+          ))}
+        </div>
+      </div>
+      <button className="btn primary" onClick={doCompare} disabled={selected.length < 2 || loading} style={{ marginBottom: 16 }}>
+        {loading ? tr('reports.compare_loading') : tr('reports.compare_btn')}
+      </button>
+
+      {compareData && allObjectiveNames.length === 0 && (
+        <p className="muted">{tr('reports.compare_no_objectives')}</p>
+      )}
+      {compareData && allObjectiveNames.length > 0 && (
+        <div ref={chartRef} style={{ width: '100%', minHeight: 360 }} />
+      )}
+      {!compareData && !loading && (
+        <p className="muted">{tr('reports.compare_empty')}</p>
+      )}
+    </div>
+  )
+}
+
 export default function Reports() {
   const { tr } = useLang()
+  const toast = useToast()
 
   const PERIODS = [
     { key: 'week', label: tr('reports.tab_week') },
     { key: 'month', label: tr('reports.tab_month') },
     { key: 'quarter', label: tr('reports.tab_quarter') },
     { key: 'year', label: tr('reports.tab_year') },
+    { key: 'self_review', label: tr('reports.tab_self_review') },
+    { key: 'compare', label: tr('reports.tab_compare') },
   ]
 
   const [saved, setSaved] = useState([])
@@ -26,6 +148,65 @@ export default function Reports() {
   const [viewing, setViewing] = useState(null)
   const [error, setError] = useState('')
 
+  // Modal states
+  const [showExportConfirm, setShowExportConfirm] = useState(false)
+  const [showEditModal, setShowEditModal] = useState(false)
+  const [showSendModal, setShowSendModal] = useState(false)
+  const [previewContent, setPreviewContent] = useState('')
+  const [previewSubject, setPreviewSubject] = useState('')
+
+  // Send form
+  const [mgrChannel, setMgrChannel] = useState(prefs.getMgrChannel())
+  const [mgrTo, setMgrTo] = useState(prefs.getMgrRecipient())
+  const [mgrBusy, setMgrBusy] = useState(false)
+  const [mgrResult, setMgrResult] = useState(null)
+
+  // D5: Share link
+  const [showShareModal, setShowShareModal] = useState(false)
+  const [shareLinks, setShareLinks] = useState([])
+  const [shareExpireDays, setShareExpireDays] = useState(7)
+  const [shareBusy, setShareBusy] = useState(false)
+  const [shareCopied, setShareCopied] = useState('')
+  const { activeCycleId } = useCycle()
+
+  const loadShareLinks = async () => {
+    if (!activeCycleId) return
+    try { setShareLinks(await api.listShareLinks(activeCycleId)) } catch (_) { /* ignore */ }
+  }
+
+  const createShareLink = async () => {
+    if (!activeCycleId) return
+    setShareBusy(true)
+    try {
+      await api.createShareLink(activeCycleId, shareExpireDays)
+      await loadShareLinks()
+    } catch (e) { setError(e.message) } finally { setShareBusy(false) }
+  }
+
+  const revokeShareLink = async (token) => {
+    try {
+      await api.revokeShareLink(token)
+      await loadShareLinks()
+    } catch (e) { setError(e.message) }
+  }
+
+  const copyLink = (token) => {
+    const url = `${window.location.origin}/shared/${token}`
+    navigator.clipboard.writeText(url).then(() => {
+      setShareCopied(token)
+      toast.success('Đã copy link chia sẻ')
+      setTimeout(() => setShareCopied(''), 2000)
+    })
+  }
+
+  const openShareModal = () => {
+    loadShareLinks()
+    setShowShareModal(true)
+  }
+
+  // Edit textarea ref for formatting
+  const editTextareaRef = useRef(null)
+
   const load = () => api.savedReports().then(setSaved).catch((e) => setError(e.message))
   useEffect(() => { load() }, [])
 
@@ -35,18 +216,34 @@ export default function Reports() {
     return () => clearInterval(t)
   }, [busy])
 
+  const [exportingFormat, setExportingFormat] = useState(null)
+
   const generate = async () => {
     setBusy(true)
     setError('')
     try {
-      const label = periodType === 'week' ? weekDate
-        : periodType === 'month' ? month
-        : periodType === 'quarter' ? quarter
-        : year
-      const report = await api.generateReport(periodType, label)
+      let report
+      if (periodType === 'self_review') {
+        report = await api.generateSelfReview()
+      } else {
+        const label = periodType === 'week' ? weekDate
+          : periodType === 'month' ? month
+          : periodType === 'quarter' ? quarter
+          : year
+        report = await api.generateReport(periodType, label)
+      }
       setViewing(report)
       load()
     } catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+
+  const exportReport = async (format) => {
+    if (!viewing) return
+    setExportingFormat(format)
+    setError('')
+    try {
+      await api.exportSavedReport(viewing.id, format)
+    } catch (e) { setError(e.message) } finally { setExportingFormat(null) }
   }
 
   const regenerate = async () => {
@@ -60,17 +257,105 @@ export default function Reports() {
     } catch (e) { setError(e.message) } finally { setBusy(false) }
   }
 
-  const remove = async (e, id) => {
-    e.stopPropagation()
-    if (!confirm(tr('reports.delete_confirm'))) return
-    await api.deleteReport(id)
-    if (viewing?.id === id) setViewing(null)
+  const [deleteConfirm, setDeleteConfirm] = useState(null)
+  const doDelete = async () => {
+    if (!deleteConfirm) return
+    await api.deleteReport(deleteConfirm)
+    if (viewing?.id === deleteConfirm) setViewing(null)
+    setDeleteConfirm(null)
     load()
   }
 
   const copy = () => {
     navigator.clipboard.writeText(viewing.content)
-      .then(() => alert(tr('reports.copy_success')))
+      .then(() => toast.success(tr('reports.copy_success')))
+  }
+
+  const doExport = () => {
+    setShowExportConfirm(true)
+  }
+
+  const confirmExport = async () => {
+    setShowExportConfirm(false)
+    setBusy(true)
+    try {
+      await api.exportEvaluation()
+    } catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+
+  // Step 1: Open edit modal
+  const openEditModal = () => {
+    if (!viewing) return
+    setPreviewContent(viewing.content)
+    setPreviewSubject(viewing.period_label)
+    setShowEditModal(true)
+  }
+
+  // Step 2: From edit go to send
+  const openSendModal = () => {
+    setMgrResult(null)
+    setShowSendModal(true)
+  }
+
+  const doSend = async () => {
+    if (!mgrTo.trim()) {
+      setError(tr('export.recipient_required'))
+      return
+    }
+    setMgrBusy(true); setError('')
+    try {
+      const result = await api.sendToManager(mgrChannel, mgrTo.trim(), previewSubject, previewContent)
+      setMgrResult(result)
+    } catch (e) { setError(e.message) } finally { setMgrBusy(false) }
+  }
+
+  // === Toolbar formatting helpers ===
+  const insertFormat = (format) => {
+    const textarea = editTextareaRef.current
+    if (!textarea) return
+    const start = textarea.selectionStart
+    const end = textarea.selectionEnd
+    const text = previewContent
+    const selected = text.substring(start, end)
+    let newText, newCursor
+
+    switch (format) {
+      case 'bold':
+        newText = text.substring(0, start) + `**${selected}**` + text.substring(end)
+        newCursor = start + 2 + selected.length
+        break
+      case 'italic':
+        newText = text.substring(0, start) + `*${selected}*` + text.substring(end)
+        newCursor = start + 1 + selected.length
+        break
+      case 'underline':
+        newText = text.substring(0, start) + `<u>${selected}</u>` + text.substring(end)
+        newCursor = start + 3 + selected.length
+        break
+      case 'list':
+        newText = text.substring(0, start) + `\n- ${selected}` + text.substring(end)
+        newCursor = start + 3 + selected.length
+        break
+      case 'list_num':
+        newText = text.substring(0, start) + `\n1. ${selected}` + text.substring(end)
+        newCursor = start + 4 + selected.length
+        break
+      case 'quote':
+        newText = text.substring(0, start) + `\n> ${selected}` + text.substring(end)
+        newCursor = start + 3 + selected.length
+        break
+      case 'link':
+        newText = text.substring(0, start) + `[${selected}](url)` + text.substring(end)
+        newCursor = start + 1 + selected.length
+        break
+      default:
+        return
+    }
+    setPreviewContent(newText)
+    setTimeout(() => {
+      textarea.focus()
+      textarea.setSelectionRange(newCursor, newCursor)
+    }, 0)
   }
 
   return (
@@ -80,7 +365,9 @@ export default function Reports() {
           <h1>{tr('reports.title')}</h1>
           <p>{tr('reports.subtitle')}</p>
         </div>
-        <a className="btn" href={api.exportUrl}>{tr('reports.export')}</a>
+        <button className="btn" onClick={doExport} disabled={busy}>
+          {tr('reports.export')}
+        </button>
       </header>
 
       <div className="card report-controls">
@@ -93,45 +380,62 @@ export default function Reports() {
             </button>
           ))}
         </div>
-        <div className="form-row">
-          {periodType === 'week' && (
-            <label>{tr('reports.label_week')}
-              <input type="date" value={weekDate} onChange={(e) => setWeekDate(e.target.value)} />
-            </label>
-          )}
-          {periodType === 'month' && (
-            <label>{tr('reports.label_month')}
-              <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
-            </label>
-          )}
-          {periodType === 'quarter' && (
-            <label>{tr('reports.label_quarter')}
-              <select value={quarter} onChange={(e) => setQuarter(e.target.value)}>
-                {[now().getFullYear() - 1, now().getFullYear()].flatMap((y) =>
-                  [1, 2, 3, 4].map((q) => (
-                    <option key={`${q}-${y}`} value={`Q${q}/${y}`}>Q{q}/{y}</option>
-                  )),
-                )}
-              </select>
-            </label>
-          )}
-          {periodType === 'year' && (
-            <label>{tr('reports.label_year')}
-              <input type="number" style={{ width: 100 }} value={year} onChange={(e) => setYear(e.target.value)} />
-            </label>
-          )}
-          <button className="btn primary" onClick={generate} disabled={busy}>
-            {busy ? tr('reports.generating', { secs }) : tr('reports.generate_btn')}
-          </button>
-        </div>
-        <p className="muted" style={{ marginTop: 8 }}
-          dangerouslySetInnerHTML={{ __html: marked.parseInline(tr('reports.overwrite_note')) }}
-        />
+        {periodType === 'compare' ? null : periodType === 'self_review' ? (
+          <div className="form-row" style={{ alignItems: 'center' }}>
+            <p className="muted" style={{ margin: 0, flex: 1 }}>{tr('reports.self_review_hint')}</p>
+            <button className="btn primary" onClick={generate} disabled={busy}>
+              {busy ? tr('reports.generating', { secs }) : tr('reports.self_review_btn')}
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="form-row">
+              {periodType === 'week' && (
+                <label>{tr('reports.label_week')}
+                  <input type="date" value={weekDate} onChange={(e) => setWeekDate(e.target.value)} />
+                </label>
+              )}
+              {periodType === 'month' && (
+                <label>{tr('reports.label_month')}
+                  <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
+                </label>
+              )}
+              {periodType === 'quarter' && (
+                <label>{tr('reports.label_quarter')}
+                  <select value={quarter} onChange={(e) => setQuarter(e.target.value)}>
+                    {[now().getFullYear() - 1, now().getFullYear()].flatMap((y) =>
+                      [1, 2, 3, 4].map((q) => (
+                        <option key={`${q}-${y}`} value={`Q${q}/${y}`}>Q{q}/{y}</option>
+                      )),
+                    )}
+                  </select>
+                </label>
+              )}
+              {periodType === 'year' && (
+                <label>{tr('reports.label_year')}
+                  <input type="number" style={{ width: 100 }} value={year} onChange={(e) => setYear(e.target.value)} />
+                </label>
+              )}
+              <button className="btn primary" onClick={generate} disabled={busy}>
+                {busy ? tr('reports.generating', { secs }) : tr('reports.generate_btn')}
+              </button>
+            </div>
+            <p className="muted" style={{ marginTop: 8 }}
+              dangerouslySetInnerHTML={{ __html: marked.parseInline(tr('reports.overwrite_note')) }}
+            />
+          </>
+        )}
       </div>
 
       {error && <div className="error-text">⚠️ {error}</div>}
 
-      <div className="report-layout">
+      {periodType === 'compare' && (
+        <div className="card" style={{ padding: '20px 24px' }}>
+          <CycleCompareChart tr={tr} />
+        </div>
+      )}
+
+      <div className="report-layout" style={{ display: periodType === 'compare' ? 'none' : undefined }}>
         <div className="report-list">
           <h3 className="muted">{tr('reports.list_title')}</h3>
           {saved.length === 0 && <p className="muted">{tr('reports.no_reports')}</p>}
@@ -143,7 +447,7 @@ export default function Reports() {
                 <b>{r.period_label}</b>
                 <div className="muted">{r.created_at?.slice(0, 16).replace('T', ' ')}</div>
               </div>
-              <button className="btn-icon" title={tr('reports.delete_title')} onClick={(e) => remove(e, r.id)}>✕</button>
+              <button className="btn-icon" title={tr('reports.delete_title')} onClick={(e) => { e.stopPropagation(); setDeleteConfirm(r.id) }}>✕</button>
             </div>
           ))}
         </div>
@@ -153,7 +457,20 @@ export default function Reports() {
             <>
               <div className="report-view-head">
                 <span className="muted">{tr('reports.updated_at', { time: viewing.created_at?.slice(0, 16).replace('T', ' ') })}</span>
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  {viewing.period_type === 'self_review' && (
+                    <button className="btn small" onClick={() => exportReport('pdf')}
+                      disabled={exportingFormat !== null}
+                      title={tr('reports.export_pdf_title')}>
+                      {exportingFormat === 'pdf' ? '...' : tr('reports.export_pdf_btn')}
+                    </button>
+                  )}
+                  <button className="btn small primary" onClick={openEditModal}>
+                    {tr('reports.edit_send')}
+                  </button>
+                  <button className="btn small" onClick={openShareModal} title="Tạo link chia sẻ read-only">
+                    Chia sẻ
+                  </button>
                   <button className="btn small" onClick={regenerate} disabled={busy}
                     title={tr('reports.regenerate_tooltip')}>
                     {busy ? tr('reports.regenerating', { secs }) : tr('reports.regenerate_btn')}
@@ -170,6 +487,244 @@ export default function Reports() {
           )}
         </div>
       </div>
+
+      {/* Export confirmation modal */}
+      <Modal
+        open={showExportConfirm}
+        title={tr('reports.export_confirm')}
+        onClose={() => setShowExportConfirm(false)}
+        actions={
+          <>
+            <button className="btn" onClick={() => setShowExportConfirm(false)}>{tr('common.cancel')}</button>
+            <button className="btn primary" onClick={confirmExport}>{tr('reports.export')}</button>
+          </>
+        }
+      >
+        <p>{tr('reports.export_confirm_msg')}</p>
+      </Modal>
+
+      {/* Step 1: Edit content */}
+      <Modal
+        open={showEditModal}
+        title={tr('reports.edit_title')}
+        onClose={() => setShowEditModal(false)}
+        wide={true}
+        actions={
+          <>
+            <button className="btn" onClick={() => setShowEditModal(false)}>{tr('common.cancel')}</button>
+            <button className="btn primary" onClick={async () => {
+              if (!mgrTo.trim()) {
+                setError(tr('export.recipient_required'))
+                return
+              }
+              setShowEditModal(false)
+              setMgrBusy(true)
+              try {
+                const result = await api.sendToManager('email', mgrTo.trim(), previewSubject, previewContent)
+                setMgrResult(result)
+                if (!result.mocked) {
+                  toast.success(tr('reports.email_sent'))
+                } else {
+                  toast.info(result.note)
+                }
+              } catch (e) {
+                setError(e.message)
+              } finally {
+                setMgrBusy(false)
+              }
+            }} disabled={mgrBusy || !mgrTo.trim()}>
+              {mgrBusy ? tr('export.sending') : tr('reports.send_email_btn')}
+            </button>
+            <button className="btn" onClick={() => { setShowEditModal(false); openSendModal() }}>
+              {tr('reports.continue_send')}
+            </button>
+          </>
+        }
+      >
+        <div className="modal-field" style={{ display: 'flex', gap: 8 }}>
+          <div style={{ flex: 1 }}>
+            <label>{tr('reports.subject_label')}</label>
+            <input
+              value={previewSubject}
+              onChange={(e) => setPreviewSubject(e.target.value)}
+              placeholder={tr('reports.subject_ph')}
+              style={{ width: '100%', padding: '10px 13px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 14 }}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label>{tr('reports.email_to_label')}</label>
+            <input
+              type="email"
+              value={mgrTo}
+              onChange={(e) => setMgrTo(e.target.value)}
+              placeholder={tr('reports.email_to_placeholder')}
+              style={{ width: '100%', padding: '10px 13px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 14 }}
+            />
+          </div>
+        </div>
+        <div className="modal-field">
+          <label>{tr('reports.content_label')}</label>
+          <div className="format-toolbar">
+            <button type="button" className="format-btn" title={tr('reports.format_bold')} onClick={() => insertFormat('bold')}>B</button>
+            <button type="button" className="format-btn italic" title={tr('reports.format_italic')} onClick={() => insertFormat('italic')}>I</button>
+            <button type="button" className="format-btn underline" title={tr('reports.format_underline')} onClick={() => insertFormat('underline')}>U</button>
+            <span className="format-sep">|</span>
+            <button type="button" className="format-btn" title={tr('reports.format_list')} onClick={() => insertFormat('list')}>•</button>
+            <button type="button" className="format-btn" title={tr('reports.format_list_num')} onClick={() => insertFormat('list_num')}>1.</button>
+            <button type="button" className="format-btn" title={tr('reports.format_quote')} onClick={() => insertFormat('quote')}>&gt;</button>
+            <button type="button" className="format-btn" title={tr('reports.format_link')} onClick={() => insertFormat('link')}>🔗</button>
+          </div>
+          <textarea
+            ref={editTextareaRef}
+            value={previewContent}
+            onChange={(e) => setPreviewContent(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.ctrlKey || e.metaKey) {
+                if (e.key === 'b') { e.preventDefault(); insertFormat('bold') }
+                else if (e.key === 'i') { e.preventDefault(); insertFormat('italic') }
+                else if (e.key === 'u') { e.preventDefault(); insertFormat('underline') }
+              }
+            }}
+            rows={10}
+            style={{ width: '100%', minHeight: 150, resize: 'vertical', fontFamily: 'inherit', fontSize: 13, padding: 10, borderRadius: '0 0 10px 10px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
+          />
+          <p className="muted" style={{ marginTop: 4, fontSize: 11 }}>
+            {tr('reports.format_hint')}
+          </p>
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <p style={{ fontWeight: 600, marginBottom: 6, fontSize: 13 }}>{tr('reports.preview_label')}</p>
+          <div className="report-content" style={{ maxHeight: 200, overflow: 'auto', padding: 12, background: 'var(--surface-2)', borderRadius: 10 }} dangerouslySetInnerHTML={{ __html: marked.parse(previewContent) }} />
+        </div>
+      </Modal>
+
+      {/* Delete confirmation */}
+      <ConfirmModal
+        open={!!deleteConfirm}
+        title={tr('reports.delete_title')}
+        message={tr('reports.delete_confirm')}
+        confirmLabel={tr('reports.delete_title')}
+        confirmVariant="danger"
+        onConfirm={doDelete}
+        onCancel={() => setDeleteConfirm(null)}
+      />
+
+      {/* Step 2: Enter recipient and send */}
+      <Modal
+        open={showSendModal}
+        title={tr('reports.send_title')}
+        onClose={() => setShowSendModal(false)}
+        wide={true}
+        actions={
+          <>
+            <button className="btn" onClick={() => setShowSendModal(false)}>{tr('common.cancel')}</button>
+            <button className="btn primary" onClick={doSend} disabled={mgrBusy || !mgrTo.trim()}>
+              {mgrBusy ? tr('export.sending') : tr('export.send_btn')}
+            </button>
+          </>
+        }
+      >
+        <div style={{ marginBottom: 16 }}>
+          <p style={{ fontWeight: 600, marginBottom: 6, fontSize: 13 }}>{tr('reports.preview_label')}</p>
+          <div className="report-content" style={{ maxHeight: 180, overflow: 'auto', padding: 12, background: 'var(--surface-2)', borderRadius: 10 }} dangerouslySetInnerHTML={{ __html: marked.parse(previewContent) }} />
+        </div>
+
+        <div className="modal-field">
+          <label>{tr('export.channel_label')}</label>
+          <select value={mgrChannel} onChange={(e) => { setMgrChannel(e.target.value); setMgrResult(null) }}
+            style={{ width: '100%', padding: '10px 13px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 14 }}>
+            <option value="email">{tr('export.channel_email')}</option>
+            <option value="webhook">{tr('export.channel_webhook')}</option>
+          </select>
+        </div>
+        <div className="modal-field">
+          <label>{tr('export.recipient_label')}</label>
+          <input
+            className="export-recipient"
+            placeholder={mgrChannel === 'email' ? tr('export.recipient_ph_email') : tr('export.recipient_ph_webhook')}
+            value={mgrTo}
+            onChange={(e) => setMgrTo(e.target.value)}
+            style={{ width: '100%', padding: '10px 13px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 14 }}
+          />
+        </div>
+
+        {error && <div className="error-text" style={{ marginBottom: 12 }}>⚠️ {error}</div>}
+
+        {mgrResult && (
+          <div className="manager-preview" style={{ marginTop: 16 }}>
+            <div className="manager-preview-head">
+              <span className="mock-badge">{tr('export.mock_badge')}</span>
+              <span>{tr('export.preview_title', { recipient: mgrResult.recipient })}</span>
+            </div>
+            <div className="manager-subject"><b>{mgrResult.subject}</b></div>
+            <div className="report-content" dangerouslySetInnerHTML={{ __html: marked.parse(mgrResult.body || '') }} />
+            <p className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>{mgrResult.note}</p>
+          </div>
+        )}
+      </Modal>
+
+      {/* D5: Share Link Modal */}
+      <Modal
+        open={showShareModal}
+        title="Chia sẻ báo cáo chu kỳ"
+        onClose={() => setShowShareModal(false)}
+        actions={<button className="btn" onClick={() => setShowShareModal(false)}>Đóng</button>}
+      >
+        <div className="share-modal-intro">
+          <div className="share-modal-icon" aria-hidden="true">↗</div>
+          <div>
+            <b>Read-only link</b>
+            <p>Người nhận xem được báo cáo mà không cần đăng nhập; không có control chỉnh sửa.</p>
+          </div>
+        </div>
+        <div className="share-create-row">
+          <label>Hết hạn sau</label>
+          <select value={shareExpireDays} onChange={e => setShareExpireDays(Number(e.target.value))}
+            className="share-expiry-select">
+            {[1,3,7,14,30].map(d => <option key={d} value={d}>{d} ngày</option>)}
+          </select>
+          <button className="btn primary small" onClick={createShareLink} disabled={shareBusy || !activeCycleId}>
+            {shareBusy ? 'Đang tạo...' : 'Tạo link'}
+          </button>
+        </div>
+        {!activeCycleId && <p style={{ color: '#ca8a04', fontSize: 13 }}>Chọn chu kỳ ở thanh trên để tạo link chia sẻ.</p>}
+        {shareLinks.length === 0
+          ? <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Chưa có link nào.</p>
+          : shareLinks.map(link => {
+            const url = `${window.location.origin}/shared/${link.token}`
+            const expired = new Date(link.expires_at) < new Date()
+            const revoked = !!link.revoked_at
+            const invalid = expired || revoked
+            const state = revoked ? 'Đã hủy' : expired ? 'Hết hạn' : 'Đang hoạt động'
+            return (
+              <div key={link.token} className={`share-link-item${invalid ? ' invalid' : ''}`}>
+                <div className="share-link-main">
+                  <div className="share-link-head">
+                    <span className={`share-link-state${invalid ? ' invalid' : ''}`}>{state}</span>
+                    <span className="share-link-meta">Hết hạn {new Date(link.expires_at).toLocaleDateString('vi-VN')}</span>
+                  </div>
+                  <div className={`share-link-url${invalid ? ' share-link-revoked' : ''}`}>{url}</div>
+                  <div className="share-link-meta">
+                    {revoked && ' · Đã hủy'}{expired && !revoked && ' · Hết hạn'}
+                  </div>
+                </div>
+                <div className="share-link-actions">
+                {!invalid && (
+                  <button className="btn small" onClick={() => copyLink(link.token)}>
+                    {shareCopied === link.token ? '✓ Đã copy' : 'Copy'}
+                  </button>
+                )}
+                {!revoked && (
+                  <button className="btn small" style={{ color: '#dc2626' }} onClick={() => revokeShareLink(link.token)}>
+                    Hủy
+                  </button>
+                )}
+                </div>
+              </div>
+            )
+          })
+        }
+      </Modal>
     </div>
   )
 }

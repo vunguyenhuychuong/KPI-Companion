@@ -14,23 +14,26 @@ router = APIRouter(prefix="/api/sources", tags=["sources"])
 
 
 @router.get("/status")
-def sources_status():
-    """Trang thai cac nguon: mock hay that."""
-    google_real = (not settings.google_mock_mode) and settings.google_credentials_path.exists()
-    mode = "real" if google_real else "mock"
-    return {
-        "gmail": mode,
-        "calendar": mode,
-        "sheets": mode,
-        "csv_upload": "real",
-        "note": "Đặt credentials.json vào backend/ và GOOGLE_MOCK_MODE=false để dùng Google API thật.",
-    }
+def sources_status(current_user: CurrentUser, db: Session = Depends(get_db)):
+    """Trang thai TUNG nguon cua nguoi dung hien tai: mock hay that (theo ket noi OAuth)."""
+    from ..services import oauth_service
+
+    modes = oauth_service.source_modes(db, current_user.id, settings.google_mock_mode)
+    any_real = any(m == "real" for m in modes.values())
+    note = (
+        "Đang dùng dữ liệu thật từ (các) tài khoản đã kết nối."
+        if any_real
+        else "Đang dùng dữ liệu mô phỏng. Vào mục Kết nối để liên kết tài khoản thật."
+    )
+    return {**modes, "csv_upload": "real", "note": note}
 
 
 @router.post("/sync", response_model=schemas.ChatResponse)
 def sync(payload: schemas.SyncRequest, current_user: CurrentUser, db: Session = Depends(get_db)):
     """Quet nguon ngoai theo yeu cau (nut bam tren UI, khong qua chat)."""
-    activities = fetch_activities(payload.sources, payload.start_date, payload.end_date)
+    activities = fetch_activities(
+        payload.sources, payload.start_date, payload.end_date, db=db, user_id=current_user.id
+    )
     if not activities:
         return schemas.ChatResponse(
             reply="Không tìm thấy hoạt động nào trong khoảng thời gian này.", intent="sync_request"
