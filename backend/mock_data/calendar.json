@@ -3,5 +3,12 @@
   {"date": "2026-06-09", "time": "14:00", "title": "Workshop rà soát kiểm soát truy cập (ITGC)", "duration": "2h", "description": "Rà soát ma trận phân quyền hệ thống ERP cùng team audit"},
   {"date": "2026-06-10", "time": "10:00", "title": "Kick-off hỗ trợ dự án ISO 27001 GĐ2", "duration": "1h", "description": "Nhận phạm vi hỗ trợ: rà soát 12 tài liệu chính sách ATTT"},
   {"date": "2026-06-11", "time": "15:00", "title": "Demo phương án tự động hóa báo cáo tuân thủ", "duration": "45m", "description": "Trình bày prototype script tự động sinh báo cáo cho sếp Trường"},
-  {"date": "2026-06-05", "time": "11:00", "title": "Review SLA ticket tháng 5", "duration": "30m", "description": "Tỷ lệ đóng ticket trong SLA đạt 96%"}
+  {"date": "2026-06-05", "time": "11:00", "title": "Review SLA ticket tháng 5", "duration": "30m", "description": "Tỷ lệ đóng ticket trong SLA đạt 96%"},
+  {"date": "2026-06-16", "time": "09:00", "title": "Họp giao ban tuần phòng CNTT", "duration": "1h", "description": "Báo cáo tiến độ tuần và phân công việc mới"},
+  {"date": "2026-06-17", "time": "14:00", "title": "Workshop hoàn thiện tài liệu ISO 27001 GĐ2", "duration": "2h", "description": "Rà soát và ký duyệt 12 chính sách ATTT cùng CISO"},
+  {"date": "2026-06-18", "time": "10:30", "title": "1-on-1 với trưởng nhóm Bảo mật", "duration": "30m", "description": "Review hiệu suất cá nhân và đặt mục tiêu quý 3"},
+  {"date": "2026-06-19", "time": "15:00", "title": "Demo kiểm soát truy cập ERP cho Ban Giám đốc", "duration": "1h", "description": "Trình bày kết quả kiểm tra ITGC và khuyến nghị cải thiện"},
+  {"date": "2026-06-23", "time": "09:00", "title": "Họp review tiến độ Q2 toàn phòng", "duration": "1h30m", "description": "Tổng kết kết quả 6 tháng đầu năm, lập kế hoạch Q3"},
+  {"date": "2026-06-24", "time": "13:30", "title": "Training An ninh thông tin nội bộ", "duration": "2h", "description": "Nâng cao nhận thức ATTT theo yêu cầu ISO 27001"},
+  {"date": "2026-06-26", "time": "10:00", "title": "Họp phòng cập nhật roadmap H2/2026", "duration": "1h", "description": "Lên kế hoạch triển khai dự án SIEM và nâng cấp hạ tầng"}
 ]

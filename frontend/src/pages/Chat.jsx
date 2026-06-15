@@ -4,6 +4,7 @@ import { api } from '../api'
 import { useLang } from '../LangContext'
 import ProposalList from '../components/ProposalList'
 import KpiProposal from '../components/KpiProposal'
+import { ConfirmModal } from '../components/Modal'
 
 function Message({ msg, onConfirmed, onEdit, onResend, tr }) {
     const html = { __html: marked.parse(msg.content || '') }
@@ -28,9 +29,33 @@ function Message({ msg, onConfirmed, onEdit, onResend, tr }) {
                         onDismiss={() => onConfirmed(msg, true)}
                     />
                 )}
-                {msg.proposed_kpis?.length > 0 && !msg.confirmed && (
+
+                {msg.delete_proposal && !msg.confirmed && (
+                    <div className="delete-proposal">
+                        <div className="proposal-card">
+                            <div className="proposal-header">
+                                <span className="proposal-icon">🗑️</span>
+                                <span>{tr(msg.delete_proposal.target_type === 'kpi' ? 'delete_proposal.title_kpi' : 'delete_proposal.title_objective')}</span>
+                            </div>
+                            <div className="proposal-body">
+                                <p><strong>{msg.delete_proposal.target_name}</strong></p>
+                                {msg.delete_proposal.reason && (
+                                    <p className="reason">{tr('delete_proposal.reason', { reason: msg.delete_proposal.reason })}</p>
+                                )}
+                                <p className="reason">{tr('delete_proposal.archive_note')}</p>
+                            </div>
+                            <div className="proposal-actions">
+                                <button className="btn-confirm" onClick={() => onConfirmed(msg)}>{tr('delete_proposal.confirm')}</button>
+                                <button className="btn-cancel" onClick={() => onConfirmed(msg, true)}>{tr('delete_proposal.cancel')}</button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {(msg.proposed_kpis?.length > 0 || msg.proposed_objectives?.length > 0) && !msg.confirmed && (
                     <KpiProposal
                         kpis={msg.proposed_kpis}
+                        newObjectives={msg.proposed_objectives}
                         weightChanges={msg.weight_changes}
                         onConfirmed={() => onConfirmed(msg)}
                         onDismiss={() => onConfirmed(msg, true)}
@@ -67,6 +92,7 @@ function Thinking({ tr }) {
 
 export default function Chat() {
     const { tr, lang } = useLang()
+    const [deleteConfirm, setDeleteConfirm] = useState(null)
     const SUGGESTIONS = [
         tr('chat.sug_1'),
         tr('chat.sug_2'),
@@ -90,14 +116,22 @@ export default function Chat() {
         if (id === null) { setMessages([]); return }
         const history = await api.chatHistory(id).catch(() => [])
         setMessages(
-            history.map((m) => ({
-                role: m.role,
-                content: m.content,
-                proposed_items: m.meta?.proposed_items || [],
-                proposed_kpis: m.meta?.proposed_kpis || [],
-                weight_changes: m.meta?.weight_changes || [],
-                confirmed: 'history',
-            })),
+            history.map((m) => {
+                // pending -> hien lai the de xuat de nguoi dung con xac nhan duoc;
+                // saved/dismissed -> hien ghi chu trang thai; tin cu khong co status -> an het nhu truoc
+                const status = m.meta?.proposal_status
+                return {
+                    id: m.id,
+                    role: m.role,
+                    content: m.content,
+                    proposed_items: m.meta?.proposed_items || [],
+                    proposed_kpis: m.meta?.proposed_kpis || [],
+                    proposed_objectives: m.meta?.proposed_objectives || [],
+                    weight_changes: m.meta?.weight_changes || [],
+                    delete_proposal: m.meta?.delete_proposal,
+                    confirmed: status === 'pending' ? undefined : (status || 'history'),
+                }
+            }),
         )
     }
 
@@ -119,11 +153,15 @@ export default function Chat() {
         inputRef.current?.focus()
     }
 
-    const removeSession = async (e, id) => {
+    const removeSession = (e, id) => {
         e.stopPropagation()
-        if (!confirm(tr('chat.delete_confirm'))) return
-        await api.deleteChatSession(id)
-        if (id === activeId) newChat()
+        setDeleteConfirm(id)
+    }
+    const doDeleteSession = async () => {
+        if (!deleteConfirm) return
+        await api.deleteChatSession(deleteConfirm)
+        if (deleteConfirm === activeId) newChat()
+        setDeleteConfirm(null)
         loadSessions()
     }
 
@@ -144,11 +182,14 @@ export default function Chat() {
             setMessages((m) => [
                 ...m,
                 {
+                    id: res.message_id,
                     role: 'assistant',
                     content: res.reply,
                     proposed_items: res.proposed_items || [],
                     proposed_kpis: res.proposed_kpis || [],
+                    proposed_objectives: res.proposed_objectives || [],
                     weight_changes: res.weight_changes || [],
+                    delete_proposal: res.delete_proposal,
                     duration,
                 },
             ])
@@ -167,13 +208,36 @@ export default function Chat() {
         inputRef.current?.focus()
     }
 
-    const markConfirmed = (msg, dismissed = false) => {
+    const markConfirmed = async (msg, dismissed = false) => {
+        // ProposalList / KpiProposal tự gọi API confirm của chúng TRƯỚC khi báo về đây —
+        // ở đây chỉ gọi API cho thẻ xóa (thẻ này không có component riêng).
+        if (!dismissed && msg.delete_proposal?.target_id) {
+            try {
+                await api.confirmDeleteKpi({
+                    target_type: msg.delete_proposal.target_type,
+                    target_id: msg.delete_proposal.target_id,
+                    reason: msg.delete_proposal.reason || '',
+                })
+            } catch (e) {
+                setMessages((all) => [
+                    ...all,
+                    { role: 'assistant', content: tr('chat.error_prefix', { message: e.message }) },
+                ])
+                return
+            }
+        }
+        const status = dismissed ? 'dismissed' : 'saved'
         setMessages((all) =>
-            all.map((m) => (m === msg ? { ...m, confirmed: dismissed ? 'dismissed' : 'saved' } : m)),
+            all.map((m) => (m === msg ? { ...m, confirmed: status } : m)),
         )
+        // luu trang thai xuong DB de mo lai phien / doi trang van hien dung — loi thi nuot,
+        // khong duoc chan luong chinh (du lieu de xuat da duoc luu o cac API confirm rieng)
+        if (msg.id) api.setProposalStatus(msg.id, status).catch(() => {})
     }
 
+
     return (
+        <>
         <div className="chat-layout">
             <aside className="chat-sessions">
                 <button className="btn primary new-chat-btn" onClick={newChat}>{tr('chat.new_session')}</button>
@@ -192,6 +256,8 @@ export default function Chat() {
                     ))}
                     {sessions.length === 0 && <p className="muted session-empty">{tr('chat.no_sessions')}</p>}
                 </div>
+                {/* Agent tu hoc chay NEN (agent_memories) — chu dich khong hien UI;
+                    xem/xoa khi can qua API GET/DELETE /api/chat/memories */}
             </aside>
 
             <div className="chat-page">
@@ -237,5 +303,15 @@ export default function Chat() {
                 </div>
             </div>
         </div>
+        <ConfirmModal
+            open={!!deleteConfirm}
+            title={tr('chat.delete_confirm')}
+            message={tr('chat.delete_confirm')}
+            confirmLabel={tr('common.ok')}
+            confirmVariant="danger"
+            onConfirm={doDeleteSession}
+            onCancel={() => setDeleteConfirm(null)}
+        />
+        </>
     )
 }

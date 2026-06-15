@@ -63,14 +63,22 @@ def health_of(kpi: models.KPI, today: date | None = None) -> tuple[str, float]:
     return "red", gap
 
 
-def get_active_kpis(db: Session, user_id: int = 1) -> list[models.KPI]:
-    return list(
-        db.scalars(
-            select(models.KPI).where(
-                models.KPI.user_id == user_id, models.KPI.archived == False  # noqa: E712
+def get_active_kpis(
+    db: Session, user_id: int = 1, cycle_id: int | None = None
+) -> list[models.KPI]:
+    q = select(models.KPI).where(
+        models.KPI.user_id == user_id, models.KPI.archived == False  # noqa: E712
+    )
+    if cycle_id is not None:
+        q = (
+            q.join(models.Objective, models.KPI.objective_id == models.Objective.id)
+            .where(
+                models.Objective.user_id == user_id,
+                models.Objective.archived == False,  # noqa: E712
+                models.Objective.cycle_id == cycle_id,
             )
         )
-    )
+    return list(db.scalars(q))
 
 
 def _group_progress(kpis: list[models.KPI]) -> float:
@@ -84,16 +92,17 @@ def _group_progress(kpis: list[models.KPI]) -> float:
     return 0.0
 
 
-def objectives_with_progress(db: Session, user_id: int = 1) -> list[schemas.ObjectiveOut]:
+def objectives_with_progress(
+    db: Session, user_id: int = 1, cycle_id: int | None = None
+) -> list[schemas.ObjectiveOut]:
     """Danh sach Objective kem tien do tong hop tu KPI con."""
-    objs = list(
-        db.scalars(
-            select(models.Objective).where(
-                models.Objective.user_id == user_id,
-                models.Objective.archived == False,  # noqa: E712
-            )
-        )
+    q = select(models.Objective).where(
+        models.Objective.user_id == user_id,
+        models.Objective.archived == False,  # noqa: E712
     )
+    if cycle_id is not None:
+        q = q.where(models.Objective.cycle_id == cycle_id)
+    objs = list(db.scalars(q))
     out = []
     for o in objs:
         item = schemas.ObjectiveOut.model_validate(o)
@@ -103,14 +112,14 @@ def objectives_with_progress(db: Session, user_id: int = 1) -> list[schemas.Obje
     return out
 
 
-def overall_progress(db: Session, user_id: int = 1) -> float:
+def overall_progress(db: Session, user_id: int = 1, cycle_id: int | None = None) -> float:
     """Diem tong nam = trung binh co trong so theo Objective.
 
     KPI chua gan muc tieu duoc gop vao nhom ao "Khac" dung phan trong so con lai
     (100% - tong trong so Objective) de khong KPI nao bi bo sot.
     """
-    objs = objectives_with_progress(db, user_id)
-    ungrouped = [
+    objs = objectives_with_progress(db, user_id, cycle_id=cycle_id)
+    ungrouped = [] if cycle_id is not None else [
         k for k in get_active_kpis(db, user_id) if k.objective_id is None
     ]
     total = sum(o.weight * o.progress for o in objs)
@@ -122,13 +131,16 @@ def overall_progress(db: Session, user_id: int = 1) -> float:
             denom += khac_weight
     if denom <= 0:
         # chua phan bo trong so nao -> trung binh don gian
-        kpis = get_active_kpis(db, user_id)
+        kpis = get_active_kpis(db, user_id, cycle_id=cycle_id)
         return _group_progress(kpis) if kpis else 0.0
     return round(total / denom, 1)
 
 
-def build_dashboard(db: Session, user_id: int = 1) -> schemas.DashboardOut:
-    kpis = get_active_kpis(db, user_id)
+def build_dashboard(
+    db: Session, user_id: int = 1, cycle_id: int | None = None
+) -> schemas.DashboardOut:
+    cycle = db.get(models.KPICycle, cycle_id) if cycle_id is not None else None
+    kpis = get_active_kpis(db, user_id, cycle_id=cycle_id)
     today = date.today()
     statuses: list[schemas.KPIStatus] = []
     warnings: list[str] = []
@@ -212,15 +224,124 @@ def build_dashboard(db: Session, user_id: int = 1) -> schemas.DashboardOut:
 
     statuses.sort(key=lambda s: {"red": 0, "yellow": 1, "green": 2}[s.health])
     return schemas.DashboardOut(
-        year=kpis[0].year if kpis else today.year,
-        overall_progress=overall_progress(db, user_id),
-        objectives=objectives_with_progress(db, user_id),
+        year=(
+            cycle.start_date.year
+            if cycle and cycle.start_date
+            else (kpis[0].year if kpis else today.year)
+        ),
+        overall_progress=overall_progress(db, user_id, cycle_id=cycle_id),
+        objectives=objectives_with_progress(db, user_id, cycle_id=cycle_id),
         kpi_statuses=statuses,
         warnings=warnings,
         counts_by_status=counts,
         recent_items=[schemas.WorkItemOut.model_validate(w) for w in recent],
         todo_items=[schemas.WorkItemOut.model_validate(w) for w in todos],
         weekly_activity=weekly,
+    )
+
+
+def forecast_kpi(
+        db: Session, kpi: models.KPI, today: date | None = None
+) -> schemas.KPIForecastOut:
+    """Du bao kha nang hoan thanh KPI bang AI Predictive Runrate.
+
+    Van toc = tong tien do thuc dat / so ngay da hoat dong (tu dau viec dau tien).
+    Du bao = thuc dat hien tai + van toc * so ngay con lai den deadline.
+    Tra ve them 3 chuoi de ve bieu do: thuc te / ky vong (ke hoach) / du bao.
+    """
+    today = today or date.today()
+    start = date(kpi.year, 1, 1)
+    end = kpi.deadline or date(kpi.year, 12, 31)
+    target = kpi.target_value or 1.0
+
+    def pct(v: float) -> float:
+        return round(v / target * 100, 1)
+
+    # dau viec da xac nhan, co thay doi gia tri, sap theo ngay thuc hien
+    items = list(
+        db.scalars(
+            select(models.WorkItem).where(
+                models.WorkItem.kpi_id == kpi.id,
+                models.WorkItem.confirmed == True,  # noqa: E712
+            )
+        )
+    )
+    dated: list[tuple[date, float]] = []
+    for w in items:
+        d = w.work_date or (w.created_at.date() if w.created_at else None)
+        if d and w.progress_delta:
+            dated.append((d, w.progress_delta))
+    dated.sort(key=lambda x: x[0])
+
+    sum_items = round(sum(delta for _, delta in dated), 4)
+    # gia tri dau ky khong den tu dau viec (vd nhap tay luc tao KPI)
+    baseline = round(kpi.current_value - sum_items, 4)
+
+    # chuoi thuc te tich luy: bat dau o baseline -> cong tung dau viec -> chot o current that
+    actual_series = [schemas.ForecastPoint(date=start, value=max(0.0, pct(baseline)))]
+    running = baseline
+    for d, delta in dated:
+        if d > today:
+            continue
+        running = round(running + delta, 4)
+        actual_series.append(schemas.ForecastPoint(date=max(d, start), value=pct(running)))
+    if actual_series[-1].date == today:
+        actual_series[-1] = schemas.ForecastPoint(date=today, value=pct(kpi.current_value))
+    else:
+        actual_series.append(schemas.ForecastPoint(date=today, value=pct(kpi.current_value)))
+
+    # van toc theo gia tri/ngay tren khoang da hoat dong
+    has_history = len(dated) >= 1
+    vel_start = max(start, dated[0][0]) if has_history else start
+    gained = max(0.0, round(kpi.current_value - baseline, 4))  # tien do thuc su tao ra
+    elapsed = max(1, (today - vel_start).days)
+    daily_velocity = round(gained / elapsed, 4)
+
+    days_remaining = max(0, (end - today).days)
+    forecast_value = round(kpi.current_value + daily_velocity * days_remaining, 2)
+    forecast_progress = pct(forecast_value)
+
+    eta_date: date | None = None
+    if kpi.current_value < target and daily_velocity > 0:
+        days_to = (target - kpi.current_value) / daily_velocity
+        if days_to >= 0:
+            eta_date = today + timedelta(days=min(3650, int(round(days_to))))
+
+    on_track = forecast_progress >= 99.5
+    forecast_health = "green" if on_track else ("yellow" if forecast_progress >= 85 else "red")
+
+    forecast_series = [
+        schemas.ForecastPoint(date=today, value=pct(kpi.current_value)),
+        schemas.ForecastPoint(date=end, value=forecast_progress),
+    ]
+
+    # duong ke hoach/ky vong: lay mau theo dau moi thang
+    expected_series: list[schemas.ForecastPoint] = []
+    cur = start
+    while cur <= end:
+        expected_series.append(schemas.ForecastPoint(date=cur, value=expected_progress(kpi, cur)))
+        cur = date(cur.year + (1 if cur.month == 12 else 0), 1 if cur.month == 12 else cur.month + 1, 1)
+    if not expected_series or expected_series[-1].date != end:
+        expected_series.append(schemas.ForecastPoint(date=end, value=expected_progress(kpi, end)))
+
+    return schemas.KPIForecastOut(
+        kpi_id=kpi.id,
+        kpi_name=kpi.name,
+        unit=kpi.unit,
+        target_value=kpi.target_value,
+        current_value=kpi.current_value,
+        current_progress=kpi.progress,
+        daily_velocity=daily_velocity,
+        forecast_value=forecast_value,
+        forecast_progress=forecast_progress,
+        days_remaining=days_remaining,
+        eta_date=eta_date,
+        on_track=on_track,
+        forecast_health=forecast_health,
+        has_history=has_history,
+        actual_series=actual_series,
+        expected_series=expected_series,
+        forecast_series=forecast_series,
     )
 
 

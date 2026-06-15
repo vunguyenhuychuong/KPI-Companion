@@ -2,13 +2,13 @@
 import json
 import re
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from ..config import settings
 
 
-def get_llm(temperature: float | None = None) -> ChatOpenAI:
+def get_llm(temperature: float | None = None, max_tokens: int | None = None) -> ChatOpenAI:
     kwargs = {}
     if settings.llm_disable_thinking:
         # Tat thinking mode cua Qwen3 — giam latency tu ~12s xuong <1s moi call.
@@ -17,6 +17,9 @@ def get_llm(temperature: float | None = None) -> ChatOpenAI:
             "enable_thinking": False,
             "chat_template_kwargs": {"enable_thinking": False},
         }
+    if max_tokens is not None:
+        # gioi han do dai sinh ra -> phan hoi nhanh hon cho tac vu dau ra ngan (intent, parse lenh)
+        kwargs["max_tokens"] = max_tokens
     return ChatOpenAI(
         base_url=settings.llm_base_url,
         api_key=settings.llm_api_key,
@@ -60,9 +63,11 @@ def extract_json(text: str):
     raise ValueError(f"Không trích xuất được JSON từ output LLM: {text[:300]}")
 
 
-def call_json(system_prompt: str, user_prompt: str, temperature: float | None = None):
+def call_json(
+    system_prompt: str, user_prompt: str, temperature: float | None = None, max_tokens: int | None = None
+):
     """Goi LLM va parse JSON, retry 1 lan neu parse loi."""
-    llm = get_llm(temperature)
+    llm = get_llm(temperature, max_tokens)
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
     last_err: Exception | None = None
     for _ in range(2):
@@ -85,9 +90,10 @@ def call_text(
         user_prompt: str,
         temperature: float | None = None,
         history: list[dict] | None = None,
+        max_tokens: int | None = None,
 ) -> str:
     """Goi LLM tra ve text; history = [{"role": "user"|"assistant", "content": ...}] de hieu hoi thoai noi tiep."""
-    llm = get_llm(temperature)
+    llm = get_llm(temperature, max_tokens)
     messages: list = [SystemMessage(content=system_prompt)]
     for h in history or []:
         cls = HumanMessage if h.get("role") == "user" else AIMessage

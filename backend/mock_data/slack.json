@@ -1,0 +1,5 @@
+[
+  {"date": "2026-06-08", "channel": "it-ops", "text": "Đã deploy fix cho ticket WF-1024, theo dõi thêm 24h."},
+  {"date": "2026-06-09", "channel": "audit-2026", "text": "Mình đã cập nhật bằng chứng kiểm soát truy cập cho đợt audit, nhờ team review."},
+  {"date": "2026-06-11", "channel": "automation", "text": "Script tự động sinh báo cáo tuân thủ tháng đã chạy thử thành công, giảm ~60% thời gian thủ công."}
+]

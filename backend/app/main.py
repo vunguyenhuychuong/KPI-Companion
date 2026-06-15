@@ -3,14 +3,16 @@ from datetime import date
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select, text
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import func, select, text
 
 from . import models
 from .auth import hash_password
 from .config import settings
 from .database import Base, SessionLocal, engine
 from .routers import auth as auth_router
-from .routers import chat, kpis, objectives, reports, sources, work_items
+from .routers import burnout, chat, cycles, kpis, notification_settings, notifications, objectives, oauth, reports, settings as settings_router
+from .routers import share_links, sources, work_items
 
 
 def migrate():
@@ -20,8 +22,41 @@ def migrate():
         obj_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(objectives)"))]
         user_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(users)"))]
 
+        # KPI Cycles: tao default cycles cho objectives chua duoc gan cycle_id
+        # (chay cho ca DB moi lan DB cu, su dung obj_cols de phat hien DB cu chua co cycle_id)
+        if obj_cols and "cycle_id" not in obj_cols:
+            # DB cu: them cot cycle_id roi tao default cycles
+            conn.execute(text("ALTER TABLE objectives ADD COLUMN cycle_id INTEGER REFERENCES kpi_cycles(id)"))
+            obj_cols = obj_cols + ["cycle_id"]  # cap nhat local list
+        # Tao default cycles cho objectives chua co cycle_id (co the la DB moi hoac DB cu vua them cot)
+        orphan_years = conn.execute(text(
+            "SELECT DISTINCT user_id, year FROM objectives WHERE archived = 0 AND cycle_id IS NULL ORDER BY year"
+        )).all()
+        for user_id, year in orphan_years:
+            y = year or 2026
+            # Kiem tra da co cycle "Nam y" chua
+            existing = conn.execute(text(
+                "SELECT id FROM kpi_cycles WHERE user_id = :uid AND name = :name"
+            ), {"uid": user_id, "name": f"Năm {y}"}).scalar()
+            if existing:
+                cycle_id = existing
+            else:
+                conn.execute(text(
+                    "INSERT INTO kpi_cycles (user_id, name, cycle_type, start_date, end_date, is_active, is_locked, created_at) "
+                    "VALUES (:uid, :name, 'yearly', :sd, :ed, 1, 0, CURRENT_TIMESTAMP)"
+                ), {"uid": user_id, "name": f"Năm {y}", "sd": f"{y}-01-01", "ed": f"{y}-12-31"})
+                cycle_id = conn.execute(text("SELECT MAX(id) FROM kpi_cycles")).scalar()
+            conn.execute(text(
+                "UPDATE objectives SET cycle_id = :cid WHERE user_id = :uid AND year = :year AND archived = 0 AND cycle_id IS NULL"
+            ), {"cid": cycle_id, "uid": user_id, "year": y})
+        conn.commit()
+
         if kpi_cols and "objective_id" not in kpi_cols:
             conn.execute(text("ALTER TABLE kpis ADD COLUMN objective_id INTEGER"))
+
+        # Phan vung Work/Personal: KPI cu mac dinh "Work"
+        if kpi_cols and "category" not in kpi_cols:
+            conn.execute(text("ALTER TABLE kpis ADD COLUMN category VARCHAR(20) DEFAULT 'Work'"))
 
         # He don vi do: unit / target_value / current_value (giu nguyen % cu)
         if kpi_cols and "unit" not in kpi_cols:
@@ -87,6 +122,22 @@ def migrate():
         if user_cols and "picture" not in user_cols:
             conn.execute(text("ALTER TABLE users ADD COLUMN picture VARCHAR(500) DEFAULT ''"))
 
+        # D1 Onboarding: them cac cot moi vao users
+        if user_cols and "onboarding_completed" not in user_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN onboarding_completed BOOLEAN DEFAULT 0"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN onboarding_skipped_at DATETIME"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(100) DEFAULT ''"))
+            # User cu: da dung qua -> danh dau hoan thanh onboarding
+            conn.execute(text("UPDATE users SET onboarding_completed = 1"))
+
+        # D3 Cycle Lock: them cac cot metadata
+        cycle_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(kpi_cycles)"))]
+        if cycle_cols and "locked_at" not in cycle_cols:
+            conn.execute(text("ALTER TABLE kpi_cycles ADD COLUMN locked_at DATETIME"))
+            conn.execute(text("ALTER TABLE kpi_cycles ADD COLUMN locked_by INTEGER"))
+            conn.execute(text("ALTER TABLE kpi_cycles ADD COLUMN lock_reason VARCHAR(500) DEFAULT ''"))
+            conn.execute(text("ALTER TABLE kpi_cycles ADD COLUMN cloned_from_cycle_id INTEGER"))
+
         conn.commit()
 
 
@@ -98,6 +149,17 @@ def seed_objectives():
     try:
         if db.scalars(select(models.Objective).limit(1)).first():
             return
+        # Dam bao co default cycle 2026
+        cycle = db.scalars(
+            select(models.KPICycle).where(models.KPICycle.user_id == 1)
+        ).first()
+        if not cycle:
+            cycle = models.KPICycle(
+                user_id=1, name="Năm 2026", cycle_type="yearly",
+                start_date=date(2026, 1, 1), end_date=date(2026, 12, 31),
+            )
+            db.add(cycle)
+            db.flush()
         mapping = {
             ("Vận hành CNTT ổn định và tuân thủ", 75): [
                 "Hoàn thành báo cáo ITGC", "Tỷ lệ xử lý ticket", "hồ sơ audit",
@@ -107,7 +169,9 @@ def seed_objectives():
         }
         kpis = list(db.scalars(select(models.KPI).where(models.KPI.archived == False)))  # noqa: E712
         for (obj_name, obj_weight), keywords in mapping.items():
-            obj = models.Objective(user_id=1, name=obj_name, weight=obj_weight, year=2026)
+            obj = models.Objective(
+                user_id=1, name=obj_name, weight=obj_weight, year=2026, cycle_id=cycle.id
+            )
             db.add(obj)
             db.flush()
             for k in kpis:
@@ -118,10 +182,15 @@ def seed_objectives():
         db.close()
 
 
+DEMO_EMAIL = "demo@demo.com"
+DEMO_PASSWORD = "demo1234"
+
+
 def seed_demo_data():
     """Tao user mac dinh + bo KPI mau (chi khi DB trong) de demo nhanh.
 
-    Tai khoan demo: demo@local / demo
+    Tai khoan demo: demo@demo.com / demo1234
+    (Email co dau cham de qua duoc validate o frontend; chay tren moi may/deploy.)
     """
     db = SessionLocal()
     try:
@@ -129,14 +198,23 @@ def seed_demo_data():
         if not user:
             db.add(models.User(
                 id=1, name="Người dùng demo",
-                email="demo@local",
-                hashed_password=hash_password("demo"),
+                email=DEMO_EMAIL,
+                hashed_password=hash_password(DEMO_PASSWORD),
             ))
             db.commit()
-        elif user.hashed_password is None:
-            user.email = user.email or "demo@local"
-            user.hashed_password = hash_password("demo")
-            db.commit()
+        else:
+            # Tu va DB cu: tai khoan demo legacy (demo@local / chua co email) ->
+            # chuyen sang email hop le + mat khau chuan de login duoc qua frontend.
+            changed = False
+            if user.email in (None, "", "demo@local"):
+                user.email = DEMO_EMAIL
+                user.hashed_password = hash_password(DEMO_PASSWORD)
+                changed = True
+            elif user.hashed_password is None:
+                user.hashed_password = hash_password(DEMO_PASSWORD)
+                changed = True
+            if changed:
+                db.commit()
 
         if not settings.seed_demo_data:
             return  # SEED_DEMO_DATA=false -> khong tao KPI mau, chi dam bao tai khoan demo
@@ -185,16 +263,155 @@ def seed_demo_data():
         db.close()
 
 
+def seed_compare_demo():
+    """Tao du lieu demo so sanh 2 chu ky 2025 vs 2026 voi tien do co thuc.
+
+    - Sua loi chinh ta 'Nam 20XX' -> 'Năm 20XX' trong tat ca cycles.
+    - Idempotent: bo qua neu cycle 'Năm 2025' da ton tai.
+    """
+    if not settings.seed_demo_data:
+        return
+    db = SessionLocal()
+    try:
+        # 1. Fix typo 'Nam ' -> 'Năm ' trong ten tat ca cycles
+        bad = db.scalars(
+            select(models.KPICycle).where(
+                models.KPICycle.user_id == 1,
+                models.KPICycle.name.like("Nam %"),
+            )
+        ).all()
+        for c in bad:
+            c.name = "Năm" + c.name[3:]
+        if bad:
+            db.commit()
+
+        # 2. Kiem tra xem cycle 2025 da co chua
+        cycle_2025 = db.scalars(
+            select(models.KPICycle).where(
+                models.KPICycle.user_id == 1,
+                models.KPICycle.name == "Năm 2025",
+            )
+        ).first()
+        if cycle_2025:
+            return  # da co du lieu demo
+
+        # 3. Tao cycle Năm 2025 (da ket thuc, tien do cao)
+        cycle_2025 = models.KPICycle(
+            user_id=1, name="Năm 2025", cycle_type="yearly",
+            start_date=date(2025, 1, 1), end_date=date(2025, 12, 31),
+            is_active=False, is_locked=True,
+        )
+        db.add(cycle_2025)
+        db.flush()
+
+        OBJECTIVES_2025 = [
+            ("Vận hành CNTT ổn định và tuân thủ", 50, [
+                ("Hoàn thành báo cáo ITGC 4 quý đúng hạn", 40, "báo cáo", 4, 4.0),
+                ("Tỷ lệ xử lý ticket trong SLA ≥ 95%", 35, "%", 100, 97.0),
+                ("Hoàn thành hồ sơ audit nội bộ 2025", 25, "đợt audit", 2, 2.0),
+            ]),
+            ("Nâng cao hiệu suất qua tự động hóa", 30, [
+                ("Tự động hóa 2 báo cáo tuân thủ định kỳ", 60, "báo cáo", 2, 2.0),
+                ("Triển khai dashboard KPI nội bộ", 40, "dashboard", 1, 1.0),
+            ]),
+            ("Phát triển năng lực cá nhân", 20, [
+                ("Hoàn thành 3 khóa đào tạo bắt buộc", 50, "khóa học", 3, 3.0),
+                ("Đạt chứng chỉ ISO 27001 Foundation", 50, "chứng chỉ", 1, 1.0),
+            ]),
+        ]
+
+        for obj_name, obj_weight, kpi_list in OBJECTIVES_2025:
+            obj = models.Objective(
+                user_id=1, cycle_id=cycle_2025.id, name=obj_name,
+                weight=obj_weight, year=2025,
+            )
+            db.add(obj)
+            db.flush()
+            for kpi_name, kpi_weight, unit, target, current in kpi_list:
+                db.add(models.KPI(
+                    user_id=1, objective_id=obj.id, name=kpi_name,
+                    weight=kpi_weight, unit=unit,
+                    target_value=float(target), current_value=float(current),
+                    year=2025, deadline=date(2025, 12, 31),
+                ))
+
+        # 4. Dam bao cycle Năm 2026 ton tai voi objectives day du
+        cycle_2026 = db.scalars(
+            select(models.KPICycle).where(
+                models.KPICycle.user_id == 1,
+                models.KPICycle.name == "Năm 2026",
+            )
+        ).first()
+        if not cycle_2026:
+            cycle_2026 = models.KPICycle(
+                user_id=1, name="Năm 2026", cycle_type="yearly",
+                start_date=date(2026, 1, 1), end_date=date(2026, 12, 31),
+                is_active=True, is_locked=False,
+            )
+            db.add(cycle_2026)
+            db.flush()
+
+        existing_objs_2026 = db.scalar(
+            select(func.count(models.Objective.id)).where(
+                models.Objective.cycle_id == cycle_2026.id,
+                models.Objective.archived == False,  # noqa: E712
+            )
+        ) or 0
+        if existing_objs_2026 == 0:
+            OBJECTIVES_2026 = [
+                ("Vận hành CNTT ổn định và tuân thủ", 50, [
+                    ("Hoàn thành báo cáo ITGC 4 quý đúng hạn", 40, "báo cáo", 4, 2.0),
+                    ("Tỷ lệ xử lý ticket trong SLA ≥ 95%", 35, "%", 100, 45.0),
+                    ("Hoàn thành hồ sơ audit nội bộ 2026", 25, "đợt audit", 2, 0.0),
+                ]),
+                ("Nâng cao hiệu suất qua tự động hóa", 30, [
+                    ("Tự động hóa 2 báo cáo tuân thủ định kỳ", 60, "báo cáo", 2, 0.0),
+                    ("Triển khai dashboard KPI nội bộ", 40, "dashboard", 1, 0.0),
+                ]),
+                ("Phát triển năng lực cá nhân", 20, [
+                    ("Hoàn thành 3 khóa đào tạo bắt buộc", 50, "khóa học", 3, 1.0),
+                    ("Đạt chứng chỉ ISO 27001 Foundation", 50, "chứng chỉ", 1, 0.0),
+                ]),
+            ]
+            for obj_name, obj_weight, kpi_list in OBJECTIVES_2026:
+                obj = models.Objective(
+                    user_id=1, cycle_id=cycle_2026.id, name=obj_name,
+                    weight=obj_weight, year=2026,
+                )
+                db.add(obj)
+                db.flush()
+                for kpi_name, kpi_weight, unit, target, current in kpi_list:
+                    db.add(models.KPI(
+                        user_id=1, objective_id=obj.id, name=kpi_name,
+                        weight=kpi_weight, unit=unit,
+                        target_value=float(target), current_value=float(current),
+                        year=2026, deadline=date(2026, 12, 31),
+                    ))
+
+        db.commit()
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     migrate()
+    # nap cau hinh app-level da luu (vd google_mock_mode doi tu UI) de giu sau restart
+    from .services import app_config
+    db = SessionLocal()
+    try:
+        app_config.load_overrides(db)
+    finally:
+        db.close()
     seed_demo_data()
     seed_objectives()
+    seed_compare_demo()
     yield
 
 
 app = FastAPI(title="KPI Companion API", version="0.1.0", lifespan=lifespan)
+app.mount("/uploads", StaticFiles(directory=settings.uploads_dir), name="uploads")
 
 origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 app.add_middleware(
@@ -206,12 +423,20 @@ app.add_middleware(
 )
 
 app.include_router(auth_router.router)
+app.include_router(cycles.router)
 app.include_router(kpis.router)
 app.include_router(objectives.router)
 app.include_router(chat.router)
 app.include_router(work_items.router)
 app.include_router(sources.router)
 app.include_router(reports.router)
+app.include_router(settings_router.router)
+app.include_router(oauth.router)
+app.include_router(notifications.router)
+app.include_router(burnout.router)
+app.include_router(notification_settings.router)
+app.include_router(share_links.router)
+app.include_router(share_links.public_router)
 
 
 @app.get("/api/health")

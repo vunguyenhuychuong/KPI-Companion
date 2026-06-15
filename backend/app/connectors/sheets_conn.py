@@ -29,11 +29,11 @@ def _load_mock(start: date, end: date) -> list[dict]:
     return out
 
 
-def fetch_sheets(start: date, end: date) -> list[dict]:
-    if not google_available() or not SHEET_ID:
+def fetch_sheets(start: date, end: date, db=None, user_id=None) -> list[dict]:
+    if not google_available(db, user_id) or not SHEET_ID:
         return _load_mock(start, end)
 
-    service = get_service("sheets", "v4")
+    service = get_service("sheets", "v4", db, user_id)
     resp = (
         service.spreadsheets()
         .values()

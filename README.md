@@ -9,7 +9,7 @@ AI Agent giúp mỗi cá nhân quản lý toàn bộ KPI trong năm: kể công 
 | Tính năng | Mô tả |
 |---|---|
 | 💬 Cập nhật bằng ngôn ngữ tự nhiên | Kể tuần làm việc → Agent tách việc, gán KPI, phân loại, đề xuất % tiến độ |
-| 🔌 Thu thập tự động | Quét Gmail, Google Calendar, Google Sheets hoặc upload Excel/CSV — gõ 1 câu "Cập nhật tuần này từ Gmail và Calendar" là xong |
+| 🔌 Thu thập tự động | Kết nối tài khoản (Gmail, Calendar, Sheets, Notion, Slack, Outlook) bằng OAuth ngay trên giao diện, hoặc upload Excel/CSV — gõ 1 câu "Cập nhật tuần này từ Gmail và Calendar" là xong |
 | ✅ Human-in-the-loop | Mọi đề xuất của Agent đều chờ người dùng kiểm tra/chỉnh sửa rồi mới lưu; dữ liệu nguồn ngoài luôn kèm nguồn gốc (email nào, dòng nào) |
 | ✨ Phân rã SMART | Nhập KPI năm → Agent phân rã mục tiêu theo quý / tháng |
 | 📊 Dashboard cảnh báo | Tiến độ thực tế vs kỳ vọng theo thời gian, màu xanh/vàng/đỏ, cảnh báo KPI rủi ro |
@@ -23,8 +23,8 @@ AI Agent giúp mỗi cá nhân quản lý toàn bộ KPI trong năm: kể công 
 React (Vite) ── /api proxy ──► FastAPI ──► LangChain (ChatOpenAI) ──► Qwen (OpenAI-compatible)
    │                              │
    │                              ├─► SQLite (KPI, đầu việc, lịch sử, hội thoại)
-   dashboard / chat / KPI         └─► Connectors: Gmail · Calendar · Sheets · Excel/CSV
-                                       (mock fallback khi chưa có Google OAuth)
+   dashboard / chat / KPI         └─► Connectors: Gmail · Calendar · Sheets · Notion · Slack · Outlook · Excel/CSV
+                                       (OAuth riêng từng user, mock fallback khi chưa kết nối)
 ```
 
 **Agent loop** (`backend/app/agent/agent.py`): mỗi tin nhắn đi qua bộ định tuyến ý định → `update_progress` (tách & phân loại việc) | `sync_request` (quét nguồn ngoài rồi phân loại) | `question` (trả lời từ dữ liệu KPI thật) | `other`. Dùng structured JSON output thay vì native function-calling để tương thích mọi endpoint Qwen (DashScope / OpenRouter / vLLM nội bộ).
@@ -152,13 +152,55 @@ LLM_MODEL=qwen3.5-plus
 
 Bất kỳ endpoint OpenAI-compatible nào cũng dùng được (DashScope, OpenRouter, vLLM/Ollama nội bộ).
 
-### Google thật vs Mock
+### Kết nối nguồn dữ liệu thật (OAuth từ giao diện)
 
-Mặc định `GOOGLE_MOCK_MODE=true` → Gmail/Calendar/Sheets trả về **mock data** trong `backend/mock_data/` (demo được ngay, không cần credentials). Để dùng thật:
+Mặc định mọi nguồn trả về **mock data** trong `backend/mock_data/` (demo được ngay). Người dùng tự kết nối tài khoản thật ngay trên trang **Nguồn dữ liệu → Kết nối tài khoản**: bấm **Kết nối** → đăng nhập + cấp quyền với nhà cung cấp → quay về app, token lưu **riêng từng người dùng** trong DB (đã mã hóa). Không còn dùng `token.json` dùng chung.
 
-1. Tạo OAuth Client ID (Desktop) trên Google Cloud Console, bật Gmail + Calendar + Sheets API.
-2. Tải `credentials.json` vào thư mục `backend/`.
-3. Đặt `GOOGLE_MOCK_MODE=false` trong `.env`. Lần quét đầu tiên sẽ mở trình duyệt để OAuth (token lưu vào `token.json`).
+#### Google (Gmail · Calendar · Sheets) — Phase 1
+
+> ⚠️ Phải dùng OAuth client loại **"Web application"** (client "Desktop" cũ KHÔNG dùng được với luồng web).
+
+1. Vào [Google Cloud Console](https://console.cloud.google.com/) → tạo/chọn project.
+2. **APIs & Services → Library**: bật **Gmail API**, **Google Calendar API**, **Google Sheets API**.
+3. **APIs & Services → OAuth consent screen**: cấu hình app, thêm scope `gmail.readonly`, `calendar.readonly`, `spreadsheets.readonly`, `userinfo.email`, `userinfo.profile`; thêm tài khoản test nếu app ở chế độ Testing.
+4. **APIs & Services → Credentials → Create Credentials → OAuth client ID → Application type: Web application**.
+   - **Authorized redirect URIs** → thêm chính xác: `http://localhost:8000/api/oauth/google/callback`
+     (đổi domain khi deploy, khớp với `OAUTH_REDIRECT_BASE`).
+5. Bấm **Download JSON** → đổi tên thành `credentials.json` → **đặt vào thư mục `backend/`** (cùng cấp với `.env`). File này đã nằm trong `.gitignore`.
+6. Trong `backend/.env` đặt:
+   ```env
+   GOOGLE_MOCK_MODE=false
+   OAUTH_REDIRECT_BASE=http://localhost:8000
+   FRONTEND_URL=http://localhost:5173/sources
+   ```
+7. Khởi động lại `start.ps1`, vào **Nguồn dữ liệu → Kết nối tài khoản → Kết nối** ở thẻ Google.
+
+> 📌 Tóm tắt vị trí file: `backend/credentials.json`. Server đọc tên file qua `GOOGLE_CREDENTIALS_FILE` (mặc định `credentials.json`).
+
+#### Notion · Slack · Outlook — Phase 3 (tùy chọn)
+
+Kiến trúc đã hỗ trợ sẵn; chỉ cần đăng ký OAuth app ở mỗi bên và điền client id/secret vào `.env`:
+
+| Provider | Đăng ký app | Redirect URI cần khai báo |
+|---|---|---|
+| Notion | [notion.so/my-integrations](https://www.notion.so/my-integrations) (Public OAuth) | `http://localhost:8000/api/oauth/notion/callback` |
+| Slack | [api.slack.com/apps](https://api.slack.com/apps) → OAuth & Permissions (User scope `search:read`) | `http://localhost:8000/api/oauth/slack/callback` |
+| Outlook | [Azure Portal → App registrations](https://portal.azure.com/) (Microsoft Graph: `Mail.Read`, `Calendars.Read`, `offline_access`) | `http://localhost:8000/api/oauth/outlook/callback` |
+
+```env
+NOTION_CLIENT_ID=...   NOTION_CLIENT_SECRET=...
+SLACK_CLIENT_ID=...     SLACK_CLIENT_SECRET=...
+OUTLOOK_CLIENT_ID=...   OUTLOOK_CLIENT_SECRET=...
+```
+
+Có client id/secret → thẻ provider tự hiện nút **Kết nối** trên giao diện; chưa cấu hình → hiện "Chưa cấu hình trên server".
+
+#### Bảo mật token
+
+Token OAuth lưu trong DB được **mã hóa Fernet**. Mặc định key suy ra từ `JWT_SECRET_KEY` để chạy ngay; khi deploy thật nên đặt key riêng:
+```env
+TOKEN_ENCRYPTION_KEY=<chạy: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())">
+```
 
 ## 🎬 Kịch bản demo 5 phút
 
@@ -176,11 +218,11 @@ File demo có sẵn trong `demo/`: `kpi-mau.csv` (import KPI), `worklog-mau.csv`
 backend/
   app/
     agent/        # llm.py (Qwen client), prompts.py (prompt tiếng Việt), agent.py (agent loop)
-    connectors/   # gmail, calendar, sheets (real + mock), file_upload (Excel/CSV)
-    routers/      # kpis, chat, work_items, sources, reports
-    services/     # kpi_service (tiến độ/cảnh báo), report_service (xuất Excel)
-    models.py     # SQLAlchemy: KPI, SubGoal, WorkItem, KPIChangeLog, ChatMessage
-  mock_data/      # emails.json, calendar.json, timesheet.json
+    connectors/   # gmail, calendar, sheets, notion, slack, outlook (real + mock), file_upload (Excel/CSV)
+    routers/      # kpis, chat, work_items, sources, oauth, reports
+    services/     # kpi_service, report_service, oauth_service (kết nối OAuth từng user)
+    models.py     # SQLAlchemy: KPI, SubGoal, WorkItem, KPIChangeLog, ChatMessage, UserIntegration
+  mock_data/      # emails.json, calendar.json, timesheet.json, notion.json, slack.json, outlook.json
 frontend/
   src/pages/      # Dashboard, Chat, Kpis, Sources
   src/components/ # ProposalList (xác nhận đề xuất của Agent)

@@ -26,11 +26,11 @@ def _load_mock(start: date, end: date) -> list[dict]:
     return out
 
 
-def fetch_gmail(start: date, end: date) -> list[dict]:
-    if not google_available():
+def fetch_gmail(start: date, end: date, db=None, user_id=None) -> list[dict]:
+    if not google_available(db, user_id):
         return _load_mock(start, end)
 
-    service = get_service("gmail", "v1")
+    service = get_service("gmail", "v1", db, user_id)
     query = f"after:{start.strftime('%Y/%m/%d')} before:{end.strftime('%Y/%m/%d')} -category:promotions"
     resp = service.users().messages().list(userId="me", q=query, maxResults=30).execute()
     out = []

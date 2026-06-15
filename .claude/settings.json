@@ -1,0 +1,10 @@
+{
+  "ignorePatterns": [
+    "backend/.venv",
+    "**/node_modules",
+    "**/__pycache__",
+    "**/dist",
+    "*.pyc",
+    "*.backup-*.db"
+  ]
+}

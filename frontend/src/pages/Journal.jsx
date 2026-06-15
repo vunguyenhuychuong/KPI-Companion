@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, STATUS_COLORS } from '../api'
 import { useLang } from '../LangContext'
+import { ConfirmModal } from '../components/Modal'
+import { useToast } from '../components/Toast'
 
 function EvidenceTab() {
   const { tr, statusLabels, sourceLabels } = useLang()
@@ -59,7 +61,7 @@ function EvidenceTab() {
               {filtered.map((w) => (
                 <tr key={w.id}>
                   <td className="nowrap">{w.work_date || <span className="muted">—</span>}</td>
-                  <td className="nowrap muted">{w.created_at?.slice(0, 16).replace('T', ' ')}</td>
+                  <td className="nowrap muted">{w.created_at?.slice(0, 19).replace('T', ' ')}</td>
                   <td>{w.title}</td>
                   <td><span className="status-chip" style={{ color: STATUS_COLORS[w.status] }}>{SL[w.status] ?? w.status}</span></td>
                   <td>{w.kpi_name || <span className="muted">{tr('journal.no_kpi')}</span>}</td>
@@ -78,6 +80,7 @@ function EvidenceTab() {
 
 function HistoryTab() {
   const { tr } = useLang()
+  const [restorePending, setRestorePending] = useState(null)
 
   const FIELD_LABELS = {
     name: tr('journal.field_name'),
@@ -103,10 +106,11 @@ function HistoryTab() {
       .catch((e) => setError(e.message))
   useEffect(() => { load() }, [])
 
-  const restore = async (kpi) => {
-    if (!confirm(tr('journal.restore_confirm', { name: kpi.name }))) return
+  const doRestore = async () => {
+    if (!restorePending) return
     try {
-      await api.restoreKpi(kpi.id)
+      await api.restoreKpi(restorePending.id)
+      setRestorePending(null)
       load()
     } catch (e) { setError(e.message) }
   }
@@ -126,7 +130,7 @@ function HistoryTab() {
                   {k.objective_name ? ` · 🏁 ${k.objective_name}` : ''}
                 </span>
               </div>
-              <button className="btn small" onClick={() => restore(k)}>{tr('journal.restore')}</button>
+              <button className="btn small" onClick={() => setRestorePending(k)}>{tr('journal.restore')}</button>
             </div>
           ))}
         </div>
@@ -148,7 +152,7 @@ function HistoryTab() {
             <tbody>
               {logs.map((l) => (
                 <tr key={l.id}>
-                  <td className="nowrap">{l.changed_at?.slice(0, 16).replace('T', ' ')}</td>
+                  <td className="nowrap">{l.changed_at?.slice(0, 19).replace('T', ' ')}</td>
                   <td>{l.kpi_name || `#${l.kpi_id}`}</td>
                   <td className="nowrap">{FIELD_LABELS[l.field] || l.field}</td>
                   <td>{l.old_value}</td>
@@ -160,21 +164,32 @@ function HistoryTab() {
           </table>
         )}
       </div>
+      <ConfirmModal
+        open={!!restorePending}
+        title={tr('journal.restore')}
+        message={restorePending ? tr('journal.restore_confirm', { name: restorePending.name }) : ''}
+        confirmLabel={tr('journal.restore')}
+        onConfirm={doRestore}
+        onCancel={() => setRestorePending(null)}
+      />
     </>
   )
 }
 
 export default function Journal() {
   const { tr } = useLang()
+  const toast = useToast()
   const [tab, setTab] = useState('evidence')
   return (
-    <div className="page">
+    <div className="page journal-page">
       <header className="page-header row">
         <div>
           <h1>{tr('journal.title')}</h1>
           <p>{tr('journal.subtitle')}</p>
         </div>
-        <a className="btn" href={api.exportUrl}>{tr('journal.export')}</a>
+        <button className="btn" onClick={() => api.exportEvaluation().catch((e) => toast.error(e.message))}>
+          {tr('journal.export')}
+        </button>
       </header>
       <div className="period-tabs">
         <button className={`period-tab ${tab === 'evidence' ? 'active' : ''}`} onClick={() => setTab('evidence')}>
