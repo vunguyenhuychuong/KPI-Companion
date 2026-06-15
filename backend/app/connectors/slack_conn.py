@@ -37,6 +37,8 @@ def _connected(db, user_id) -> bool:
 
 def fetch_slack(start: date, end: date, db=None, user_id=None) -> list[dict]:
     if not _connected(db, user_id):
+        if db is not None and user_id is not None:
+            return []
         return _load_mock(start, end)
 
     import requests

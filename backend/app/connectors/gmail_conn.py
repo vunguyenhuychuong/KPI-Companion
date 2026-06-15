@@ -28,6 +28,8 @@ def _load_mock(start: date, end: date) -> list[dict]:
 
 def fetch_gmail(start: date, end: date, db=None, user_id=None) -> list[dict]:
     if not google_available(db, user_id):
+        if db is not None and user_id is not None:
+            return []
         return _load_mock(start, end)
 
     service = get_service("gmail", "v1", db, user_id)

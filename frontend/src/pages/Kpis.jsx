@@ -349,7 +349,7 @@ function KpiCockpit({ objectives, visibleKpis, conflicts, totalObjWeight, onShow
   )
 }
 
-function KpiCard({ kpi, busyId, expanded, changelog, smartResult, smartLoadingId, actions, inConflict, tr }) {
+function KpiCard({ kpi, busyId, expanded, changelog, smartResult, smartLoadingId, actions, inConflict, selected, onSelect, tr }) {
   // dich ten truong/gia tri trong lich su thay doi sang tieng nguoi dung (khong lo ten field tho)
   const fieldLabel = (f) => { const k = `field.${f}`; const t = tr(k); return t === k ? f : t }
   const fieldValue = (f, v) => {
@@ -365,6 +365,9 @@ function KpiCard({ kpi, busyId, expanded, changelog, smartResult, smartLoadingId
   return (
     <div className={`card kpi-row status-${statusClass}${inConflict ? ' in-conflict' : ''}`}>
       <div className="kpi-card-grid">
+        <label className="bulk-check" title={tr('kpis.bulk_select_kpi')}>
+          <input type="checkbox" checked={selected} onChange={(e) => onSelect(kpi.id, e.target.checked)} />
+        </label>
         <div className="kpi-main">
           <div className="kpi-title-line">
             <strong>{kpi.name}</strong>
@@ -532,12 +535,16 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
   }
 
   const handleSave = async () => {
+    if (saving) return
     setSaving(true)
     setError('')
     try {
-      await api.confirmKpiProposal(buildProposal())
-      onSaved()
-    } catch (e) { setError(e.message) } finally { setSaving(false) }
+      const created = await api.confirmKpiProposal(buildProposal())
+      onSaved(created)
+    } catch (e) {
+      setError(e.message || String(e))
+      setSaving(false)
+    }
   }
 
   const closeConfirmModal = showCloseConfirm ? (
@@ -835,6 +842,7 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
             </button>
           )}
         </div>
+        {error && <div className="error-text">⚠️ {error}</div>}
       </div>
 
       <ConfirmModal
@@ -883,6 +891,10 @@ export default function Kpis() {
   const [importWizard, setImportWizard] = useState(null) // { preview } | null
   const [removeObjConfirm, setRemoveObjConfirm] = useState(null)
   const [archivePrompt, setArchivePrompt] = useState(null)
+  const [bulkDeletePrompt, setBulkDeletePrompt] = useState(false)
+  const [selectedKpis, setSelectedKpis] = useState([])
+  const [selectedObjectives, setSelectedObjectives] = useState([])
+  const [bulkDeleting, setBulkDeleting] = useState(false)
   const [balancePending, setBalancePending] = useState(null)
 
   // D4: Clone Cycle
@@ -1127,6 +1139,60 @@ export default function Kpis() {
     load()
   }
 
+  const toggleKpiSelection = (id, checked) => {
+    setSelectedKpis((ids) => checked ? [...new Set([...ids, id])] : ids.filter((x) => x !== id))
+  }
+
+  const toggleObjectiveSelection = (id, checked) => {
+    setSelectedObjectives((ids) => checked ? [...new Set([...ids, id])] : ids.filter((x) => x !== id))
+  }
+
+  const clearBulkSelection = () => {
+    setSelectedKpis([])
+    setSelectedObjectives([])
+  }
+
+  const doBulkDelete = async (reason) => {
+    if (bulkDeleting) return
+    const selectedObjectiveSet = new Set(selectedObjectives)
+    const kpisToDelete = selectedKpis.filter((id) => {
+      const kpi = kpis.find((k) => k.id === id)
+      return kpi && !selectedObjectiveSet.has(kpi.objective_id)
+    })
+    const objectivesToDelete = [...selectedObjectives]
+    if (!kpisToDelete.length && !objectivesToDelete.length) return
+
+    setBulkDeleting(true)
+    setError('')
+    try {
+      for (const objectiveId of objectivesToDelete) {
+        await api.confirmDeleteKpi({
+          target_type: 'objective',
+          target_id: objectiveId,
+          reason: reason || tr('kpis.bulk_delete_default_reason'),
+        })
+      }
+      for (const kpiId of kpisToDelete) {
+        await api.confirmDeleteKpi({
+          target_type: 'kpi',
+          target_id: kpiId,
+          reason: reason || tr('kpis.bulk_delete_default_reason'),
+        })
+      }
+      toast.success(tr('kpis.bulk_delete_success', {
+        objectives: objectivesToDelete.length,
+        kpis: kpisToDelete.length,
+      }))
+      setBulkDeletePrompt(false)
+      clearBulkSelection()
+      load()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
+
   const actions = {
     decompose: async (id) => {
       setBusyId(id)
@@ -1176,6 +1242,12 @@ export default function Kpis() {
     ...objectives.map((o) => ({ obj: o, kpis: visibleKpis.filter((k) => k.objective_id === o.id) })),
     { obj: null, kpis: visibleKpis.filter((k) => !k.objective_id) },
   ].filter((g) => g.kpis.length > 0 || (mode === 'all' && g.obj))
+  const selectedObjectiveSet = new Set(selectedObjectives)
+  const selectedKpisOutsideObjectives = selectedKpis.filter((id) => {
+    const kpi = kpis.find((k) => k.id === id)
+    return kpi && !selectedObjectiveSet.has(kpi.objective_id)
+  })
+  const bulkSelectionCount = selectedObjectives.length + selectedKpisOutsideObjectives.length
 
   return (
     <div className="page">
@@ -1225,6 +1297,23 @@ export default function Kpis() {
       />
 
       {error && <div className="error-text">⚠️ {error}</div>}
+
+      {bulkSelectionCount > 0 && (
+        <div className="card bulk-action-bar">
+          <span>
+            {tr('kpis.bulk_selected', {
+              objectives: selectedObjectives.length,
+              kpis: selectedKpisOutsideObjectives.length,
+            })}
+          </span>
+          <div className="row" style={{ gap: 8 }}>
+            <button className="btn small ghost" onClick={clearBulkSelection}>{tr('kpis.bulk_clear')}</button>
+            <button className="btn small danger" disabled={bulkDeleting} onClick={() => setBulkDeletePrompt(true)}>
+              {bulkDeleting ? tr('import.wizard.saving') : tr('kpis.bulk_delete')}
+            </button>
+          </div>
+        </div>
+      )}
 
       {importWizard && (
         <ImportWizard
@@ -1430,6 +1519,18 @@ export default function Kpis() {
         onConfirm={doArchive}
         onCancel={() => setArchivePrompt(null)}
       />
+      <PromptModal
+        open={bulkDeletePrompt}
+        title={tr('kpis.bulk_delete')}
+        message={tr('kpis.bulk_delete_prompt', {
+          objectives: selectedObjectives.length,
+          kpis: selectedKpisOutsideObjectives.length,
+        })}
+        placeholder={tr('kpim.reason_ph')}
+        confirmLabel={bulkDeleting ? tr('import.wizard.saving') : tr('kpis.bulk_delete')}
+        onConfirm={doBulkDelete}
+        onCancel={() => setBulkDeletePrompt(false)}
+      />
 
       <Modal
         open={showShareModal}
@@ -1505,7 +1606,18 @@ export default function Kpis() {
           <section className="objective-group" key={objId}>
             <div className="objective-head">
               <div className="objective-title">
-                <h2>{obj ? obj.name : tr('kpis.ungrouped')}</h2>
+                <h2>
+                  {obj && (
+                    <label className="bulk-check objective-check" title={tr('kpis.bulk_select_objective')}>
+                      <input
+                        type="checkbox"
+                        checked={selectedObjectives.includes(obj.id)}
+                        onChange={(e) => toggleObjectiveSelection(obj.id, e.target.checked)}
+                      />
+                    </label>
+                  )}
+                  {obj ? obj.name : tr('kpis.ungrouped')}
+                </h2>
                 {obj && (
                   <span className="obj-stats">
                     <span className="obj-stat">{tr('kpis.obj_weight')} <b>{obj.weight}%</b></span>
@@ -1542,7 +1654,9 @@ export default function Kpis() {
                   <KpiCard key={kpi.id} kpi={kpi} busyId={busyId} expanded={expanded} tr={tr}
                     changelog={changelog} smartResult={smartResults[kpi.id] ?? null}
                     smartLoadingId={smartLoadingId}
-                    actions={actions} inConflict={conflictKpiIds.has(kpi.id)} />
+                    actions={actions} inConflict={conflictKpiIds.has(kpi.id)}
+                    selected={selectedKpis.includes(kpi.id)}
+                    onSelect={toggleKpiSelection} />
                 ))}
                 {needsPagination && totalPages > 1 && (
                   <div className="pagination">

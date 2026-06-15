@@ -98,6 +98,7 @@
 [data-theme="dark"] .sum-chip.yellow, [data-theme="dark"] .dist-chip.yellow,
 [data-theme="dark"] .weight-hint.yellow, [data-theme="dark"] .weight-total.yellow,
 [data-theme="dark"] .badge.mock { background: rgba(202,138,4,.2); color: #fbbf57; }
+[data-theme="dark"] .badge.disconnected { background: rgba(148,163,184,.18); color: #cbd5e1; }
 [data-theme="dark"] .sum-chip.red, [data-theme="dark"] .dist-chip.red,
 [data-theme="dark"] .weight-hint.red, [data-theme="dark"] .weight-total.red,
 [data-theme="dark"] .overdue-badge { background: rgba(220,38,38,.2); color: #fca5a5; }
@@ -604,7 +605,19 @@ body {
 .journal-page .card { overflow-x: auto; }
 
 /* KPI card: grid 2 cot â€” noi dung trai, thanh icon PHAI co dinh, khong bao gio rot dong */
-.kpi-card-grid { display: grid; grid-template-columns: 1fr auto; gap: 14px; align-items: start; }
+.kpi-card-grid { display: grid; grid-template-columns: 22px 1fr auto; gap: 12px; align-items: start; }
+.bulk-check {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; flex: 0 0 auto;
+}
+.bulk-check input { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; }
+.objective-check { margin-right: 4px; vertical-align: middle; }
+.bulk-action-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 12px 14px; margin-bottom: 14px;
+  border-color: color-mix(in srgb, var(--primary) 38%, var(--border));
+}
+.bulk-action-bar > span { font-size: 13px; font-weight: 700; color: var(--text); }
 .kpi-main { min-width: 0; }
 .kpi-title-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .kpi-title-line strong { font-size: 14.5px; }
@@ -757,6 +770,7 @@ body {
 .badge { margin-left: auto; font-size: 11px; padding: 2px 9px; border-radius: 99px; font-weight: 600; }
 .badge.mock { background: #fef9c3; color: #854d0e; }
 .badge.real { background: #dcfce7; color: #166534; }
+.badge.disconnected { background: #e2e8f0; color: #475569; }
 
 /* ===== Modal ===== */
 .modal-overlay {
@@ -1186,6 +1200,14 @@ body {
 }
 .header-mobile-only { display: none; }
 
+.help-panel-trigger:hover { box-shadow: 0 18px 42px rgba(37,99,235,.34) !important; }
+.help-panel-drawer .msg-tool {
+  width: 30px; height: 30px; flex-shrink: 0;
+  border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--muted);
+}
+.help-panel-drawer .msg-tool:hover { color: var(--text); }
+
 /* Cycle selector trong header */
 .cycle-selector {
   height: 32px; padding: 0 10px; max-width: 180px;
@@ -1292,13 +1314,20 @@ body {
   .page-header h1 { font-size: 19px; }
   .header-actions { justify-content: stretch; }
   .table { display: block; overflow-x: auto; }
-  .kpi-card-grid { grid-template-columns: 1fr; }
-  .kpi-actions { justify-content: flex-start; }
+  .kpi-card-grid { grid-template-columns: 22px 1fr; }
+  .kpi-actions { grid-column: 2; justify-content: flex-start; }
+  .bulk-action-bar { align-items: stretch; flex-direction: column; }
   .modal-grid { grid-template-columns: 1fr; }
   .app-footer-inner { flex-direction: column; align-items: flex-start; gap: 6px; }
   .app-footer-tagline { display: none; }
   .app-header { padding: 0 14px; }
   .app-header-title { font-size: 14px; }
+  .help-panel-trigger { right: 14px !important; bottom: 14px !important; }
+  .help-panel-drawer {
+    top: auto !important; left: 10px !important; right: 10px !important; bottom: 72px !important;
+    width: auto !important; max-height: min(72vh, 620px) !important;
+    border-radius: 12px !important;
+  }
   .chat-layout { min-height: calc(100dvh - 150px); }
   .chat-page { height: calc(100dvh - 150px); padding: 10px 12px 10px; }
   .chat-input { grid-template-columns: 1fr; }
@@ -1738,7 +1767,8 @@ body {
 }
 
 @media (max-width: 680px) {
-  .kpi-card-grid { grid-template-columns: 1fr; }
+  .kpi-card-grid { grid-template-columns: 22px 1fr; }
+  .kpi-actions { grid-column: 2; justify-self: start; }
   .kpi-actions { justify-content: flex-start; overflow-x: auto; }
   .cockpit-grid { grid-template-columns: 1fr; }
   .cockpit-hero h2 { font-size: 38px; }

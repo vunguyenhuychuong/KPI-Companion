@@ -31,6 +31,15 @@ def sources_status(current_user: CurrentUser, db: Session = Depends(get_db)):
 @router.post("/sync", response_model=schemas.ChatResponse)
 def sync(payload: schemas.SyncRequest, current_user: CurrentUser, db: Session = Depends(get_db)):
     """Quet nguon ngoai theo yeu cau (nut bam tren UI, khong qua chat)."""
+    from ..services import oauth_service
+
+    modes = oauth_service.source_modes(db, current_user.id, settings.google_mock_mode)
+    disconnected = [src for src in payload.sources if modes.get(src) != "real"]
+    if disconnected and len(disconnected) == len(payload.sources):
+        return schemas.ChatResponse(
+            reply="Chưa thể quét vì tài khoản của bạn chưa kết nối các nguồn dữ liệu đã chọn. Hãy kết nối tài khoản thật hoặc upload Excel/CSV.",
+            intent="sync_request",
+        )
     activities = fetch_activities(
         payload.sources, payload.start_date, payload.end_date, db=db, user_id=current_user.id
     )

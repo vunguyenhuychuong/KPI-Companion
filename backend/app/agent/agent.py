@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..connectors import fetch_activities
-from ..services import kpi_service
+from ..services import kpi_service, oauth_service
 from . import memory, prompts
 from .llm import call_json, call_text
 
@@ -28,6 +28,148 @@ def _lang_suffix(lang: str) -> str:
     if lang == "en":
         return "\n\nIMPORTANT: Your entire response MUST be written in English."
     return ""
+
+
+def _language_name(lang: str) -> str:
+    return "English" if lang == "en" else "Vietnamese"
+
+
+def _render_work_items_for_llm(items: list[schemas.ProposedWorkItem]) -> str:
+    if not items:
+        return "(none)"
+    lines = []
+    for i, it in enumerate(items, 1):
+        lines.append(
+            f"{i}. title={it.title!r}; detail={it.detail!r}; status={it.status}; "
+            f"kpi={it.kpi_name or '(unlinked)'}; unit={it.kpi_unit or '%'}; "
+            f"value_delta={it.value_delta:g}; source={it.source or 'chat'}; "
+            f"source_ref={it.source_ref or ''}; work_date={it.work_date or ''}"
+        )
+    return "\n".join(lines)
+
+
+def _render_kpi_proposals_for_llm(
+    proposed: list[schemas.ProposedKPI],
+    changes: list[schemas.WeightChange],
+    new_objectives: list[schemas.ProposedObjective] | None = None,
+) -> str:
+    lines: list[str] = []
+    if new_objectives:
+        lines.append("New objectives:")
+        for i, o in enumerate(new_objectives, 1):
+            lines.append(f"{i}. name={o.name!r}; description={o.description!r}; weight={o.weight:g}%")
+    if proposed:
+        lines.append("New KPIs:")
+        for i, p in enumerate(proposed, 1):
+            lines.append(
+                f"{i}. name={p.name!r}; description={p.description!r}; target={p.target!r}; "
+                f"target_value={p.target_value:g}; unit={p.unit}; weight={p.weight:g}%; "
+                f"deadline={p.deadline or ''}; category={p.category}; objective={p.objective_name or '(unassigned)'}"
+            )
+    if changes:
+        lines.append("Existing KPI weight changes:")
+        for i, c in enumerate(changes, 1):
+            lines.append(f"{i}. {c.kpi_name}: {c.old_weight:g}% -> {c.new_weight:g}%")
+    return "\n".join(lines) if lines else "(none)"
+
+
+def _render_conflicts_for_llm(conflicts: list[schemas.KPIConflict]) -> str:
+    if not conflicts:
+        return "(none)"
+    lines = []
+    for i, c in enumerate(conflicts, 1):
+        lines.append(
+            f"{i}. severity={c.severity}; type={c.type}; kpis={', '.join(c.kpi_names)}; "
+            f"explanation={c.explanation}; suggestion={c.suggestion}"
+        )
+    return "\n".join(lines)
+
+
+def _proposal_reply(
+    items: list[schemas.ProposedWorkItem],
+    from_sync: bool = False,
+    lang: str = "vi",
+    history: list[dict] | None = None,
+    user_text: str = "",
+) -> str:
+    return call_text(
+        prompts.PROPOSAL_REPLY_SYSTEM.format(
+            language=_language_name(lang),
+            source="external data sync" if from_sync else "user message",
+            item_count=len(items),
+            items=_render_work_items_for_llm(items),
+        ) + _lang_suffix(lang),
+        user_text or "Draft the assistant reply for these proposed work items.",
+        history=history,
+        max_tokens=700,
+    )
+
+
+def _kpi_proposal_reply(
+    proposed: list[schemas.ProposedKPI],
+    changes: list[schemas.WeightChange],
+    lang: str = "vi",
+    new_objectives: list[schemas.ProposedObjective] | None = None,
+    conflicts: list[schemas.KPIConflict] | None = None,
+    history: list[dict] | None = None,
+    user_text: str = "",
+) -> str:
+    return call_text(
+        prompts.KPI_PROPOSAL_REPLY_SYSTEM.format(
+            language=_language_name(lang),
+            proposal_count=len(proposed) + len(new_objectives or []),
+            proposal_data=_render_kpi_proposals_for_llm(proposed, changes, new_objectives),
+            conflicts=_render_conflicts_for_llm(conflicts or []),
+        ) + _lang_suffix(lang),
+        user_text or "Draft the assistant reply for these KPI proposals.",
+        history=history,
+        max_tokens=900,
+    )
+
+
+def _status_reply(
+    text: str,
+    facts: str,
+    intent: str,
+    lang: str = "vi",
+    history: list[dict] | None = None,
+) -> str:
+    return call_text(
+        prompts.STATUS_REPLY_SYSTEM.format(
+            language=_language_name(lang), facts=facts, intent=intent, today=_today()
+        ) + _lang_suffix(lang),
+        text,
+        history=history,
+        max_tokens=500,
+    )
+
+
+def _coaching_reply(
+    analysis: str,
+    causes: list[schemas.RootCause],
+    proposed: list[schemas.ProposedWorkItem],
+    text: str,
+    lang: str = "vi",
+    history: list[dict] | None = None,
+) -> str:
+    causes_text = "\n".join(
+        f"- cause={c.cause}; question={c.question}" for c in causes
+    ) or "(none)"
+    facts = (
+        f"LLM RCA analysis draft:\n{analysis}\n\n"
+        f"LLM root-cause hypotheses:\n{causes_text}\n\n"
+        f"Proposed remediation work items that will be shown as confirmable cards:\n"
+        f"{_render_work_items_for_llm(proposed)}\n"
+        "Nothing has been saved yet; remediation work items require the user to click Confirm."
+    )
+    return call_text(
+        prompts.COACH_REPLY_SYSTEM.format(
+            language=_language_name(lang), facts=facts, today=_today()
+        ) + _lang_suffix(lang),
+        text,
+        history=history,
+        max_tokens=900,
+    )
 
 
 def _history_block(history: list[dict] | None, max_msgs: int = 4) -> str:
@@ -374,81 +516,6 @@ def detect_conflicts(
     return out
 
 
-def _conflict_block(conflicts: list[schemas.KPIConflict]) -> str:
-    """Khoi canh bao xung dot chen vao cau tra loi chat."""
-    if not conflicts:
-        return ""
-    lines = [f"\n\n⚔️ **Phát hiện {len(conflicts)} xung đột KPI tiềm ẩn:**"]
-    for c in conflicts:
-        lines.append(f"\n{SEVERITY_LABELS[c.severity]} — **{' ↔ '.join(c.kpi_names)}**")
-        lines.append(f"- Vì sao xung đột: {c.explanation}")
-        if c.suggestion:
-            lines.append(f"- 💡 Gợi ý cân bằng: {c.suggestion}")
-    lines.append(
-        "\nBạn vẫn có thể bấm **Xác nhận** nếu chấp nhận đánh đổi, "
-        "hoặc mô tả lại KPI theo gợi ý cân bằng ở trên."
-    )
-    return "\n".join(lines)
-
-
-def _kpi_proposal_reply(
-    proposed: list[schemas.ProposedKPI],
-    changes: list[schemas.WeightChange],
-    lang: str = "vi",
-    new_objectives: list[schemas.ProposedObjective] | None = None,
-) -> str:
-    vi = lang != "en"
-    if not proposed and not new_objectives:
-        return (
-            "Tôi chưa trích xuất được KPI nào từ yêu cầu này. Bạn mô tả rõ hơn giúp tôi nhé — "
-            "ví dụ: *\"Tạo mục tiêu Phát triển năng lực 30%, trong đó có KPI hoàn thành 3 khóa "
-            "đào tạo nội bộ\"*."
-        ) if vi else (
-            "I couldn't extract any KPIs from this request. Please describe more clearly — "
-            "e.g.: *\"Create a Personal Development objective at 30%, containing a KPI to complete "
-            "3 internal training courses\"*."
-        )
-    lines = []
-    if new_objectives:
-        lines.append(
-            f"🏁 {'Tôi đề xuất tạo' if vi else 'I propose creating'} **{len(new_objectives)} "
-            f"{'mục tiêu (Objective) mới' if vi else 'new objective(s)'}**:"
-        )
-        for o in new_objectives:
-            lines.append(f"- **{o.name}** — {'trọng số' if vi else 'weight'} {o.weight:g}%")
-        lines.append("")
-    if proposed:
-        lines.append(
-            f"🆕 {'Kèm' if vi and new_objectives else ('Tôi đề xuất tạo' if vi else 'I propose creating')} "
-            f"**{len(proposed)} {'KPI mới' if vi else 'new KPIs'}**:"
-        )
-    for p in proposed:
-        if vi:
-            obj = f" → mục tiêu *{p.objective_name}*" if p.objective_name else " → ⚠️ chưa gắn mục tiêu"
-            lines.append(
-                f"- **{p.name}**: chỉ tiêu {p.target_value:g} {p.unit}, trọng số {p.weight:g}%"
-                + (f", deadline {p.deadline}" if p.deadline else "") + obj
-            )
-        else:
-            obj = f" → objective *{p.objective_name}*" if p.objective_name else " → ⚠️ no objective"
-            lines.append(
-                f"- **{p.name}**: target {p.target_value:g} {p.unit}, weight {p.weight:g}%"
-                + (f", deadline {p.deadline}" if p.deadline else "") + obj
-            )
-    if changes:
-        lines.append(
-            f"\n⚖️ {'Kèm điều chỉnh trọng số KPI hiện có để tổng nhóm = 100%:' if vi else 'Also adjusting existing KPI weights so the group total = 100%:'}"
-        )
-        for c in changes:
-            lines.append(f"- {c.kpi_name}: {c.old_weight:g}% → **{c.new_weight:g}%**")
-    lines.append(
-        "\n⚠️ **" + ("Chưa có gì được lưu." if vi else "Nothing saved yet.") + "** "
-        + ("Kiểm tra/chỉnh sửa rồi bấm **Xác nhận** bên dưới để tôi ghi vào hệ thống (mọi điều chỉnh đều vào lịch sử thay đổi)."
-           if vi else
-           "Review/edit then click **Confirm** below to save to the system (all changes are logged to history).")
-    )
-    return "\n".join(lines)
-
 
 def extract_work_items(
     text: str,
@@ -538,9 +605,15 @@ def extract_work_items(
     return out
 
 
-def parse_sync_command(text: str) -> tuple[list[str], date | None, date | None]:
+ALL_SYNC_SOURCES = {"gmail", "calendar", "sheets", "notion", "slack", "outlook"}
+
+
+def parse_sync_command(
+    text: str, history: list[dict] | None = None
+) -> tuple[list[str], date | None, date | None]:
     data = call_json(prompts.SYNC_PARSE_SYSTEM.format(today=_today()), text, temperature=0.0, max_tokens=120)
-    sources = [s for s in data.get("sources", []) if s in {"gmail", "calendar", "sheets"}]
+    low = text.strip().lower()
+    sources = [s for s in data.get("sources", []) if s in ALL_SYNC_SOURCES]
     if not sources:
         sources = ["gmail", "calendar", "sheets"]
 
@@ -550,7 +623,39 @@ def parse_sync_command(text: str) -> tuple[list[str], date | None, date | None]:
         except (TypeError, ValueError):
             return None
 
-    return sources, _d("start_date"), _d("end_date")
+    start, end = _d("start_date"), _d("end_date")
+    if any(x in low for x in ["tất cả thời gian", "tat ca thoi gian", "toàn bộ", "toan bo", "all time"]):
+        return sources, date(1970, 1, 1), date.today()
+    if any(x in low for x in ["trước đó", "truoc do", "trước đấy", "truoc day", "earlier", "previous"]):
+        prev_start, prev_end = _last_sync_range(history)
+        if prev_start and prev_end:
+            span = max(1, (prev_end - prev_start).days + 1)
+            return sources, prev_start - timedelta(days=span), prev_start - timedelta(days=1)
+    return sources, start, end
+
+
+def _last_sync_range(history: list[dict] | None) -> tuple[date | None, date | None]:
+    if not history:
+        return None, None
+    import re
+
+    for h in reversed(history):
+        text = str(h.get("content") or "")
+        match = re.search(r"(\d{4}-\d{2}-\d{2})\s*(?:→|->|đến|den|to)\s*(\d{4}-\d{2}-\d{2})", text)
+        if not match:
+            continue
+        try:
+            return date.fromisoformat(match.group(1)), date.fromisoformat(match.group(2))
+        except ValueError:
+            continue
+    return None, None
+
+
+def _disconnected_sources(db: Session, user_id: int, sources: list[str]) -> list[str]:
+    from ..config import settings
+
+    modes = oauth_service.source_modes(db, user_id, settings.google_mock_mode)
+    return [src for src in sources if modes.get(src) != "real"]
 
 
 def decompose_kpi_smart(kpi: models.KPI) -> list[dict]:
@@ -572,45 +677,6 @@ _STATUS_LABELS_EN = {
     "phat_sinh": "Ad-hoc", "loai_bo": "Dropped",
 }
 
-
-def _proposal_reply(items: list[schemas.ProposedWorkItem], from_sync: bool = False, lang: str = "vi") -> str:
-    vi = lang != "en"
-    if not items:
-        return (
-            "Tôi chưa tách được đầu việc nào từ nội dung này. "
-            "Bạn mô tả cụ thể hơn giúp tôi nhé (đã làm gì, đang làm gì, kế hoạch gì)?"
-        ) if vi else (
-            "I couldn't extract any work items from this. "
-            "Please describe more specifically (what you did, what you're doing, what you plan to do)."
-        )
-    status_labels = schemas.STATUS_LABELS if vi else _STATUS_LABELS_EN
-    by_status: dict[str, list[schemas.ProposedWorkItem]] = {}
-    for it in items:
-        by_status.setdefault(it.status, []).append(it)
-    lines = []
-    if vi:
-        lines.append(f"{'Tôi đã quét dữ liệu và tách được' if from_sync else 'Tôi đã tách được'} **{len(items)} đầu việc**{'.' if from_sync else ' từ mô tả của bạn:'}")
-        no_kpi = "⚡ chưa gắn KPI"
-        confirm_note = "\nVui lòng kiểm tra và bấm **Xác nhận** để tôi lưu và cập nhật tiến độ KPI. Bạn có thể chỉnh sửa từng mục trước khi xác nhận."
-    else:
-        lines.append(f"{'I scanned and found' if from_sync else 'I extracted'} **{len(items)} work items**{'.' if from_sync else ' from your description:'}")
-        no_kpi = "⚡ no KPI linked"
-        confirm_note = "\nPlease review and click **Confirm** to save and update KPI progress. You can edit each item before confirming."
-    for status in schemas.WORK_STATUSES:
-        group = by_status.get(status)
-        if not group:
-            continue
-        lines.append(f"\n**{status_labels[status]}:**")
-        for it in group:
-            kpi_part = f" → KPI: *{it.kpi_name}*" if it.kpi_name else f" → {no_kpi}"
-            delta_part = (
-                f" ({'+' if it.value_delta > 0 else ''}{it.value_delta:g} {it.kpi_unit or '%'})"
-                if it.value_delta else ""
-            )
-            ref_part = f" [{it.source_ref}]" if it.source_ref else ""
-            lines.append(f"- {it.title}{kpi_part}{delta_part}{ref_part}")
-    lines.append(confirm_note)
-    return "\n".join(lines)
 
 
 def _user_profile_context(db: Session, user_id: int, lang: str = "vi") -> str:
@@ -650,82 +716,12 @@ def _user_profile_context(db: Session, user_id: int, lang: str = "vi") -> str:
     )
 
 
-def _account_help_reply(text: str, db: Session, user_id: int, lang: str = "vi") -> str | None:
-    """Tra loi nhanh cac cau hoi huong dan tai khoan/cai dat, khong can LLM."""
+def _is_account_help_question(text: str) -> bool:
     low = text.lower()
-    user = db.get(models.User, user_id)
-    if not _has_any(low, ["mật khẩu", "mat khau", "password", "avatar", "ảnh đại diện", "anh dai dien", "hồ sơ", "ho so", "profile", "cài đặt", "cai dat", "settings"]):
-        return None
-    password_terms = ["mật khẩu", "mat khau", "password"]
-    avatar_terms = ["avatar", "ảnh đại diện", "anh dai dien"]
-    profile_terms = ["hồ sơ", "ho so", "profile", "cài đặt", "cai dat", "settings"]
-    change_terms = ["đổi", "doi", "thay", "cập nhật", "cap nhat", "sửa", "sua", "reset", "quên", "quen", "hướng dẫn", "huong dan", "ở đâu", "o dau", "how", "where"]
-    secret_value_terms = ["là gì", "la gi", "xem", "hiển thị", "hien thi", "show", "cho tôi biết", "cho toi biet", "nói cho", "noi cho", "what is"]
-
-    if lang == "en":
-        if _has_any(low, password_terms) and _has_any(low, secret_value_terms) and not _has_any(low, change_terms):
-            return (
-                "I cannot access or display your password. For security, the app stores only a hashed password, "
-                "and the AI assistant is not allowed to read or reveal secrets.\n\n"
-                "If you know your current password, change it in **Settings > Account > Password**. "
-                "If you forgot it, use **Login > Forgot password** to reset it."
-            )
-        who = f" I can see your profile is **{user.name}**, role: **{user.role or 'not set'}**." if user else ""
-        if _has_any(low, password_terms) and _has_any(low, ["forgot", "quên", "quen"]):
-            return (
-                "If you forgot your password, use **Login > Forgot password** to request a reset link/token. "
-                "The assistant cannot recover or show the old password because the app only stores a hash."
-            )
-        if _has_any(low, password_terms) and _has_any(low, change_terms):
-            return (
-                f"You can change it in **Settings > Account > Password**.{who}\n\n"
-                "Enter your current password, type the new password twice, then click **Save password**. "
-                "The new password must be 6-100 characters and cannot match the current one. "
-                "If you forgot it, use **Login > Forgot password**."
-            )
-        if _has_any(low, avatar_terms) and _has_any(low, change_terms):
-            return (
-                f"Go to **Settings > Account > Profile**.{who}\n\n"
-                "You can paste an image URL or upload a JPG/PNG/WebP/GIF file up to 2MB, then save the profile."
-            )
-        if not _has_any(low, profile_terms) or not _has_any(low, change_terms):
-            return None
-        return (
-            f"Your account settings are in **Settings > Account**.{who}\n\n"
-            "There you can update display name, role, avatar, and password. Theme, language, Auto Coach, export defaults, notifications, and data connections are also on the Settings page."
-        )
-
-    if _has_any(low, password_terms) and _has_any(low, secret_value_terms) and not _has_any(low, change_terms):
-        return (
-            "Tôi không thể truy cập hoặc hiển thị mật khẩu của bạn. Vì lý do bảo mật, hệ thống chỉ lưu mật khẩu ở dạng băm, "
-            "và trợ lý AI không được phép đọc hay tiết lộ dữ liệu secret.\n\n"
-            "Nếu bạn còn nhớ mật khẩu hiện tại, hãy đổi tại **Cài đặt > Tài khoản > Mật khẩu**. "
-            "Nếu bạn quên mật khẩu, dùng **Đăng nhập > Quên mật khẩu** để đặt lại."
-        )
-    who = f" Tôi đang nhận diện hồ sơ của bạn là **{user.name}**, vai trò: **{user.role or 'chưa đặt'}**." if user else ""
-    if _has_any(low, password_terms) and _has_any(low, ["quên", "quen", "forgot"]):
-        return (
-            "Nếu bạn quên mật khẩu, hãy dùng **Đăng nhập > Quên mật khẩu** để nhận link/token đặt lại. "
-            "Tôi không thể khôi phục hoặc hiển thị mật khẩu cũ vì hệ thống chỉ lưu mật khẩu ở dạng băm."
-        )
-    if _has_any(low, password_terms) and _has_any(low, change_terms):
-        return (
-            f"Bạn đổi mật khẩu ở **Cài đặt > Tài khoản > Mật khẩu**.{who}\n\n"
-            "Nhập mật khẩu hiện tại, nhập mật khẩu mới hai lần, rồi bấm **Lưu mật khẩu**. "
-            "Mật khẩu mới cần dài 6-100 ký tự và không được trùng mật khẩu hiện tại. "
-            "Nếu quên mật khẩu, dùng **Đăng nhập > Quên mật khẩu** để nhận link/token đặt lại."
-        )
-    if _has_any(low, avatar_terms) and _has_any(low, change_terms):
-        return (
-            f"Bạn đổi ảnh đại diện ở **Cài đặt > Tài khoản > Hồ sơ**.{who}\n\n"
-            "Có thể dán URL ảnh hoặc upload file JPG/PNG/WebP/GIF tối đa 2MB, sau đó bấm **Lưu hồ sơ**."
-        )
-    if not _has_any(low, profile_terms) or not _has_any(low, change_terms):
-        return None
-    return (
-        f"Bạn chỉnh thông tin cá nhân ở **Cài đặt > Tài khoản**.{who}\n\n"
-        "Ở đó có tên hiển thị, vai trò, ảnh đại diện và mật khẩu. Các mục theme, ngôn ngữ, Auto Coach, export mặc định, thông báo email và kết nối dữ liệu cũng nằm trong trang Cài đặt."
-    )
+    return _has_any(low, [
+        "m?t kh?u", "mat khau", "password", "avatar", "?nh ??i di?n", "anh dai dien",
+        "h? s?", "ho so", "profile", "c?i ??t", "cai dat", "settings",
+    ])
 
 
 def handle_message(
@@ -747,25 +743,35 @@ def handle_message(
     if intent == "update_progress":
         items = extract_work_items(text, kpis, source="chat", history=history, memories=mem)
         return schemas.ChatResponse(
-            reply=_proposal_reply(items, lang=lang), intent=intent, proposed_items=items
+            reply=_proposal_reply(items, lang=lang, history=history, user_text=text), intent=intent, proposed_items=items
         )
 
     if intent == "sync_request":
-        sources, start, end = parse_sync_command(text)
+        sources, start, end = parse_sync_command(text, history)
+        disconnected = _disconnected_sources(db, user_id, sources)
+        if disconnected and len(disconnected) == len(sources):
+            facts = (
+                f"Requested sources: {', '.join(sources)}\n"
+                f"Disconnected sources: {', '.join(disconnected)}\n"
+                "No scan was performed because every requested source is currently in mock/not-connected mode. "
+                "User can connect real sources in Data Sources or upload Excel/CSV work logs."
+            )
+            msg = _status_reply(text, facts, intent, lang, history)
+            return schemas.ChatResponse(reply=msg, intent=intent)
         activities = fetch_activities(sources, start, end, db=db, user_id=user_id)
         if not activities:
-            no_act = (
-                f"Tôi đã quét {', '.join(sources)} trong khoảng {start} → {end} nhưng không tìm thấy hoạt động nào."
-                if lang != "en" else
-                f"I scanned {', '.join(sources)} from {start} to {end} but found no activities."
+            facts = (
+                f"Scanned sources: {', '.join(sources)}\n"
+                f"Date range: {start} -> {end}\n"
+                "Activities found: 0"
             )
+            no_act = _status_reply(text, facts, intent, lang, history)
             return schemas.ChatResponse(reply=no_act, intent=intent)
         items = extract_work_items("", kpis, activities=activities)
-        if lang == "en":
-            header = f"🔍 Scanned **{', '.join(sources)}** from {start} to {end}, found {len(activities)} activities.\n\n"
-        else:
-            header = f"🔍 Đã quét **{', '.join(sources)}** từ {start} đến {end}, tìm thấy {len(activities)} hoạt động.\n\n"
-        reply = header + _proposal_reply(items, from_sync=True, lang=lang)
+        reply = _proposal_reply(items, from_sync=True, lang=lang, history=history, user_text=(
+            f"Scanned sources: {', '.join(sources)}; date range: {start} -> {end}; "
+            f"raw activities found: {len(activities)}. User request: {text}"
+        ))
         return schemas.ChatResponse(reply=reply, intent=intent, proposed_items=items)
 
     if intent == "create_kpi":
@@ -779,8 +785,10 @@ def handle_message(
             except Exception:
                 pass  # canh bao xung dot la tinh nang phu — khong duoc chan luong tao KPI
         return schemas.ChatResponse(
-            reply=_kpi_proposal_reply(proposed, changes, lang=lang, new_objectives=new_objs)
-            + _conflict_block(conflicts),
+            reply=_kpi_proposal_reply(
+                proposed, changes, lang=lang, new_objectives=new_objs,
+                conflicts=conflicts, history=history, user_text=text,
+            ),
             intent=intent,
             proposed_objectives=new_objs,
             proposed_kpis=proposed,
@@ -863,15 +871,12 @@ def handle_message(
         if target is None and kpis:
             target = min(kpis, key=lambda k: kpi_service.health_of(k)[1])
         if target is None:
-            no_kpi = (
-                "Bạn chưa có KPI nào để tôi phân tích. Hãy tạo KPI trước nhé!"
-                if lang != "en" else
-                "You don't have any KPI yet for me to analyze. Create one first!"
-            )
+            facts = "The user has no active KPIs, so coaching/RCA cannot be performed yet."
+            no_kpi = _status_reply(text, facts, intent, lang, history)
             return schemas.ChatResponse(reply=no_kpi, intent=intent)
         analysis, causes, proposed = coach_kpi(db, target, user_id, lang)
         return schemas.ChatResponse(
-            reply=analysis + _causes_block(causes, lang),
+            reply=_coaching_reply(analysis, causes, proposed, text, lang, history),
             intent=intent,
             proposed_items=proposed,
         )
@@ -900,17 +905,15 @@ def handle_message(
                 period_label=period_label, period_key=period_key, content=content,
             ))
         db.commit()
-        saved_note = (
-            f"\n\n---\n💾 *Đã lưu vào Báo cáo → {period_label}.*"
-            if lang != "en" else
-            f"\n\n---\n💾 *Saved to Reports → {period_label}.*"
+        facts = (
+            f"Weekly report was generated by the LLM and saved to Reports.\n"
+            f"Saved period label: {period_label}\n"
+            "Return the report content, and include a brief natural note that it has been saved."
         )
-        return schemas.ChatResponse(reply=content + saved_note, intent="weekly_summary")
+        saved_note = _status_reply(text, facts, "weekly_summary_saved", lang, history)
+        return schemas.ChatResponse(reply=content + "\n\n---\n" + saved_note, intent="weekly_summary")
 
     if intent == "question":
-        account_reply = _account_help_reply(text, db, user_id, lang)
-        if account_reply:
-            return schemas.ChatResponse(reply=account_reply, intent=intent)
         context = kpi_service.full_context_text(db, user_id) + user_context
         reply = call_text(
             prompts.ANSWER_SYSTEM.format(context=context, today=_today()) + _lang_suffix(lang),
@@ -919,9 +922,13 @@ def handle_message(
         return schemas.ChatResponse(reply=reply, intent=intent)
 
     # other / chitchat
-    account_reply = _account_help_reply(text, db, user_id, lang)
-    if account_reply:
-        return schemas.ChatResponse(reply=account_reply, intent="question")
+    if _is_account_help_question(text):
+        context = kpi_service.full_context_text(db, user_id) + user_context
+        reply = call_text(
+            prompts.ANSWER_SYSTEM.format(context=context, today=_today()) + _lang_suffix(lang),
+            text, history=history, max_tokens=700,
+        )
+        return schemas.ChatResponse(reply=reply, intent="question")
     brief = kpi_service.kpi_list_text(kpis) + user_context
     reply = call_text(
         prompts.CHITCHAT_SYSTEM.format(context_brief=brief) + _lang_suffix(lang),
