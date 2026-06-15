@@ -1,49 +1,102 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api, STATUS_COLORS } from '../api'
 import { useLang } from '../LangContext'
 import { ConfirmModal } from '../components/Modal'
 import { useToast } from '../components/Toast'
 
+const PAGE_SIZE = 20
+
+function Pagination({ page, pageSize, total, onPage, tr }) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  if (totalPages <= 1) return null
+  return (
+    <div className="pagination">
+      <button className="btn small ghost" disabled={page <= 1} onClick={() => onPage(page - 1)}>
+        ← {tr('pagination.prev')}
+      </button>
+      <span className="pagination-info">{tr('pagination.page', { page, total: totalPages })}</span>
+      <button className="btn small ghost" disabled={page >= totalPages} onClick={() => onPage(page + 1)}>
+        {tr('pagination.next')} →
+      </button>
+    </div>
+  )
+}
+
 function EvidenceTab() {
   const { tr, statusLabels, sourceLabels } = useLang()
+  const toast = useToast()
   const SL = statusLabels()
   const SRC = sourceLabels()
 
   const [items, setItems] = useState([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
   const [status, setStatus] = useState('')
   const [source, setSource] = useState('')
   const [search, setSearch] = useState('')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [deletePending, setDeletePending] = useState(null)
+  const [error, setError] = useState('')
 
-  useEffect(() => { api.listWorkItems().then(setItems).catch(() => {}) }, [])
+  const load = () => {
+    const p = new URLSearchParams({ page, page_size: PAGE_SIZE })
+    if (status) p.set('status', status)
+    if (source) p.set('source', source)
+    if (search.trim()) p.set('search', search.trim())
+    if (dateFrom) p.set('date_from', dateFrom)
+    if (dateTo) p.set('date_to', dateTo)
+    api.listWorkItems(`?${p}`)
+      .then((res) => { setItems(res.items || []); setTotal(res.total || 0) })
+      .catch((e) => setError(e.message))
+  }
 
-  const filtered = useMemo(() => items.filter((w) =>
-    (!status || w.status === status) &&
-    (!source || w.source === source) &&
-    (!search || (w.title + (w.kpi_name || '') + w.source_ref).toLowerCase().includes(search.toLowerCase()))
-  ), [items, status, source, search])
+  useEffect(() => { load() }, [page, status, source, search, dateFrom, dateTo]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const resetPage = (fn) => {
+    setPage(1)
+    fn()
+  }
+
+  const doDelete = async () => {
+    if (!deletePending) return
+    try {
+      await api.deleteWorkItem(deletePending.id)
+      toast.success(tr('journal.delete_success'))
+      setDeletePending(null)
+      load()
+    } catch (e) { setError(e.message) }
+  }
 
   return (
     <>
-      <div className="form-row" style={{ marginBottom: 12 }}>
+      {error && <div className="error-text">⚠️ {error}</div>}
+      <div className="journal-filter-row evidence-filters">
         <label>{tr('journal.filter_status')}
-          <select value={status} onChange={(e) => setStatus(e.target.value)}>
+          <select value={status} onChange={(e) => resetPage(() => setStatus(e.target.value))}>
             <option value="">{tr('journal.filter_all')}</option>
             {Object.entries(SL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
         </label>
         <label>{tr('journal.filter_source')}
-          <select value={source} onChange={(e) => setSource(e.target.value)}>
+          <select value={source} onChange={(e) => resetPage(() => setSource(e.target.value))}>
             <option value="">{tr('journal.filter_all')}</option>
             {Object.entries(SRC).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
         </label>
-        <label style={{ flex: 1 }}>{tr('journal.filter_search')}
-          <input placeholder={tr('journal.search_placeholder')} value={search} onChange={(e) => setSearch(e.target.value)} />
+        <label>{tr('journal.filter_from')}
+          <input type="date" value={dateFrom} onChange={(e) => resetPage(() => setDateFrom(e.target.value))} />
         </label>
-        <span className="muted">{tr('journal.count', { filtered: filtered.length, total: items.length })}</span>
+        <label>{tr('journal.filter_to')}
+          <input type="date" value={dateTo} onChange={(e) => resetPage(() => setDateTo(e.target.value))} />
+        </label>
+        <label className="journal-search">{tr('journal.filter_search')}
+          <input placeholder={tr('journal.search_placeholder')} value={search} onChange={(e) => resetPage(() => setSearch(e.target.value))} />
+        </label>
+        <span className="muted">{tr('journal.count', { filtered: items.length, total })}</span>
       </div>
       <div className="card">
-        {filtered.length === 0 ? <p className="muted">{tr('journal.no_match')}</p> : (
+        {items.length === 0 ? <p className="muted">{tr('journal.no_match')}</p> : (
           <table className="table">
             <thead>
               <tr>
@@ -55,10 +108,11 @@ function EvidenceTab() {
                 <th>{tr('journal.col_delta')}</th>
                 <th>{tr('journal.col_source')}</th>
                 <th>{tr('journal.col_origin')}</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((w) => (
+              {items.map((w) => (
                 <tr key={w.id}>
                   <td className="nowrap">{w.work_date || <span className="muted">—</span>}</td>
                   <td className="nowrap muted">{w.created_at?.slice(0, 19).replace('T', ' ')}</td>
@@ -68,19 +122,43 @@ function EvidenceTab() {
                   <td>{w.progress_delta ? `${w.progress_delta > 0 ? '+' : ''}${w.progress_delta}` : '—'}</td>
                   <td className="nowrap">{SRC[w.source] ?? w.source}</td>
                   <td className="muted">{w.source_ref}</td>
+                  <td className="nowrap">
+                    <button className="btn small danger" onClick={() => setDeletePending(w)}>
+                      {tr('journal.delete_permanent')}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
+        <Pagination page={page} pageSize={PAGE_SIZE} total={total} onPage={setPage} tr={tr} />
       </div>
+      <ConfirmModal
+        open={!!deletePending}
+        title={tr('journal.delete_permanent')}
+        message={deletePending ? tr('journal.delete_work_confirm', { name: deletePending.title }) : ''}
+        confirmLabel={tr('journal.delete_permanent')}
+        confirmVariant="danger"
+        onConfirm={doDelete}
+        onCancel={() => setDeletePending(null)}
+      />
     </>
   )
 }
 
 function HistoryTab() {
   const { tr } = useLang()
+  const toast = useToast()
   const [restorePending, setRestorePending] = useState(null)
+  const [deleteKpiPending, setDeleteKpiPending] = useState(null)
+  const [logs, setLogs] = useState([])
+  const [totalLogs, setTotalLogs] = useState(0)
+  const [page, setPage] = useState(1)
+  const [archived, setArchived] = useState([])
+  const [field, setField] = useState('')
+  const [search, setSearch] = useState('')
+  const [error, setError] = useState('')
 
   const FIELD_LABELS = {
     name: tr('journal.field_name'),
@@ -94,23 +172,44 @@ function HistoryTab() {
     progress: tr('journal.field_progress'),
     objective: tr('journal.field_objective'),
     archived: tr('journal.field_archived'),
+    category: tr('journal.field_category'),
   }
 
-  const [logs, setLogs] = useState([])
-  const [archived, setArchived] = useState([])
-  const [error, setError] = useState('')
+  const loadLogs = () => {
+    const p = new URLSearchParams({ page, page_size: PAGE_SIZE })
+    if (field) p.set('field', field)
+    if (search.trim()) p.set('search', search.trim())
+    return api.allChangelog(`?${p}`)
+      .then((res) => { setLogs(res.items || []); setTotalLogs(res.total || 0) })
+  }
 
   const load = () =>
-    Promise.all([api.allChangelog(), api.archivedKpis()])
-      .then(([l, a]) => { setLogs(l); setArchived(a) })
+    Promise.all([loadLogs(), api.archivedKpis()])
+      .then(([, a]) => setArchived(a || []))
       .catch((e) => setError(e.message))
-  useEffect(() => { load() }, [])
+
+  useEffect(() => { load() }, [page, field, search]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const resetPage = (fn) => {
+    setPage(1)
+    fn()
+  }
 
   const doRestore = async () => {
     if (!restorePending) return
     try {
       await api.restoreKpi(restorePending.id)
       setRestorePending(null)
+      load()
+    } catch (e) { setError(e.message) }
+  }
+
+  const doDeleteKpi = async () => {
+    if (!deleteKpiPending) return
+    try {
+      await api.deleteKpiPermanent(deleteKpiPending.id)
+      toast.success(tr('journal.delete_success'))
+      setDeleteKpiPending(null)
       load()
     } catch (e) { setError(e.message) }
   }
@@ -130,13 +229,30 @@ function HistoryTab() {
                   {k.objective_name ? ` · 🏁 ${k.objective_name}` : ''}
                 </span>
               </div>
-              <button className="btn small" onClick={() => setRestorePending(k)}>{tr('journal.restore')}</button>
+              <div className="row" style={{ gap: 8 }}>
+                <button className="btn small" onClick={() => setRestorePending(k)}>{tr('journal.restore')}</button>
+                <button className="btn small danger" onClick={() => setDeleteKpiPending(k)}>{tr('journal.delete_permanent')}</button>
+              </div>
             </div>
           ))}
         </div>
       )}
+
+      <div className="journal-filter-row history-filters">
+        <label>{tr('journal.filter_field')}
+          <select value={field} onChange={(e) => resetPage(() => setField(e.target.value))}>
+            <option value="">{tr('journal.filter_all')}</option>
+            {Object.entries(FIELD_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+        </label>
+        <label className="journal-search">{tr('journal.filter_search')}
+          <input placeholder={tr('journal.history_search_placeholder')} value={search} onChange={(e) => resetPage(() => setSearch(e.target.value))} />
+        </label>
+        <span className="muted">{tr('journal.history_count', { filtered: logs.length, total: totalLogs })}</span>
+      </div>
+
       <div className="card">
-        <h3>{tr('journal.changelog_all', { count: logs.length })}</h3>
+        <h3>{tr('journal.changelog_all', { count: totalLogs })}</h3>
         {logs.length === 0 ? <p className="muted">{tr('journal.no_changes')}</p> : (
           <table className="table">
             <thead>
@@ -163,7 +279,9 @@ function HistoryTab() {
             </tbody>
           </table>
         )}
+        <Pagination page={page} pageSize={PAGE_SIZE} total={totalLogs} onPage={setPage} tr={tr} />
       </div>
+
       <ConfirmModal
         open={!!restorePending}
         title={tr('journal.restore')}
@@ -171,6 +289,15 @@ function HistoryTab() {
         confirmLabel={tr('journal.restore')}
         onConfirm={doRestore}
         onCancel={() => setRestorePending(null)}
+      />
+      <ConfirmModal
+        open={!!deleteKpiPending}
+        title={tr('journal.delete_permanent')}
+        message={deleteKpiPending ? tr('journal.delete_kpi_confirm', { name: deleteKpiPending.name }) : ''}
+        confirmLabel={tr('journal.delete_permanent')}
+        confirmVariant="danger"
+        onConfirm={doDeleteKpi}
+        onCancel={() => setDeleteKpiPending(null)}
       />
     </>
   )
@@ -187,7 +314,7 @@ export default function Journal() {
           <h1>{tr('journal.title')}</h1>
           <p>{tr('journal.subtitle')}</p>
         </div>
-        <button className="btn" onClick={() => api.exportEvaluation().catch((e) => toast.error(e.message))}>
+        <button className="btn" onClick={() => api.exportData(['xlsx'], ['work_items', 'changelog']).catch((e) => toast.error(e.message))}>
           {tr('journal.export')}
         </button>
       </header>

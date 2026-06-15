@@ -71,7 +71,7 @@ def forgot_password(payload: schemas.ForgotPasswordRequest, db: Session = Depend
     user = db.scalars(select(models.User).where(models.User.email == payload.email)).first()
     generic = {
         "ok": True,
-        "message": "Neu email ton tai, he thong se gui huong dan dat lai mat khau.",
+        "message": "Nếu email tồn tại, hệ thống sẽ gửi hướng dẫn đặt lại mật khẩu.",
         "mocked": False,
     }
     if not user:
@@ -80,12 +80,12 @@ def forgot_password(payload: schemas.ForgotPasswordRequest, db: Session = Depend
     token = create_password_reset_token(user.id)
     frontend = (settings.frontend_url or "http://127.0.0.1:5173").rstrip("/")
     reset_url = f"{frontend}/login?reset_token={token}"
-    subject = "[KPI Companion] Dat lai mat khau"
+    subject = "[KPI Companion] Đặt lại mật khẩu"
     body = (
-        f"Xin chao {user.name or 'ban'},\n\n"
-        "Ban vua yeu cau dat lai mat khau KPI Companion.\n"
-        f"Mo link sau trong 30 phut de tao mat khau moi:\n{reset_url}\n\n"
-        "Neu ban khong yeu cau, vui long bo qua email nay."
+        f"Xin chào {user.name or 'bạn'},\n\n"
+        "Bạn vừa yêu cầu đặt lại mật khẩu KPI Companion.\n"
+        f"Mở link sau trong 30 phút để tạo mật khẩu mới:\n{reset_url}\n\n"
+        "Nếu bạn không yêu cầu, vui lòng bỏ qua email này."
     )
 
     if email_service.is_smtp_configured():
@@ -98,7 +98,7 @@ def forgot_password(payload: schemas.ForgotPasswordRequest, db: Session = Depend
     return {
         **generic,
         "mocked": True,
-        "message": "Chua cau hinh SMTP. Moi truong demo tra token reset de test.",
+        "message": "Chưa cấu hình SMTP. Môi trường demo trả token reset để test.",
         "reset_token": token,
         "reset_url": reset_url,
     }

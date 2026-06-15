@@ -3,6 +3,7 @@ import { useLang } from '../LangContext'
 import { useTheme } from '../ThemeContext'
 import { prefs, EXPORT_FORMATS, EXPORT_SECTIONS } from '../prefs'
 import { ConfirmModal } from '../components/Modal'
+import { useToast } from '../components/Toast'
 import { api } from '../api'
 
 function PasswordInput({ id, label, value, onChange, visible, onToggle, autoComplete, showLabel, hideLabel }) {
@@ -35,10 +36,11 @@ function PasswordInput({ id, label, value, onChange, visible, onToggle, autoComp
 export default function Settings({ user, onUserUpdate }) {
   const { tr, lang, setLangDirect } = useLang()
   const { themeMode, setThemeMode } = useTheme()
+  const toast = useToast()
 
   // Lưu giá trị gốc khi vào trang để so sánh dirty
-  const [originalTheme] = useState(themeMode)
-  const [originalLang] = useState(lang)
+  const [originalTheme, setOriginalTheme] = useState(themeMode)
+  const [originalLang, setOriginalLang] = useState(lang)
 
   // Pending states - cho AI & Export (chỉ lưu khi bấm nút tổng)
   const [pendingAutoCoach, setPendingAutoCoach] = useState(prefs.getAutoCoach())
@@ -58,7 +60,7 @@ export default function Settings({ user, onUserUpdate }) {
 
   const [saved, setSaved] = useState('')
   const [showResetConfirm, setShowResetConfirm] = useState(false)
-  const flash = (msg) => { setSaved(msg); setTimeout(() => setSaved(''), 1800) }
+  const flash = (msg) => { setSaved(msg); toast.success(msg); setTimeout(() => setSaved(''), 1800) }
   const [profileName, setProfileName] = useState(user?.name || '')
   const [profileRole, setProfileRole] = useState(user?.role || '')
   const [profilePicture, setProfilePicture] = useState(user?.picture || '')
@@ -202,6 +204,9 @@ export default function Settings({ user, onUserUpdate }) {
     prefs.setExportSections(pendingSecs)
     prefs.setMgrChannel(pendingMgrChannel)
     prefs.setMgrRecipient(pendingMgrTo.trim())
+    setOriginalTheme(themeMode)
+    setOriginalLang(lang)
+    setPendingMgrTo(pendingMgrTo.trim())
     flash(tr('settings.saved'))
   }
 

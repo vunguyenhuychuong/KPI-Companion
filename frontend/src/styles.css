@@ -569,6 +569,38 @@ body {
 }
 .journal-page .form-row label { min-width: 0; }
 .journal-page .form-row .muted { justify-self: end; padding-bottom: 9px; white-space: nowrap; }
+.journal-filter-row {
+  display: grid;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.journal-filter-row.evidence-filters {
+  grid-template-columns: minmax(116px, 136px) minmax(116px, 136px) minmax(138px, 160px) minmax(138px, 160px) minmax(280px, 1fr) auto;
+}
+.journal-filter-row.history-filters {
+  grid-template-columns: minmax(150px, 180px) minmax(320px, 1fr) auto;
+}
+.journal-filter-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.journal-filter-row input,
+.journal-filter-row select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 11px;
+  font-family: inherit;
+  background: var(--surface);
+  color: var(--text);
+}
+.journal-filter-row .journal-search input { min-width: 0; }
+.journal-filter-row .muted { justify-self: end; padding-bottom: 9px; white-space: nowrap; }
 .journal-page .card { overflow-x: auto; }
 
 /* KPI card: grid 2 cot â€” noi dung trai, thanh icon PHAI co dinh, khong bao gio rot dong */
@@ -1245,8 +1277,11 @@ body {
   .setting-row > .seg,
   .setting-row > .switch,
   .setting-row > .export-chips { justify-self: start; }
-  .journal-page .form-row { grid-template-columns: 1fr 1fr; }
-  .journal-page .form-row .muted { justify-self: start; padding-bottom: 0; }
+  .journal-page .form-row,
+  .journal-filter-row.evidence-filters,
+  .journal-filter-row.history-filters { grid-template-columns: 1fr 1fr; }
+  .journal-page .form-row .muted,
+  .journal-filter-row .muted { justify-self: start; padding-bottom: 0; }
 }
 
 @media (max-width: 640px) {
@@ -1270,7 +1305,9 @@ body {
   .chat-input .btn { justify-content: center; }
   .proposal-controls { grid-template-columns: 1fr; }
   .source-badge { justify-self: start; }
-  .journal-page .form-row { grid-template-columns: 1fr; }
+  .journal-page .form-row,
+  .journal-filter-row.evidence-filters,
+  .journal-filter-row.history-filters { grid-template-columns: 1fr; }
   .onboarding-modal { max-height: 92vh; overflow-y: auto; }
   .onboarding-progress { padding: 12px 14px; }
   .onboarding-step span { display: none; }
@@ -1524,11 +1561,20 @@ body {
   display: flex; align-items: center; justify-content: center; padding: 16px;
 }
 .onboarding-modal {
+  position: relative;
   background: var(--surface, #fff); border-radius: 12px;
   width: 100%; max-width: 620px; box-shadow: 0 24px 70px rgba(0,0,0,.32);
   overflow: hidden;
   border: 1px solid rgba(255,255,255,.18);
 }
+.onboarding-close {
+  position: absolute; top: 10px; right: 10px; z-index: 2;
+  width: 32px; height: 32px; border-radius: 50%;
+  border: 1px solid var(--border, #e2e8f0);
+  background: var(--surface, #fff); color: var(--text, #0f172a);
+  font-size: 20px; line-height: 1; cursor: pointer;
+}
+.onboarding-close:hover { background: var(--surface-2, #f8fafc); }
 .onboarding-progress {
   display: flex; background: var(--surface-2, #f8fafc); padding: 16px 24px;
   border-bottom: 1px solid var(--border, #e2e8f0); gap: 4px;
@@ -1574,6 +1620,9 @@ body {
 .onboarding-model span { display: block; color: var(--muted); font-size: 12px; }
 .onboarding-actions {
   display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; flex-wrap: wrap;
+}
+.onboarding-preset-row {
+  display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px;
 }
 .onboarding-kpi-suggestions {
   display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px;

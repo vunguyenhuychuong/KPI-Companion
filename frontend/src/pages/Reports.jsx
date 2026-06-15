@@ -3,7 +3,6 @@ import { marked } from 'marked'
 import Highcharts from 'highcharts'
 import { api } from '../api'
 import { useLang } from '../LangContext'
-import { useCycle } from '../CycleContext'
 import { prefs } from '../prefs'
 import { Modal, ConfirmModal } from '../components/Modal'
 import { useToast } from '../components/Toast'
@@ -160,49 +159,6 @@ export default function Reports() {
   const [mgrTo, setMgrTo] = useState(prefs.getMgrRecipient())
   const [mgrBusy, setMgrBusy] = useState(false)
   const [mgrResult, setMgrResult] = useState(null)
-
-  // D5: Share link
-  const [showShareModal, setShowShareModal] = useState(false)
-  const [shareLinks, setShareLinks] = useState([])
-  const [shareExpireDays, setShareExpireDays] = useState(7)
-  const [shareBusy, setShareBusy] = useState(false)
-  const [shareCopied, setShareCopied] = useState('')
-  const { activeCycleId } = useCycle()
-
-  const loadShareLinks = async () => {
-    if (!activeCycleId) return
-    try { setShareLinks(await api.listShareLinks(activeCycleId)) } catch (_) { /* ignore */ }
-  }
-
-  const createShareLink = async () => {
-    if (!activeCycleId) return
-    setShareBusy(true)
-    try {
-      await api.createShareLink(activeCycleId, shareExpireDays)
-      await loadShareLinks()
-    } catch (e) { setError(e.message) } finally { setShareBusy(false) }
-  }
-
-  const revokeShareLink = async (token) => {
-    try {
-      await api.revokeShareLink(token)
-      await loadShareLinks()
-    } catch (e) { setError(e.message) }
-  }
-
-  const copyLink = (token) => {
-    const url = `${window.location.origin}/shared/${token}`
-    navigator.clipboard.writeText(url).then(() => {
-      setShareCopied(token)
-      toast.success('Đã copy link chia sẻ')
-      setTimeout(() => setShareCopied(''), 2000)
-    })
-  }
-
-  const openShareModal = () => {
-    loadShareLinks()
-    setShowShareModal(true)
-  }
 
   // Edit textarea ref for formatting
   const editTextareaRef = useRef(null)
@@ -468,9 +424,6 @@ export default function Reports() {
                   <button className="btn small primary" onClick={openEditModal}>
                     {tr('reports.edit_send')}
                   </button>
-                  <button className="btn small" onClick={openShareModal} title="Tạo link chia sẻ read-only">
-                    Chia sẻ
-                  </button>
                   <button className="btn small" onClick={regenerate} disabled={busy}
                     title={tr('reports.regenerate_tooltip')}>
                     {busy ? tr('reports.regenerating', { secs }) : tr('reports.regenerate_btn')}
@@ -663,68 +616,6 @@ export default function Reports() {
         )}
       </Modal>
 
-      {/* D5: Share Link Modal */}
-      <Modal
-        open={showShareModal}
-        title="Chia sẻ báo cáo chu kỳ"
-        onClose={() => setShowShareModal(false)}
-        actions={<button className="btn" onClick={() => setShowShareModal(false)}>Đóng</button>}
-      >
-        <div className="share-modal-intro">
-          <div className="share-modal-icon" aria-hidden="true">↗</div>
-          <div>
-            <b>Read-only link</b>
-            <p>Người nhận xem được báo cáo mà không cần đăng nhập; không có control chỉnh sửa.</p>
-          </div>
-        </div>
-        <div className="share-create-row">
-          <label>Hết hạn sau</label>
-          <select value={shareExpireDays} onChange={e => setShareExpireDays(Number(e.target.value))}
-            className="share-expiry-select">
-            {[1,3,7,14,30].map(d => <option key={d} value={d}>{d} ngày</option>)}
-          </select>
-          <button className="btn primary small" onClick={createShareLink} disabled={shareBusy || !activeCycleId}>
-            {shareBusy ? 'Đang tạo...' : 'Tạo link'}
-          </button>
-        </div>
-        {!activeCycleId && <p style={{ color: '#ca8a04', fontSize: 13 }}>Chọn chu kỳ ở thanh trên để tạo link chia sẻ.</p>}
-        {shareLinks.length === 0
-          ? <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Chưa có link nào.</p>
-          : shareLinks.map(link => {
-            const url = `${window.location.origin}/shared/${link.token}`
-            const expired = new Date(link.expires_at) < new Date()
-            const revoked = !!link.revoked_at
-            const invalid = expired || revoked
-            const state = revoked ? 'Đã hủy' : expired ? 'Hết hạn' : 'Đang hoạt động'
-            return (
-              <div key={link.token} className={`share-link-item${invalid ? ' invalid' : ''}`}>
-                <div className="share-link-main">
-                  <div className="share-link-head">
-                    <span className={`share-link-state${invalid ? ' invalid' : ''}`}>{state}</span>
-                    <span className="share-link-meta">Hết hạn {new Date(link.expires_at).toLocaleDateString('vi-VN')}</span>
-                  </div>
-                  <div className={`share-link-url${invalid ? ' share-link-revoked' : ''}`}>{url}</div>
-                  <div className="share-link-meta">
-                    {revoked && ' · Đã hủy'}{expired && !revoked && ' · Hết hạn'}
-                  </div>
-                </div>
-                <div className="share-link-actions">
-                {!invalid && (
-                  <button className="btn small" onClick={() => copyLink(link.token)}>
-                    {shareCopied === link.token ? '✓ Đã copy' : 'Copy'}
-                  </button>
-                )}
-                {!revoked && (
-                  <button className="btn small" style={{ color: '#dc2626' }} onClick={() => revokeShareLink(link.token)}>
-                    Hủy
-                  </button>
-                )}
-                </div>
-              </div>
-            )
-          })
-        }
-      </Modal>
     </div>
   )
 }

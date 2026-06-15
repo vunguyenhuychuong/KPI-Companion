@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
-from . import kpi_service, report_service
+from . import kpi_service
 
 VALID_FORMATS = ["csv", "md", "json", "xlsx", "pdf", "docx"]
 VALID_SECTIONS = ["kpis", "work_items", "changelog", "reports"]
@@ -163,6 +163,66 @@ def _render_json(data: dict[str, list[dict]]) -> bytes:
     return json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode("utf-8")
 
 
+def _render_xlsx(data: dict[str, list[dict]]) -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    title_fill = PatternFill("solid", fgColor="1F4E79")
+    title_font = Font(bold=True, color="FFFFFF", size=14)
+    header_fill = PatternFill("solid", fgColor="D9EAF7")
+    header_font = Font(bold=True, color="17365D")
+    thin = Side(style="thin", color="D7DEE8")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    if not data:
+        data = {"kpis": []}
+
+    for sec, rows in data.items():
+        title = SECTION_TITLES.get(sec, sec)
+        ws = wb.create_sheet(title[:31])
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=6)
+        ws["A1"] = title
+        ws["A1"].fill = title_fill
+        ws["A1"].font = title_font
+        ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[1].height = 26
+        ws["A2"] = f"Ngày xuất: {date.today().isoformat()}"
+        ws["A2"].font = Font(italic=True, color="666666")
+
+        cols = list(rows[0].keys()) if rows else ["Thông tin"]
+        for col_idx, col_name in enumerate(cols, 1):
+            cell = ws.cell(row=4, column=col_idx, value=col_name)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.border = border
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        if rows:
+            for row in rows:
+                ws.append([row.get(col, "") for col in cols])
+        else:
+            ws.append(["Không có dữ liệu"])
+
+        for row in ws.iter_rows(min_row=5, max_row=ws.max_row, max_col=len(cols)):
+            for cell in row:
+                cell.border = border
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+        ws.freeze_panes = "A5"
+        ws.auto_filter.ref = ws.dimensions
+        for idx, col in enumerate(cols, 1):
+            values = [str(col), *[str(r.get(col, "")) for r in rows[:80]]]
+            width = min(max(len(v) for v in values) + 3, 48)
+            ws.column_dimensions[ws.cell(row=4, column=idx).column_letter].width = max(width, 12)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def _find_pdf_font() -> tuple[str | None, str | None]:
     for reg, bold in _PDF_FONT_CANDIDATES:
         if os.path.exists(reg):
@@ -265,7 +325,8 @@ def build_export(
         elif fmt == "json":
             files.append((f"kpi-export-{stamp}.json", _render_json(data)))
         elif fmt == "xlsx":
-            files.append((f"bao-cao-kpi-{stamp}.xlsx", report_service.export_evaluation_excel(db, user_id)))
+            suffix = "-".join(sections) if len(sections) <= 2 else "data"
+            files.append((f"kpi-{suffix}-{stamp}.xlsx", _render_xlsx(data)))
         elif fmt == "pdf":
             files.append((f"kpi-export-{stamp}.pdf", _render_pdf(data)))
         elif fmt == "docx":

@@ -1,5 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from datetime import date
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -10,11 +12,17 @@ from ..services import kpi_service
 router = APIRouter(prefix="/api/work-items", tags=["work-items"])
 
 
-@router.get("", response_model=list[schemas.WorkItemOut])
+@router.get("")
 def list_items(
     current_user: CurrentUser,
     status: str | None = None,
+    source: str | None = None,
     kpi_id: int | None = None,
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=5, le=100),
     db: Session = Depends(get_db),
 ):
     q = select(models.WorkItem).where(
@@ -23,9 +31,33 @@ def list_items(
     )
     if status:
         q = q.where(models.WorkItem.status == status)
+    if source:
+        q = q.where(models.WorkItem.source == source)
     if kpi_id:
         q = q.where(models.WorkItem.kpi_id == kpi_id)
-    return list(db.scalars(q.order_by(models.WorkItem.created_at.desc()).limit(200)))
+    if date_from:
+        q = q.where(models.WorkItem.work_date >= date_from)
+    if date_to:
+        q = q.where(models.WorkItem.work_date <= date_to)
+    if search:
+        like = f"%{search.strip()}%"
+        q = q.outerjoin(models.KPI, models.WorkItem.kpi_id == models.KPI.id).where(
+            or_(
+                models.WorkItem.title.ilike(like),
+                models.WorkItem.detail.ilike(like),
+                models.WorkItem.source_ref.ilike(like),
+                models.KPI.name.ilike(like),
+            )
+        )
+    total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
+    items = list(
+        db.scalars(
+            q.order_by(models.WorkItem.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    )
+    return {"items": [schemas.WorkItemOut.model_validate(w) for w in items], "total": total, "page": page, "page_size": page_size}
 
 
 @router.post("/confirm", response_model=list[schemas.WorkItemOut])
@@ -59,3 +91,17 @@ def update_status(
     db.commit()
     db.refresh(item)
     return item
+
+
+@router.delete("/{item_id}", status_code=204)
+def delete_item(item_id: int, current_user: CurrentUser, db: Session = Depends(get_db)):
+    """Xoa vinh vien mot dau viec da ghi nhan va tru lai delta khoi KPI neu co."""
+    item = db.get(models.WorkItem, item_id)
+    if not item or item.user_id != current_user.id:
+        raise HTTPException(404, "Không tìm thấy đầu việc")
+    if item.kpi_id and item.progress_delta:
+        kpi = db.get(models.KPI, item.kpi_id)
+        if kpi and kpi.user_id == current_user.id:
+            kpi.current_value = max(0.0, round(kpi.current_value - item.progress_delta, 2))
+    db.delete(item)
+    db.commit()
