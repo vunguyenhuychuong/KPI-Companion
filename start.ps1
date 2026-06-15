@@ -24,7 +24,7 @@ Start-Process powershell -ArgumentList "-NoExit", "-Command",
     "Set-Location '$root\backend'; .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload"
 
 Start-Process powershell -ArgumentList "-NoExit", "-Command",
-    "Set-Location '$root\frontend'; `$env:Path = 'C:\Program Files\nodejs;' + `$env:Path; npm run dev"
+    "Set-Location '$root\frontend'; `$env:Path = 'C:\nvm4w\nodejs;' + `$env:Path; npm run dev"
 
 Start-Sleep -Seconds 4
 Start-Process "http://localhost:5173"

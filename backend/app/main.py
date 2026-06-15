@@ -42,8 +42,8 @@ def migrate():
                 cycle_id = existing
             else:
                 conn.execute(text(
-                    "INSERT INTO kpi_cycles (user_id, name, cycle_type, start_date, end_date, is_active, is_locked, created_at) "
-                    "VALUES (:uid, :name, 'yearly', :sd, :ed, 1, 0, CURRENT_TIMESTAMP)"
+                    "INSERT INTO kpi_cycles (user_id, name, cycle_type, start_date, end_date, is_active, is_locked, lock_reason, created_at) "
+                    "VALUES (:uid, :name, 'yearly', :sd, :ed, 1, 0, '', CURRENT_TIMESTAMP)"
                 ), {"uid": user_id, "name": f"Năm {y}", "sd": f"{y}-01-01", "ed": f"{y}-12-31"})
                 cycle_id = conn.execute(text("SELECT MAX(id) FROM kpi_cycles")).scalar()
             conn.execute(text(

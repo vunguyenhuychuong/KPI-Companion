@@ -136,6 +136,7 @@ def google_login(payload: schemas.GoogleTokenRequest, db: Session = Depends(get_
             payload.credential,
             google_requests.Request(),
             settings.google_client_id,
+            clock_skew_in_seconds=10,
         )
     except ValueError as exc:
         raise HTTPException(400, f"Token Google không hợp lệ: {exc}")

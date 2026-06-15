@@ -670,6 +670,7 @@ export const translations = {
     'sources.upload_desc': 'Timesheet, log công việc — cần cột: Ngày, Công việc, Trạng thái, Ghi chú (tên cột linh hoạt, Agent tự nhận diện).',
     'sources.upload_btn': '📤 Chọn file',
     'sources.success': '✅ Đã lưu và cập nhật tiến độ KPI. Xem Dashboard để thấy thay đổi.',
+    'sources.no_sources': 'Kết nối ít nhất một tài khoản bên trên để quét dữ liệu thật.',
 
     // Integrations (ket noi OAuth)
     'integrations.section': 'Kết nối tài khoản',
@@ -1388,6 +1389,7 @@ export const translations = {
     'sources.upload_desc': 'Timesheet, work log — needs columns: Date, Task, Status, Note (flexible names, Agent auto-detects).',
     'sources.upload_btn': '📤 Choose file',
     'sources.success': '✅ Saved and KPI progress updated. Check Dashboard to see changes.',
+    'sources.no_sources': 'Connect at least one account above to scan real data.',
 
     // Integrations (OAuth connections)
     'integrations.section': 'Connect accounts',
