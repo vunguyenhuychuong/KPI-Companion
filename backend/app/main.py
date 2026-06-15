@@ -493,7 +493,18 @@ def health():
 
 import os  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
+from fastapi.responses import FileResponse  # noqa: E402
 
 _static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
 if os.path.isdir(_static_dir):
-    app.mount("/", StaticFiles(directory=_static_dir, html=True), name="frontend")
+    _assets_dir = os.path.join(_static_dir, "assets")
+    if os.path.isdir(_assets_dir):
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        if full_path:
+            safe = os.path.normpath(os.path.join(_static_dir, full_path))
+            if safe.startswith(os.path.normpath(_static_dir)) and os.path.isfile(safe):
+                return FileResponse(safe)
+        return FileResponse(os.path.join(_static_dir, "index.html"))
