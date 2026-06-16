@@ -4,7 +4,8 @@ import { translations } from './i18n'
 const LangContext = createContext(null)
 
 const WORK_STATUSES = ['da_lam', 'dang_lam', 'se_lam', 'phat_sinh', 'loai_bo']
-const SOURCES = ['chat', 'csv', 'gmail', 'calendar', 'sheets', 'notion', 'slack', 'outlook']
+const SOURCES = ['chat', 'csv', 'gmail', 'calendar', 'sheets', 'notion', 'slack', 'outlook', 'agent_loop']
+const cleanIconLabel = (value) => String(value || '').replace(/^[^\p{L}\p{N}\[]+/u, '').trim()
 
 export function LangProvider({ children }) {
   const [lang, setLang] = useState(() => localStorage.getItem('kpi_lang') || 'vi')
@@ -42,9 +43,9 @@ export function useLang() {
     return Object.fromEntries(WORK_STATUSES.map(k => [k, tr('status.' + k)]))
   }
 
-  // returns { chat: '💬 Chat', ... } in the current language
+  // returns { chat: 'Chat', ... } in the current language
   function sourceLabels() {
-    return Object.fromEntries(SOURCES.map(k => [k, tr('source.' + k)]))
+    return Object.fromEntries(SOURCES.map(k => [k, cleanIconLabel(tr('source.' + k))]))
   }
 
   return { lang, tr, toggleLang, setLangDirect, statusLabels, sourceLabels }

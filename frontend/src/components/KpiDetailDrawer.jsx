@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
 import { marked } from 'marked'
 import { api } from '../api'
+import { useLang } from '../LangContext'
 import ProposalList from './ProposalList'
+import { UiIcon, cleanIconLabel } from './UiIcon'
 
 const HC = { green: '#22c55e', yellow: '#eab308', red: '#ef4444' }
-const HL = { green: 'Đúng tiến độ', yellow: 'Cần chú ý', red: 'Rủi ro' }
 
 function CoachPanel({ kpi, lang, onConfirmed }) {
+    const { tr } = useLang()
     const [open, setOpen] = useState(false)
     const [data, setData] = useState(null)
     const [loading, setLoading] = useState(false)
@@ -31,17 +33,17 @@ function CoachPanel({ kpi, lang, onConfirmed }) {
             <button className="btn small ghost coach-btn"
                 onClick={data && !loading ? () => setOpen(o => !o) : run}
                 disabled={loading}>
-                {loading ? `Đang phân tích… ${secs}s` : open ? 'Ẩn AI Coach' : 'AI Coach'}
+                <UiIcon name="compass" />{loading ? tr('dashboard.coach_loading', { secs }) : open ? tr('dashboard.coach_hide') : cleanIconLabel(tr('dashboard.coach_btn'))}
             </button>
             {open && (
                 <div className="coach-panel">
-                    {err && <p className="error-text">⚠️ {err}</p>}
+                    {err && <p className="error-text"><UiIcon name="warning" /> {err}</p>}
                     {data && !loading && (
                         <>
                             <div className="coach-analysis" dangerouslySetInnerHTML={{ __html: marked.parse(data.analysis || '') }} />
                             {data.root_causes?.length > 0 && (
                                 <div className="coach-causes">
-                                    <strong>Nguyên nhân gốc rễ</strong>
+                                    <strong>{tr('dashboard.coach_causes_title')}</strong>
                                     <ul>{data.root_causes.map((c, i) => (
                                         <li key={i}>{c.cause}{c.question && <em> — {c.question}</em>}</li>
                                     ))}</ul>
@@ -49,7 +51,7 @@ function CoachPanel({ kpi, lang, onConfirmed }) {
                             )}
                             {data.proposed_items?.length > 0 && (
                                 <>
-                                    <strong className="coach-actions-title">Hành động đề xuất</strong>
+                                    <strong className="coach-actions-title">{tr('dashboard.coach_actions_title')}</strong>
                                     <ProposalList
                                         items={data.proposed_items}
                                         onConfirmed={() => { setOpen(false); onConfirmed?.() }}
@@ -66,6 +68,7 @@ function CoachPanel({ kpi, lang, onConfirmed }) {
 }
 
 export default function KpiDetailDrawer({ item, year, onClose, onReload, lang }) {
+    const { tr } = useLang()
     const { kpi, expected_progress, health, gap } = item
     const c = HC[health]
     const r = 44, circum = 2 * Math.PI * r
@@ -93,15 +96,15 @@ export default function KpiDetailDrawer({ item, year, onClose, onReload, lang })
                         <div className="ddb-drawer-title">{kpi.name}</div>
                         {kpi.objective_name && (
                             <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 3 }}>
-                                🏁 {kpi.objective_name}
+                                <span className="inline-ui-icon"><UiIcon name="flag" /></span> {kpi.objective_name}
                             </div>
                         )}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
                         <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 12, background: c + '22', color: c }}>
-                            {kpi.progress > 100 ? 'Vượt chỉ tiêu' : HL[health]}
+                            {kpi.progress > 100 ? tr('kpi_detail.over_target') : tr(`dashboard.health_${health}`)}
                         </span>
-                        <button className="btn-icon" onClick={onClose} style={{ fontSize: 22 }}>×</button>
+                        <button className="btn-icon" onClick={onClose} title={tr('common.cancel')}><UiIcon name="x" /></button>
                     </div>
                 </div>
 
@@ -120,16 +123,16 @@ export default function KpiDetailDrawer({ item, year, onClose, onReload, lang })
                                 flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                             }}>
                                 <span style={{ fontSize: 18, fontWeight: 800, color: c, lineHeight: 1 }}>{kpi.progress}%</span>
-                                <span style={{ fontSize: 9, color: 'var(--muted)', marginTop: 2 }}>tiến độ</span>
+                                <span style={{ fontSize: 9, color: 'var(--muted)', marginTop: 2 }}>{tr('kpi_detail.progress')}</span>
                             </div>
                         </div>
 
                         <div className="ddb-drawer-stats">
                             {[
-                                ['Thực tế', `${kpi.current_value} ${kpi.unit}`],
-                                ['Mục tiêu', `${kpi.target_value} ${kpi.unit}`],
-                                ['Kỳ vọng', `${expected_progress}%`],
-                                ['Lệch', `${gap > 0 ? '+' : ''}${gap}%`, c],
+                                [tr('kpi_detail.actual'), `${kpi.current_value} ${kpi.unit}`],
+                                [tr('kpi_detail.target'), `${kpi.target_value} ${kpi.unit}`],
+                                [tr('kpi_detail.expected'), `${expected_progress}%`],
+                                [tr('kpi_detail.gap'), `${gap > 0 ? '+' : ''}${gap}%`, c],
                             ].map(([label, val, color]) => (
                                 <div className="ddb-drawer-stat" key={label}>
                                     <span className="ddb-drawer-stat-label">{label}</span>
@@ -150,21 +153,21 @@ export default function KpiDetailDrawer({ item, year, onClose, onReload, lang })
                                 position: 'absolute', left: `${Math.min(100, expected_progress)}%`,
                                 top: -3, bottom: -3, width: 2,
                                 background: 'var(--text)', opacity: 0.45, borderRadius: 1,
-                            }} title={`Kỳ vọng: ${expected_progress}%`} />
+                            }} title={tr('kpi_detail.expected_title', { progress: expected_progress })} />
                         </div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--muted)', marginTop: 5 }}>
-                            <span>Thực tế <b style={{ color: 'var(--text)' }}>{kpi.progress}%</b></span>
-                            <span>Kỳ vọng <b style={{ color: 'var(--text)' }}>{expected_progress}%</b></span>
+                            <span>{tr('kpi_detail.actual')} <b style={{ color: 'var(--text)' }}>{kpi.progress}%</b></span>
+                            <span>{tr('kpi_detail.expected')} <b style={{ color: 'var(--text)' }}>{expected_progress}%</b></span>
                         </div>
                     </div>
 
                     {/* Meta table */}
                     <div className="ddb-drawer-meta">
                         {[
-                            ['Trọng số', `${kpi.weight}%`],
-                            ['Deadline', dl, daysLeft < 0 ? HC.red : daysLeft < 30 ? HC.yellow : undefined],
-                            ['Còn lại', daysLeft >= 0 ? `${daysLeft} ngày` : `Quá ${-daysLeft} ngày`, daysLeft < 0 ? HC.red : undefined],
-                            ['Loại', kpi.category === 'Personal' ? 'Cá nhân' : 'Công việc'],
+                            [tr('kpi_detail.weight'), `${kpi.weight}%`],
+                            [tr('kpis.deadline_label'), dl, daysLeft < 0 ? HC.red : daysLeft < 30 ? HC.yellow : undefined],
+                            [tr('kpi_detail.remaining'), daysLeft >= 0 ? tr('kpi_detail.days', { days: daysLeft }) : tr('kpi_detail.overdue_days', { days: -daysLeft }), daysLeft < 0 ? HC.red : undefined],
+                            [tr('kpi_detail.category'), kpi.category === 'Personal' ? tr('category.personal') : tr('category.work')],
                         ].map(([k, v, color]) => (
                             <div className="ddb-drawer-meta-row" key={k}>
                                 <span className="ddb-drawer-meta-key">{k}</span>
@@ -177,7 +180,7 @@ export default function KpiDetailDrawer({ item, year, onClose, onReload, lang })
                     {health !== 'green' && (
                         <div style={{ marginTop: 20, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
                             <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 10 }}>
-                                AI Coach
+                                {tr('dashboard.coach_btn')}
                             </div>
                             <CoachPanel kpi={kpi} lang={lang} onConfirmed={onReload} />
                         </div>

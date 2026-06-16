@@ -11,9 +11,52 @@ from ..agent.prompts import SMART_VALIDATE_SYSTEM
 from ..auth import CurrentUser
 from ..connectors.file_upload import parse_appraisal_file, parse_kpi_file
 from ..database import get_db
-from ..services import kpi_service
+from ..services import autonomous_agent, kpi_service
 
 router = APIRouter(prefix="/api/kpis", tags=["kpis"])
+
+
+def _cycle_locked_error(cycle: models.KPICycle):
+    raise HTTPException(
+        status_code=423,
+        detail={
+            "error": "CYCLE_LOCKED",
+            "message": f'Chu kỳ "{cycle.name}" đã được chốt, không thể chỉnh sửa.',
+            "locked_at": cycle.locked_at.isoformat() if cycle.locked_at else None,
+        },
+    )
+
+
+def _check_cycle_not_locked(db: Session, cycle_id: int | None, user_id: int):
+    if cycle_id is None:
+        return None
+    cycle = db.get(models.KPICycle, cycle_id)
+    if not cycle or cycle.user_id != user_id:
+        raise HTTPException(404, "Không tìm thấy chu kỳ")
+    if cycle.is_locked:
+        _cycle_locked_error(cycle)
+    return cycle
+
+
+def _get_objective_for_user(db: Session, objective_id: int, user_id: int) -> models.Objective:
+    obj = db.get(models.Objective, objective_id)
+    if not obj or obj.user_id != user_id or obj.archived:
+        raise HTTPException(404, "Không tìm thấy mục tiêu")
+    return obj
+
+
+def _check_objective_cycle_not_locked(db: Session, objective_id: int | None, user_id: int):
+    if objective_id is None:
+        return None
+    obj = _get_objective_for_user(db, objective_id, user_id)
+    _check_cycle_not_locked(db, obj.cycle_id, user_id)
+    return obj
+
+
+def _check_kpi_cycle_not_locked(db: Session, kpi: models.KPI, user_id: int):
+    if kpi.objective_id is None:
+        return None
+    return _check_objective_cycle_not_locked(db, kpi.objective_id, user_id)
 
 
 def _check_group_weight(
@@ -114,11 +157,13 @@ def list_kpis(
 
 @router.post("", response_model=schemas.KPIOut)
 def create_kpi(payload: schemas.KPICreate, current_user: CurrentUser, db: Session = Depends(get_db)):
+    _check_objective_cycle_not_locked(db, payload.objective_id, current_user.id)
     _check_group_weight(db, payload.weight, payload.objective_id, user_id=current_user.id)
     kpi = models.KPI(user_id=current_user.id, **payload.model_dump())
     db.add(kpi)
     db.commit()
     db.refresh(kpi)
+    autonomous_agent.run_category_guard_for_kpis(db, current_user.id, [kpi])
     return kpi
 
 
@@ -127,6 +172,7 @@ async def preview_import(
     file: UploadFile,
     current_user: CurrentUser,
     db: Session = Depends(get_db),
+    cycle_id: int | None = Query(None),
 ):
     """Phan tich file import (chi dinh dang Performance Appraisal) va tra ve ket qua validation
     ma KHONG luu bat ky du lieu nao. Frontend dung de hien thi wizard truoc khi xac nhan.
@@ -144,12 +190,16 @@ async def preview_import(
             detail={"type": "not_appraisal", "message": "File không phải định dạng Performance Appraisal."},
         )
 
-    existing_objectives = list(db.scalars(
-        select(models.Objective).where(
-            models.Objective.user_id == current_user.id,
-            models.Objective.archived == False,  # noqa: E712
-        )
-    ))
+    if cycle_id is not None:
+        _check_cycle_not_locked(db, cycle_id, current_user.id)
+
+    objective_query = select(models.Objective).where(
+        models.Objective.user_id == current_user.id,
+        models.Objective.archived == False,  # noqa: E712
+    )
+    if cycle_id is not None:
+        objective_query = objective_query.where(models.Objective.cycle_id == cycle_id)
+    existing_objectives = list(db.scalars(objective_query))
     existing_by_name = {o.name.lower().strip(): o for o in existing_objectives}
     existing_obj_total = sum(o.weight or 0 for o in existing_objectives)
 
@@ -316,12 +366,16 @@ def _import_appraisal(appraisal: dict, current_user, db: Session, mode: str = "a
     objs = appraisal["objectives"]
 
     # Fix 1: lay danh sach objective hien co, map theo ten (case-insensitive)
-    existing_objectives = list(db.scalars(
-        select(models.Objective).where(
-            models.Objective.user_id == current_user.id,
-            models.Objective.archived == False,  # noqa: E712
-        )
-    ))
+    if cycle_id is not None:
+        _check_cycle_not_locked(db, cycle_id, current_user.id)
+
+    objective_query = select(models.Objective).where(
+        models.Objective.user_id == current_user.id,
+        models.Objective.archived == False,  # noqa: E712
+    )
+    if cycle_id is not None:
+        objective_query = objective_query.where(models.Objective.cycle_id == cycle_id)
+    existing_objectives = list(db.scalars(objective_query))
     existing_by_name = {o.name.lower().strip(): o for o in existing_objectives}
     existing_total = sum(o.weight or 0 for o in existing_objectives)
 
@@ -444,18 +498,22 @@ def confirm_kpi_proposal(
     if not payload.kpis and not payload.weight_changes and not payload.objectives:
         raise HTTPException(400, "Đề xuất trống")
     try:
+        if payload.cycle_id is not None:
+            _check_cycle_not_locked(db, payload.cycle_id, current_user.id)
+
         touched_objective_ids: set[int | None] = set()
         # 1) Tao cac Objective MOI truoc (dung thu tu: muc tieu co truoc, KPI gan vao sau)
         new_obj_by_name: dict[str, models.Objective] = {}
         if payload.objectives:
+            objective_query = select(models.Objective).where(
+                models.Objective.user_id == current_user.id,
+                models.Objective.archived == False,  # noqa: E712
+            )
+            if payload.cycle_id is not None:
+                objective_query = objective_query.where(models.Objective.cycle_id == payload.cycle_id)
             existing_total = sum(
                 o.weight
-                for o in db.scalars(
-                    select(models.Objective).where(
-                        models.Objective.user_id == current_user.id,
-                        models.Objective.archived == False,  # noqa: E712
-                    )
-                )
+                for o in db.scalars(objective_query)
             )
             new_total = existing_total + sum(o.weight for o in payload.objectives)
             if new_total > 100.001:
@@ -479,7 +537,8 @@ def confirm_kpi_proposal(
         for wc in payload.weight_changes:
             kpi = db.get(models.KPI, wc.kpi_id)
             if not kpi or kpi.archived or kpi.user_id != current_user.id:
-                raise HTTPException(404, f"Không tìm thấy KPI #{wc.kpi_id} để điều chỉnh trọng số")
+                raise HTTPException(404, "Không tìm thấy KPI được chọn để điều chỉnh trọng số")
+            _check_kpi_cycle_not_locked(db, kpi, current_user.id)
             if kpi.weight != wc.new_weight:
                 touched_objective_ids.add(kpi.objective_id)
                 db.add(
@@ -505,9 +564,9 @@ def confirm_kpi_proposal(
                     )
                 objective_id = new_obj.id
             elif objective_id is not None:
-                obj = db.get(models.Objective, objective_id)
-                if not obj or obj.user_id != current_user.id:
-                    raise HTTPException(404, f"Không tìm thấy mục tiêu #{objective_id}")
+                obj = _check_objective_cycle_not_locked(db, objective_id, current_user.id)
+                if payload.cycle_id is not None and obj.cycle_id != payload.cycle_id:
+                    raise HTTPException(400, f'Mục tiêu "{obj.name}" không thuộc chu kỳ đang import')
             touched_objective_ids.add(objective_id)
             kpi = models.KPI(
                 user_id=current_user.id, name=p.name, description=p.description, target=p.target,
@@ -548,6 +607,8 @@ def confirm_kpi_proposal(
         raise
     for k in created:
         db.refresh(k)
+    if created:
+        autonomous_agent.run_category_guard_for_kpis(db, current_user.id, created)
     return created
 
 
@@ -571,6 +632,8 @@ def auto_map_kpis(
     ))
     if not kpis_to_map:
         return []
+    for kpi in kpis_to_map:
+        _check_kpi_cycle_not_locked(db, kpi, current_user.id)
 
     all_kpis = list(db.scalars(
         select(models.KPI).where(
@@ -636,6 +699,7 @@ def auto_map_kpis(
 
         if target_obj is None:
             continue  # khong xac dinh duoc objective dich, bo qua
+        _check_objective_cycle_not_locked(db, target_obj.id, current_user.id)
 
         # Match KPI hien tai trong danh sach can phan bo theo ten
         existing_kpi = unassigned_by_name.get(pk.name.lower().strip())
@@ -658,6 +722,8 @@ def auto_map_kpis(
     db.commit()
     for k in moved:
         db.refresh(k)
+    if moved:
+        autonomous_agent.run_category_guard_for_kpis(db, current_user.id, moved)
     return moved
 
 
@@ -666,6 +732,7 @@ def balance_weights(
     payload: schemas.BalanceRequest, current_user: CurrentUser, db: Session = Depends(get_db)
 ):
     """Tu dong can bang trong so cac KPI trong 1 muc tieu ve dung tong 100%."""
+    _check_objective_cycle_not_locked(db, payload.objective_id, current_user.id)
     q = select(models.KPI).where(
         models.KPI.user_id == current_user.id,
         models.KPI.archived == False,  # noqa: E712
@@ -679,12 +746,18 @@ def balance_weights(
     if not kpis:
         raise HTTPException(404, "Nhóm này không có KPI nào để cân bằng")
     total = sum(k.weight for k in kpis)
-    new_weights = (
-        [round(100 / len(kpis), 1)] * len(kpis)
-        if total <= 0
-        else [round(k.weight * 100 / total, 1) for k in kpis]
-    )
-    new_weights[-1] = round(100 - sum(new_weights[:-1]), 1)  # khu sai so lam tron
+    if total <= 0:
+        base = 100 // len(kpis)
+        remainder = 100 - base * len(kpis)
+        new_weights = [base + (1 if i < remainder else 0) for i in range(len(kpis))]
+    else:
+        raw = [(k.weight * 100 / total) for k in kpis]
+        floors = [int(v) for v in raw]
+        remainder = 100 - sum(floors)
+        order = sorted(range(len(raw)), key=lambda i: raw[i] - floors[i], reverse=True)
+        new_weights = floors[:]
+        for i in order[:remainder]:
+            new_weights[i] += 1
     for k, w in zip(kpis, new_weights):
         if k.weight != w:
             db.add(
@@ -703,21 +776,7 @@ def update_kpi(kpi_id: int, payload: schemas.KPIUpdate, current_user: CurrentUse
     kpi = db.get(models.KPI, kpi_id)
     if not kpi or kpi.user_id != current_user.id:
         raise HTTPException(404, "Không tìm thấy KPI")
-    # D3: kiểm tra cycle lock
-    if kpi.objective_id:
-        obj = db.get(models.Objective, kpi.objective_id)
-        if obj and obj.cycle_id:
-            cycle = db.get(models.KPICycle, obj.cycle_id)
-            if cycle and cycle.is_locked:
-                from fastapi.responses import JSONResponse
-                raise HTTPException(
-                    status_code=423,
-                    detail={
-                        "error": "CYCLE_LOCKED",
-                        "message": "Chu kỳ đã được chốt, không thể chỉnh sửa.",
-                        "locked_at": cycle.locked_at.isoformat() if cycle.locked_at else None,
-                    },
-                )
+    _check_kpi_cycle_not_locked(db, kpi, current_user.id)
     changes = payload.model_dump(exclude_unset=True, exclude={"reason", "clear_objective"})
 
     # xac dinh muc tieu va trong so SAU thay doi de kiem tra dung nhom dich
@@ -726,6 +785,7 @@ def update_kpi(kpi_id: int, payload: schemas.KPIUpdate, current_user: CurrentUse
         new_obj_id = None
     moving = payload.clear_objective or new_obj_id is not None
     final_obj_id = new_obj_id if moving else kpi.objective_id
+    _check_objective_cycle_not_locked(db, final_obj_id, current_user.id)
     final_weight = changes.get("weight") if changes.get("weight") is not None else kpi.weight
     _check_group_weight(db, final_weight, final_obj_id, exclude_id=kpi_id, user_id=current_user.id)
 
@@ -764,6 +824,7 @@ def update_kpi(kpi_id: int, payload: schemas.KPIUpdate, current_user: CurrentUse
             setattr(kpi, field, new_value)
     db.commit()
     db.refresh(kpi)
+    autonomous_agent.run_category_guard_for_kpis(db, current_user.id, [kpi])
     return kpi
 
 
@@ -772,6 +833,7 @@ def archive_kpi(kpi_id: int, current_user: CurrentUser, reason: str = "", db: Se
     kpi = db.get(models.KPI, kpi_id)
     if not kpi or kpi.user_id != current_user.id:
         raise HTTPException(404, "Không tìm thấy KPI")
+    _check_kpi_cycle_not_locked(db, kpi, current_user.id)
     kpi.archived = True
     db.add(
         models.KPIChangeLog(
@@ -788,6 +850,7 @@ def decompose_kpi(kpi_id: int, current_user: CurrentUser, db: Session = Depends(
     kpi = db.get(models.KPI, kpi_id)
     if not kpi or kpi.user_id != current_user.id:
         raise HTTPException(404, "Không tìm thấy KPI")
+    _check_kpi_cycle_not_locked(db, kpi, current_user.id)
     sub_goals = kpi_agent.decompose_kpi_smart(kpi)
     if not sub_goals:
         raise HTTPException(502, "Agent không phân rã được KPI này, thử lại sau.")
@@ -840,14 +903,22 @@ def coach_kpi_endpoint(
 
 
 @router.post("/conflicts/analyze", response_model=schemas.ConflictAnalysisOut)
-def analyze_conflicts(current_user: CurrentUser, db: Session = Depends(get_db)):
+def analyze_conflicts(
+    current_user: CurrentUser,
+    db: Session = Depends(get_db),
+    cycle_id: int | None = Query(None),
+):
     """Phat hien cac KPI mau thuan nhau (goi LLM) va goi y cach can bang."""
-    kpis = list(db.scalars(
-        select(models.KPI).where(
+    q = select(models.KPI).where(
             models.KPI.user_id == current_user.id,
             models.KPI.archived == False,  # noqa: E712
         )
-    ))
+    if cycle_id is not None:
+        q = q.join(models.Objective, models.KPI.objective_id == models.Objective.id).where(
+            models.Objective.cycle_id == cycle_id,
+            models.Objective.archived == False,  # noqa: E712
+        )
+    kpis = list(db.scalars(q))
     if len(kpis) < 2:
         return schemas.ConflictAnalysisOut(conflicts=[], analyzed_kpis=len(kpis))
     try:
@@ -914,10 +985,32 @@ def archived_kpis(current_user: CurrentUser, db: Session = Depends(get_db)):
 
 @router.post("/{kpi_id}/restore", response_model=schemas.KPIOut)
 def restore_kpi(kpi_id: int, current_user: CurrentUser, db: Session = Depends(get_db)):
-    """Khoi phuc KPI da go bo. Neu trong so cu lam nhom vuot 100% -> tu ha xuong phan con trong."""
+    """Khoi phuc KPI da go bo. Neu objective cha da go bo thi khoi phuc objective do de KPI hien lai."""
     kpi = db.get(models.KPI, kpi_id)
     if not kpi or not kpi.archived or kpi.user_id != current_user.id:
-        raise HTTPException(404, "Không tìm thấy KPI đã gỡ bỏ")
+        raise HTTPException(404, "Khong tim thay KPI da go bo")
+
+    note = ""
+    if kpi.objective_id is not None:
+        obj = db.get(models.Objective, kpi.objective_id)
+        if obj and obj.user_id == current_user.id:
+            _check_cycle_not_locked(db, obj.cycle_id, current_user.id)
+        if obj and obj.user_id == current_user.id and obj.archived:
+            active_objectives = db.scalars(
+                select(models.Objective).where(
+                    models.Objective.user_id == current_user.id,
+                    models.Objective.archived == False,  # noqa: E712
+                    models.Objective.cycle_id == obj.cycle_id,
+                )
+            )
+            available_obj_weight = max(0.0, 100.0 - sum(o.weight for o in active_objectives))
+            if obj.weight > available_obj_weight:
+                obj.weight = available_obj_weight
+                note += f" (muc tieu cha khoi phuc voi trong so {available_obj_weight:g}%)"
+            else:
+                note += " (da khoi phuc muc tieu cha)"
+            obj.archived = False
+
     others = db.scalars(
         select(models.KPI).where(
             models.KPI.user_id == current_user.id,
@@ -928,22 +1021,21 @@ def restore_kpi(kpi_id: int, current_user: CurrentUser, db: Session = Depends(ge
         )
     )
     available = max(0.0, 100.0 - sum(k.weight for k in others))
-    note = ""
     if kpi.weight > available:
         db.add(
             models.KPIChangeLog(
                 kpi_id=kpi.id, field="weight",
                 old_value=str(kpi.weight), new_value=str(available),
-                reason=f"Hạ trọng số khi khôi phục (nhóm chỉ còn trống {available:g}%)",
+                reason=f"Ha trong so khi khoi phuc (nhom chi con trong {available:g}%)",
             )
         )
         kpi.weight = available
-        note = f" (trọng số hạ còn {available:g}%)"
+        note += f" (trong so ha con {available:g}%)"
     kpi.archived = False
     db.add(
         models.KPIChangeLog(
             kpi_id=kpi.id, field="archived", old_value="True", new_value="False",
-            reason="Khôi phục KPI" + note,
+            reason="Khoi phuc KPI" + note,
         )
     )
     db.commit()
@@ -989,6 +1081,7 @@ def confirm_delete(payload: schemas.ConfirmDeleteRequest, current_user: CurrentU
         kpi = db.get(models.KPI, target_id)
         if not kpi or kpi.user_id != current_user.id:
             raise HTTPException(404, "Khong tim thay KPI")
+        _check_kpi_cycle_not_locked(db, kpi, current_user.id)
         kpi.archived = True
         db.add(
             models.KPIChangeLog(
@@ -1002,6 +1095,7 @@ def confirm_delete(payload: schemas.ConfirmDeleteRequest, current_user: CurrentU
         obj = db.get(models.Objective, target_id)
         if not obj or obj.user_id != current_user.id:
             raise HTTPException(404, "Khong tim thay muc tieu")
+        _check_cycle_not_locked(db, obj.cycle_id, current_user.id)
         # Archive all KPIs in this objective first
         kpis = db.query(models.KPI).filter(
             models.KPI.objective_id == target_id,

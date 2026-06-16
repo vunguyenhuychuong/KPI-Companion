@@ -166,9 +166,12 @@ class WorkItem(Base):
     # da_lam | dang_lam | se_lam | phat_sinh | loai_bo
     status: Mapped[str] = mapped_column(String(20), index=True)
     progress_delta: Mapped[float] = mapped_column(Float, default=0.0)  # % cong vao KPI
-    source: Mapped[str] = mapped_column(String(30), default="chat")  # chat|csv|gmail|calendar|sheets|notion|slack|outlook
+    source: Mapped[str] = mapped_column(String(30), default="chat")  # chat|csv|gmail|calendar|sheets|notion|slack|outlook|agent_loop
     source_ref: Mapped[str] = mapped_column(String(500), default="")  # email nao, dong nao...
     work_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    mapping_reason: Mapped[str] = mapped_column(Text, default="")
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    alternative_kpis: Mapped[list | None] = mapped_column(JSON, nullable=True)
     confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -291,7 +294,23 @@ class AgentMemory(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     content: Mapped[str] = mapped_column(String(500))
-    category: Mapped[str] = mapped_column(String(30), default="other")  # profile|alias|workflow|preference|other
+    category: Mapped[str] = mapped_column(String(30), default="other")  # profile|alias|workflow|preference|correction|other
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AgentCycleLog(Base):
+    """Dau vet vong lap tu chu: Perceive -> Reason -> Act -> Remember."""
+
+    __tablename__ = "agent_cycle_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    cycle_key: Mapped[str] = mapped_column(String(80), index=True)
+    phase: Mapped[str] = mapped_column(String(30), default="complete")
+    status: Mapped[str] = mapped_column(String(20), default="ok")
+    event_fingerprint: Mapped[str] = mapped_column(String(160), index=True, default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

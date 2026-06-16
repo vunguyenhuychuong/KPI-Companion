@@ -9,11 +9,21 @@ from openpyxl import load_workbook
 def _rows_from_bytes(filename: str, content: bytes) -> list[list[str]]:
     if filename.lower().endswith((".xlsx", ".xlsm")):
         wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
-        ws = wb.active
-        return [
-            ["" if c is None else (c.isoformat() if isinstance(c, (date, datetime)) else str(c)) for c in row]
-            for row in ws.iter_rows(values_only=True)
-        ]
+        rows: list[list[str]] = []
+        for ws in wb.worksheets:
+            # Some exports (for example ManageEngine reports) incorrectly set
+            # dimension="A1"; read_only mode then sees a blank sheet unless reset.
+            if hasattr(ws, "reset_dimensions"):
+                ws.reset_dimensions()
+            sheet_rows = [
+                ["" if c is None else (c.isoformat() if isinstance(c, (date, datetime)) else str(c)) for c in row]
+                for row in ws.iter_rows(values_only=True)
+            ]
+            if any(any(str(c).strip() for c in row) for row in sheet_rows):
+                if len(wb.worksheets) > 1:
+                    rows.append([f"Sheet: {ws.title}"])
+                rows.extend(sheet_rows)
+        return rows
     # CSV: thu utf-8-sig truoc (Excel VN hay xuat BOM)
     for enc in ("utf-8-sig", "utf-8", "cp1258", "latin-1"):
         try:

@@ -1,3 +1,4 @@
+import math
 import re
 from datetime import date, datetime
 
@@ -26,6 +27,38 @@ def _normalize_category(v) -> str:
         if s in ("personal", "cá nhân", "ca nhan", "personal goal"):
             return "Personal"
     return "Work"
+
+
+def _validate_weight(v: float | int | None) -> float | None:
+    if v is None:
+        return None
+    if not math.isfinite(float(v)):
+        raise ValueError("Trọng số phải là số hợp lệ")
+    if float(v) < 0 or float(v) > 100:
+        raise ValueError("Trọng số phải nằm trong khoảng 0-100%")
+    if float(v) != int(float(v)):
+        raise ValueError("Trọng số phải là số nguyên")
+    return float(int(float(v)))
+
+
+def _validate_positive_number(v: float | int | None, field_name: str) -> float | None:
+    if v is None:
+        return None
+    if not math.isfinite(float(v)):
+        raise ValueError(f"{field_name} phải là số hợp lệ")
+    if float(v) <= 0:
+        raise ValueError(f"{field_name} phải lớn hơn 0")
+    return float(v)
+
+
+def _validate_non_negative_number(v: float | int | None, field_name: str) -> float | None:
+    if v is None:
+        return None
+    if not math.isfinite(float(v)):
+        raise ValueError(f"{field_name} phải là số hợp lệ")
+    if float(v) < 0:
+        raise ValueError(f"{field_name} không được âm")
+    return float(v)
 
 
 def _validate_password_rules(v: str, field_name: str = "Mat khau") -> str:
@@ -106,12 +139,22 @@ class ObjectiveCreate(BaseModel):
     year: int = 2026
     cycle_id: int | None = None
 
+    @field_validator("weight")
+    @classmethod
+    def _weight_int(cls, v: float) -> float:
+        return _validate_weight(v)
+
 
 class ObjectiveUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     weight: float | None = None
     cycle_id: int | None = None
+
+    @field_validator("weight")
+    @classmethod
+    def _weight_int(cls, v: float | None) -> float | None:
+        return _validate_weight(v)
 
 
 class ObjectiveOut(BaseModel):
@@ -155,6 +198,21 @@ class KPIBase(BaseModel):
     def _norm_category(cls, v: str) -> str:
         return _normalize_category(v)
 
+    @field_validator("weight")
+    @classmethod
+    def _weight_int(cls, v: float) -> float:
+        return _validate_weight(v)
+
+    @field_validator("target_value")
+    @classmethod
+    def _target_positive(cls, v: float) -> float:
+        return _validate_positive_number(v, "Chỉ tiêu số")
+
+    @field_validator("current_value")
+    @classmethod
+    def _current_non_negative(cls, v: float) -> float:
+        return _validate_non_negative_number(v, "Thực đạt")
+
 
 class KPICreate(KPIBase):
     pass
@@ -179,6 +237,21 @@ class KPIUpdate(BaseModel):
     def _norm_category(cls, v: str | None) -> str | None:
         return _normalize_category(v) if v is not None else None
 
+    @field_validator("weight")
+    @classmethod
+    def _weight_int(cls, v: float | None) -> float | None:
+        return _validate_weight(v)
+
+    @field_validator("target_value")
+    @classmethod
+    def _target_positive(cls, v: float | None) -> float | None:
+        return _validate_positive_number(v, "Chỉ tiêu số")
+
+    @field_validator("current_value")
+    @classmethod
+    def _current_non_negative(cls, v: float | None) -> float | None:
+        return _validate_non_negative_number(v, "Thực đạt")
+
 
 class KPIOut(KPIBase):
     model_config = ConfigDict(from_attributes=True)
@@ -192,6 +265,12 @@ class KPIOut(KPIBase):
 
 
 # ---------- Work items ----------
+class KpiCandidate(BaseModel):
+    kpi_id: int
+    kpi_name: str
+    reason: str = ""
+
+
 class ProposedWorkItem(BaseModel):
     """Dau viec do Agent de xuat, cho nguoi dung xac nhan."""
 
@@ -205,6 +284,11 @@ class ProposedWorkItem(BaseModel):
     source: str = "chat"
     source_ref: str = ""
     work_date: date | None = None
+    mapping_reason: str = ""
+    confidence: float | None = None
+    alternative_kpis: list[KpiCandidate] = []
+    original_kpi_id: int | None = None
+    original_status: str | None = None
 
 
 class WorkItemOut(BaseModel):
@@ -219,6 +303,9 @@ class WorkItemOut(BaseModel):
     source: str
     source_ref: str
     work_date: date | None
+    mapping_reason: str = ""
+    confidence: float | None = None
+    alternative_kpis: list[KpiCandidate] = []
     confirmed: bool
     created_at: datetime
 
@@ -277,6 +364,11 @@ class ProposedObjective(BaseModel):
     description: str = ""
     weight: float = 0.0
 
+    @field_validator("weight")
+    @classmethod
+    def _weight_int(cls, v: float) -> float:
+        return _validate_weight(v)
+
 
 class ProposedKPI(BaseModel):
     name: str
@@ -291,6 +383,16 @@ class ProposedKPI(BaseModel):
     objective_name: str | None = None
     # ten muc tieu MOI trong proposed_objectives ma KPI nay thuoc ve (None = dung objective_id)
     objective_ref: str | None = None
+
+    @field_validator("weight")
+    @classmethod
+    def _weight_int(cls, v: float) -> float:
+        return _validate_weight(v)
+
+    @field_validator("target_value")
+    @classmethod
+    def _target_positive(cls, v: float) -> float:
+        return _validate_positive_number(v, "Chỉ tiêu số")
 
 
 class DeleteProposal(BaseModel):
@@ -315,6 +417,11 @@ class WeightChange(BaseModel):
     kpi_name: str | None = None
     old_weight: float | None = None
     new_weight: float
+
+    @field_validator("new_weight")
+    @classmethod
+    def _weight_int(cls, v: float) -> float:
+        return _validate_weight(v)
 
 
 CONFLICT_TYPES = {
@@ -347,10 +454,24 @@ class KPIProposalConfirm(BaseModel):
 
 
 # ---------- Chat ----------
+class ChatAttachment(BaseModel):
+    """File/anh nguoi dung dinh kem vao mot tin nhan chat."""
+
+    id: str
+    name: str
+    content_type: str = ""
+    size: int = 0
+    kind: str = "file"  # image | text | spreadsheet | document | pdf | file
+    url: str = ""
+    extracted_text: str = ""
+    error: str = ""
+
+
 class ChatRequest(BaseModel):
     message: str
     session_id: int | None = None  # None -> tu tao phien moi
     lang: str = "vi"  # "vi" | "en" — ngon ngu tra loi cua Agent
+    attachments: list[ChatAttachment] = []
 
 
 class MeetingProposal(BaseModel):
@@ -618,6 +739,21 @@ class DashboardOut(BaseModel):
     weekly_activity: list[dict] = []  # 8 tuan gan nhat: [{"label": "08/06", "count": n}]
 
 
+class DashboardInsightOut(BaseModel):
+    generated_at: datetime
+    data_signature: str
+    top_strength: str
+    top_risk: str
+    top_priority: str
+    correlation_insight: str
+    forecast_next_period: str
+    kpi_adjustment: str
+    suggested_actions: list[str] = []
+    risk_kpi_id: int | None = None
+    priority_kpi_id: int | None = None
+    strength_category: str = "None"
+
+
 # ---------- Coaching & Remediation (RCA — M4) ----------
 class RootCause(BaseModel):
     cause: str  # gia thuyet nguyen nhan goc re (LLM sinh)
@@ -744,6 +880,45 @@ class AgentMemoryOut(BaseModel):
     id: int
     content: str
     category: str
+    created_at: datetime
+
+
+class AgentCycleLogOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    cycle_key: str
+    phase: str
+    status: str
+    summary: str = ""
+    meta: dict | None = None
+    created_at: datetime
+
+
+class AutonomousAgentStatusOut(BaseModel):
+    enabled: bool
+    interval_seconds: int
+    running: bool
+    latest_logs: list[AgentCycleLogOut] = []
+
+
+class CategorySuggestion(BaseModel):
+    kpi_id: int
+    kpi_name: str
+    current_category: str
+    suggested_category: str
+    reason: str
+    confidence: float = 0.0
+
+
+class AutonomousInboxItem(BaseModel):
+    message_id: int
+    session_id: int | None = None
+    content: str
+    event_type: str = ""
+    summary: str = ""
+    proposed_items: list[ProposedWorkItem] = []
+    category_suggestions: list[CategorySuggestion] = []
+    proposal_status: str | None = None
     created_at: datetime
 
 

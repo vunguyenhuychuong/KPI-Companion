@@ -1,12 +1,15 @@
 import { createContext, useCallback, useContext, useState } from 'react'
+import { useLang } from '../LangContext'
+import { UiIcon } from './UiIcon'
 
 const ToastContext = createContext(null)
 
 let _nextId = 0
 
-const ICONS = { success: '✅', error: '❌', warning: '⚠️', info: 'ℹ️' }
+const ICONS = { success: 'checkCircle', error: 'xCircle', warning: 'warning', info: 'info' }
 
 export function ToastProvider({ children }) {
+  const { tr } = useLang()
   const [toasts, setToasts] = useState([])
 
   const dismiss = useCallback((id) => {
@@ -33,9 +36,9 @@ export function ToastProvider({ children }) {
       <div className="toast-container" aria-live="polite" aria-atomic="false">
         {toasts.map((t) => (
           <div key={t.id} className={`toast toast-${t.type}${t.exiting ? ' toast-exit' : ''}`} role="alert">
-            <span className="toast-icon" aria-hidden="true">{ICONS[t.type]}</span>
+            <span className="toast-icon" aria-hidden="true"><UiIcon name={ICONS[t.type]} /></span>
             <span className="toast-msg">{t.message}</span>
-            <button className="toast-close" onClick={() => dismiss(t.id)} aria-label="Đóng">✕</button>
+            <button className="toast-close" onClick={() => dismiss(t.id)} aria-label={tr('common.close')}><UiIcon name="x" /></button>
           </div>
         ))}
       </div>

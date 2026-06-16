@@ -61,6 +61,7 @@
 | RCA + Coaching | `agent/agent.py` (intent `coaching`), `routers/kpis.py` | `POST /api/kpis/{id}/coach`; trả `analysis`/`root_causes`/`actions`; actions là `ProposedWorkItem` → tái dùng ProposalList/confirm; auto-trigger chỉ khi `kpi_autocoach==='1'` trong localStorage |
 | Burnout Guardrail | `routers/burnout.py` | Deterministic, KHÔNG gọi LLM; giờ cần vs giờ trống từ calendar mock; 3 mức: safe/warning/danger |
 | AI Predictive Runrate | `services/kpi_service.py` (`forecast_kpi`), `Dashboard.jsx` | Deterministic, KHÔNG gọi LLM; `has_history=false` → vận tốc 0, dự báo đi ngang — hành vi trung thực, không phải bug; ForecastChart vẽ SVG tay 4 đường, KHÔNG thêm thư viện chart |
+| AI Category Guard | `services/autonomous_agent.py`, `routers/kpis.py`, `routers/objectives.py`, `AutonomousAgentInbox.jsx` | Gọi Qwen qua `call_json` để phân loại ngữ cảnh Work/Personal khi Agent tự chủ quét và sau khi user tạo/sửa/xác nhận KPI; nếu KPI có vẻ nằm sai nhóm thì tạo thẻ chuyển phân loại cần user xác nhận, không dùng rule từ khóa cứng và không tự ghi DB |
 
 ---
 

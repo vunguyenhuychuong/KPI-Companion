@@ -1,3 +1,5 @@
+import hashlib
+import json
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -7,6 +9,8 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..agent import agent as kpi_agent
+from ..agent import prompts
+from ..agent.llm import call_json
 from ..auth import CurrentUser
 from ..database import get_db
 from ..services import email_service, export_service, kpi_service, report_service
@@ -87,17 +91,161 @@ def _generate_and_save(
     return report
 
 
+def _validate_cycle(db: Session, cycle_id: int | None, user_id: int) -> None:
+    if cycle_id is None:
+        return
+    cycle = db.get(models.KPICycle, cycle_id)
+    if not cycle or cycle.user_id != user_id:
+        raise HTTPException(404, "Không tìm thấy chu kỳ")
+
+
+def _dashboard_insight_payload(dash: schemas.DashboardOut) -> dict:
+    obj_names = {o.id: o.name for o in dash.objectives}
+    ranked_kpis = sorted(
+        dash.kpi_statuses,
+        key=lambda s: (
+            0 if s.health == "red" else 1 if s.health == "yellow" else 2,
+            s.gap,
+            -(s.kpi.weight or 0),
+        ),
+    )
+    return {
+        "year": dash.year,
+        "overall_progress": dash.overall_progress,
+        "objectives": [
+            {
+                "id": o.id,
+                "name": o.name,
+                "weight": o.weight,
+                "progress": o.progress,
+                "kpi_count": o.kpi_count,
+            }
+            for o in dash.objectives
+        ],
+        "kpis": [
+            {
+                "id": s.kpi.id,
+                "name": s.kpi.name,
+                "category": s.kpi.category,
+                "objective_id": s.kpi.objective_id,
+                "objective_name": obj_names.get(s.kpi.objective_id, ""),
+                "weight": s.kpi.weight,
+                "unit": s.kpi.unit,
+                "target_value": s.kpi.target_value,
+                "current_value": s.kpi.current_value,
+                "progress": s.kpi.progress,
+                "expected_progress": s.expected_progress,
+                "gap": s.gap,
+                "health": s.health,
+                "deadline": s.kpi.deadline.isoformat() if s.kpi.deadline else None,
+            }
+            for s in ranked_kpis[:12]
+        ],
+        "warnings": dash.warnings[:5],
+        "recent_items": [
+            {
+                "id": w.id,
+                "title": w.title,
+                "status": w.status,
+                "kpi_id": w.kpi_id,
+                "progress_delta": w.progress_delta,
+                "work_date": w.work_date.isoformat() if w.work_date else None,
+                "created_at": w.created_at.isoformat() if w.created_at else None,
+            }
+            for w in dash.recent_items[:10]
+        ],
+        "todo_items": [
+            {
+                "id": w.id,
+                "title": w.title,
+                "status": w.status,
+                "kpi_id": w.kpi_id,
+                "work_date": w.work_date.isoformat() if w.work_date else None,
+            }
+            for w in dash.todo_items[:8]
+        ],
+        "weekly_activity": dash.weekly_activity[-6:],
+    }
+
+
+def _dashboard_signature(payload: dict) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _clean_str(value, fallback: str) -> str:
+    text = str(value or "").strip()
+    return text or fallback
+
+
+def _clean_kpi_id(value, valid_ids: set[int]) -> int | None:
+    try:
+        candidate = int(value)
+    except (TypeError, ValueError):
+        return None
+    return candidate if candidate in valid_ids else None
+
+
 @router.get("/dashboard")
 def dashboard(
     current_user: CurrentUser,
     cycle_id: int | None = Query(None),
     db: Session = Depends(get_db),
 ):
-    if cycle_id is not None:
-        cycle = db.get(models.KPICycle, cycle_id)
-        if not cycle or cycle.user_id != current_user.id:
-            raise HTTPException(404, "KhÃ´ng tÃ¬m tháº¥y chu ká»³")
+    _validate_cycle(db, cycle_id, current_user.id)
     return kpi_service.build_dashboard(db, user_id=current_user.id, cycle_id=cycle_id)
+
+
+@router.post("/dashboard-insight", response_model=schemas.DashboardInsightOut)
+def dashboard_insight(
+    current_user: CurrentUser,
+    cycle_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Sinh AI Insight cho Dashboard bằng LLM, chỉ đọc dữ liệu, không ghi DB."""
+    _validate_cycle(db, cycle_id, current_user.id)
+    dash = kpi_service.build_dashboard(db, user_id=current_user.id, cycle_id=cycle_id)
+    payload = _dashboard_insight_payload(dash)
+    signature = _dashboard_signature(payload)
+    valid_ids = {item["id"] for item in payload["kpis"]}
+    user_prompt = json.dumps(
+        {
+            "today": date.today().isoformat(),
+            "data_signature": signature,
+            "dashboard": payload,
+        },
+        ensure_ascii=False,
+    )
+    try:
+        result = call_json(
+            prompts.DASHBOARD_INSIGHT_SYSTEM,
+            user_prompt,
+            temperature=0.2,
+            max_tokens=900,
+        )
+    except Exception as e:
+        raise HTTPException(502, f"Lỗi khi gọi AI model: {e}")
+
+    if not isinstance(result, dict):
+        raise HTTPException(502, "AI model trả về JSON không đúng định dạng.")
+    actions = result.get("suggested_actions") if isinstance(result, dict) else []
+    if not isinstance(actions, list):
+        actions = []
+    actions = [str(a).strip() for a in actions if str(a).strip()][:4]
+    return schemas.DashboardInsightOut(
+        generated_at=models.utcnow(),
+        data_signature=signature,
+        top_strength=_clean_str(result.get("top_strength"), "Chưa đủ dữ liệu để xác định điểm mạnh rõ."),
+        top_risk=_clean_str(result.get("top_risk"), "Không có rủi ro nổi bật trong dữ liệu hiện tại."),
+        top_priority=_clean_str(result.get("top_priority"), "Tiếp tục cập nhật tiến độ đều để dashboard chính xác hơn."),
+        correlation_insight=_clean_str(result.get("correlation_insight"), "Chưa đủ dữ liệu để kết luận pattern tương quan."),
+        forecast_next_period=_clean_str(result.get("forecast_next_period"), "Chưa đủ dữ liệu lịch sử để dự báo kỳ tới."),
+        kpi_adjustment=_clean_str(result.get("kpi_adjustment"), "Chưa cần điều chỉnh KPI lớn dựa trên dữ liệu hiện tại."),
+        suggested_actions=actions,
+        risk_kpi_id=_clean_kpi_id(result.get("risk_kpi_id"), valid_ids),
+        priority_kpi_id=_clean_kpi_id(result.get("priority_kpi_id"), valid_ids),
+        strength_category=_clean_str(result.get("strength_category"), "None"),
+    )
 
 
 @router.get("/weekly")
@@ -145,8 +293,16 @@ def delete_saved(report_id: int, current_user: CurrentUser, db: Session = Depend
 
 
 @router.get("/export")
-def export_excel(current_user: CurrentUser, db: Session = Depends(get_db)):
-    data = report_service.export_evaluation_excel(db, user_id=current_user.id)
+def export_excel(
+    current_user: CurrentUser,
+    cycle_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    if cycle_id is not None:
+        cycle = db.get(models.KPICycle, cycle_id)
+        if not cycle or cycle.user_id != current_user.id:
+            raise HTTPException(404, "Không tìm thấy chu kỳ")
+    data = report_service.export_evaluation_excel(db, user_id=current_user.id, cycle_id=cycle_id)
     filename = f"bao-cao-kpi-{date.today().isoformat()}.xlsx"
     return Response(
         content=data,
@@ -335,12 +491,20 @@ def quick_send_email(
 
 
 @router.get("/export-appraisal")
-def export_appraisal(current_user: CurrentUser, db: Session = Depends(get_db)):
+def export_appraisal(
+    current_user: CurrentUser,
+    cycle_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+):
     """Xuat dung mau Performance Appraisal cua cong ty (import nguoc lai duoc).
 
     Chua co KPI -> tra ve template trong de dien tay.
     """
-    data = report_service.export_appraisal_excel(db, current_user)
+    if cycle_id is not None:
+        cycle = db.get(models.KPICycle, cycle_id)
+        if not cycle or cycle.user_id != current_user.id:
+            raise HTTPException(404, "Không tìm thấy chu kỳ")
+    data = report_service.export_appraisal_excel(db, current_user, cycle_id=cycle_id)
     filename = f"performance-appraisal-{date.today().isoformat()}.xlsx"
     return Response(
         content=data,

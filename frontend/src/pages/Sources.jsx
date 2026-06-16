@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { useLang } from '../LangContext'
 import ProposalList from '../components/ProposalList'
+import { UiIcon, cleanIconLabel } from '../components/UiIcon'
 
 function lastMonday() {
   const d = new Date()
@@ -19,12 +20,12 @@ export default function Sources() {
   )
 
   const SOURCES = [
-    { key: 'gmail',    label: '✉️ Gmail',           descKey: 'sources.source_gmail_desc',    provider: 'google'  },
-    { key: 'calendar', label: '📅 Google Calendar', descKey: 'sources.source_calendar_desc', provider: 'google'  },
-    { key: 'sheets',   label: '📊 Google Sheets',   descKey: 'sources.source_sheets_desc',   provider: 'google'  },
-    { key: 'notion',   label: '📝 Notion',          descKey: 'sources.source_notion_desc',   provider: 'notion'  },
-    { key: 'slack',    label: '💬 Slack',           descKey: 'sources.source_slack_desc',    provider: 'slack'   },
-    { key: 'outlook',  label: '📧 Outlook',         descKey: 'sources.source_outlook_desc',  provider: 'outlook' },
+    { key: 'gmail',    label: 'Gmail',icon: 'mail',           descKey: 'sources.source_gmail_desc',    provider: 'google'  },
+    { key: 'calendar', label: 'Google Calendar',icon: 'calendar', descKey: 'sources.source_calendar_desc', provider: 'google'  },
+    { key: 'sheets',   label: 'Google Sheets',icon: 'table',   descKey: 'sources.source_sheets_desc',   provider: 'google'  },
+    { key: 'notion',   label: 'Notion',icon: 'note',          descKey: 'sources.source_notion_desc',   provider: 'notion'  },
+    { key: 'slack',    label: 'Slack',icon: 'message',           descKey: 'sources.source_slack_desc',    provider: 'slack'   },
+    { key: 'outlook',  label: 'Outlook',icon: 'mail',         descKey: 'sources.source_outlook_desc',  provider: 'outlook' },
   ]
 
   const [status, setStatus] = useState(null)
@@ -180,9 +181,10 @@ export default function Sources() {
 
       {status && (
         <div className={`mode-banner ${Object.values(status).includes('real') ? 'real' : 'mock'}`}>
+          <span className="inline-ui-icon"><UiIcon name={Object.values(status).includes('real') ? 'checkCircle' : 'warning'} /></span>
           {Object.values(status).includes('real')
-            ? tr('sources.real_banner')
-            : tr('sources.disconnected_banner', { note: status.note })}
+            ? cleanIconLabel(tr('sources.real_banner'))
+            : cleanIconLabel(tr('sources.disconnected_banner', { note: status.note }))}
         </div>
       )}
 
@@ -193,7 +195,7 @@ export default function Sources() {
         <div className="source-list">
           {integrations.map((it) => (
             <div key={it.provider} className={`source-item ${it.connected ? 'on' : ''}`}>
-              <div style={{ fontSize: '1.4rem' }}>{it.icon}</div>
+              <span className="source-icon" aria-hidden="true"><UiIcon name={it.provider === 'slack' ? 'message' : it.provider === 'notion' ? 'note' : it.provider === 'calendar' ? 'calendar' : it.provider === 'sheets' ? 'table' : 'mail'} /></span>
               <div style={{ flex: 1 }}>
                 <div className="source-name">{it.label}</div>
                 <div className="muted">
@@ -208,7 +210,7 @@ export default function Sources() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span className="badge real">{tr('integrations.connected')}</span>
                   <button className="btn" onClick={() => disconnect(it.provider)}>
-                    {tr('integrations.disconnect')}
+                    <UiIcon name="x" />{tr('integrations.disconnect')}
                   </button>
                 </div>
               ) : (
@@ -217,7 +219,7 @@ export default function Sources() {
                   onClick={() => connect(it.provider)}
                   disabled={connecting === it.provider}
                 >
-                  {connecting === it.provider ? tr('integrations.connecting') : tr('integrations.connect')}
+                  <UiIcon name="link" />{connecting === it.provider ? tr('integrations.connecting') : cleanIconLabel(tr('integrations.connect'))}
                 </button>
               )}
             </div>
@@ -235,11 +237,11 @@ export default function Sources() {
               <div className="seg">
                 <button className={`seg-btn ${conn.google_mock_mode ? 'active' : ''}`}
                   onClick={() => !conn.google_mock_mode && switchMode(true)} disabled={switching}>
-                  {tr('sources.mode_mock')}
+                  <UiIcon name="bot" />{tr('sources.mode_mock')}
                 </button>
                 <button className={`seg-btn ${!conn.google_mock_mode ? 'active' : ''}`}
                   onClick={() => conn.google_mock_mode && switchMode(false)} disabled={switching}>
-                  {tr('sources.mode_real')}
+                  <UiIcon name="link" />{tr('sources.mode_real')}
                 </button>
               </div>
               <span className={`badge ${conn.effective_mode}`}>
@@ -282,13 +284,16 @@ export default function Sources() {
       </div>
 
       <div className="card">
-        <h3>{tr('sources.upload_section')}</h3>
+        <h3 className="icon-heading"><UiIcon name="upload" /> {tr('sources.upload_section')}</h3>
         <p className="muted">{tr('sources.upload_desc')}</p>
-        <button className="btn" onClick={() => fileRef.current?.click()} disabled={busy}>{tr('sources.upload_btn')}</button>
+        <button className="btn import-cta" onClick={() => fileRef.current?.click()} disabled={busy}>
+          <UiIcon name="upload" />
+          {cleanIconLabel(tr('sources.upload_btn'))}
+        </button>
         <input ref={fileRef} type="file" accept=".xlsx,.csv" hidden onChange={upload} />
       </div>
 
-      {error && <div className="error-text">⚠️ {error}</div>}
+      {error && <div className="error-text"><UiIcon name="warning" /> {error}</div>}
 
       {result && (
         <div className="card">

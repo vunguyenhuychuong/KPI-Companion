@@ -6,6 +6,8 @@ import { useCycle } from '../CycleContext'
 import ViewModeSwitch from '../components/ViewModeSwitch'
 import { ConfirmModal, Modal, PromptModal } from '../components/Modal'
 import { useToast } from '../components/Toast'
+import NumberStepper from '../components/NumberStepper'
+import { UiIcon, cleanIconLabel } from '../components/UiIcon'
 
 const EMPTY = {
   name: '', description: '', target: '', weight: 10, year: 2026, deadline: '',
@@ -13,6 +15,17 @@ const EMPTY = {
 }
 
 const num = (v) => parseFloat(String(v).replace(',', '.').replace('%', ''))
+const normalizeNumericInput = (value, { min = 0, max = Infinity, integer = false } = {}) => {
+  if (value === '') return ''
+  const raw = String(value).replace(',', '.').replace('%', '').trim()
+  if (!raw || raw === '-' || raw === '.' || raw === '-.') return ''
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) return ''
+  const numeric = integer ? Math.trunc(parsed) : parsed
+  return String(Math.min(max, Math.max(min, numeric)))
+}
+const normalizeWeightInput = (value) => normalizeNumericInput(value, { min: 0, max: 100, integer: true })
+const normalizeNonNegativeInput = (value) => normalizeNumericInput(value, { min: 0 })
 
 function WeightHint({ total, label, tr }) {
   if (total === null || isNaN(total)) return null
@@ -28,7 +41,7 @@ function WeightHint({ total, label, tr }) {
 }
 
 /* ===== Modal tao / sua Objective (co trong so) ===== */
-function ObjectiveModal({ objective, objectives, onClose, onSaved, tr }) {
+function ObjectiveModal({ objective, objectives, cycleId, onClose, onSaved, tr }) {
   const isNew = !objective?.id
   const [f, setF] = useState({
     name: objective?.name || '',
@@ -39,7 +52,7 @@ function ObjectiveModal({ objective, objectives, onClose, onSaved, tr }) {
   const [error, setError] = useState('')
 
   const w = num(f.weight)
-  const wValid = !isNaN(w) && w >= 0 && w <= 100
+  const wValid = !isNaN(w) && Number.isInteger(w) && w >= 0 && w <= 100
   const totalOthers = objectives
     .filter((o) => o.id !== objective?.id)
     .reduce((s, o) => s + (o.weight || 0), 0)
@@ -50,6 +63,7 @@ function ObjectiveModal({ objective, objectives, onClose, onSaved, tr }) {
     setError('')
     try {
       const payload = { name: f.name.trim(), description: f.description, weight: w }
+      if (isNew && cycleId) payload.cycle_id = cycleId
       if (isNew) await api.createObjective(payload)
       else await api.updateObjective(objective.id, payload)
       onSaved()
@@ -59,7 +73,7 @@ function ObjectiveModal({ objective, objectives, onClose, onSaved, tr }) {
   return (
     <div className="modal-overlay">
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>{isNew ? tr('objm.add') : tr('objm.edit')}</h3>
+        <h3>{cleanIconLabel(isNew ? tr('objm.add') : tr('objm.edit'))}</h3>
         <label className="modal-field">{tr('objm.name')}
           <input autoFocus value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
         </label>
@@ -67,17 +81,17 @@ function ObjectiveModal({ objective, objectives, onClose, onSaved, tr }) {
           <input value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} />
         </label>
         <label className="modal-field">{tr('objm.weight')}
-          <input type="number" min="0" max="100" value={f.weight}
-            onChange={(e) => setF({ ...f, weight: e.target.value })} />
+          <NumberStepper min="0" max="100" step="1" value={f.weight}
+            onChange={(value) => setF({ ...f, weight: normalizeWeightInput(value) })} />
         </label>
         <WeightHint total={newTotal} label={tr('wh.obj_total')} tr={tr} />
-        {error && <div className="error-text">⚠️ {error}</div>}
+        {error && <div className="error-text"><UiIcon name="warning" /> {error}</div>}
         <div className="modal-actions">
-          <button className="btn ghost" onClick={onClose}>{tr('kpim.cancel')}</button>
+          <button className="btn ghost" onClick={onClose}><UiIcon name="x" />{tr('kpim.cancel')}</button>
           <button className="btn primary"
             disabled={saving || !f.name.trim() || !wValid || (newTotal !== null && newTotal > 100)}
             onClick={save}>
-            {saving ? tr('kpim.saving') : tr('kpim.save')}
+            <UiIcon name="check" />{saving ? tr('kpim.saving') : tr('kpim.save')}
           </button>
         </div>
       </div>
@@ -110,7 +124,7 @@ function EditKpiModal({ kpi, kpis, objectives, onClose, onSaved, tr }) {
   const w = num(f.weight)
   const tv = num(f.target_value)
   const cv = num(f.current_value)
-  const wValid = !isNaN(w) && w >= 0 && w <= 100
+  const wValid = !isNaN(w) && Number.isInteger(w) && w >= 0 && w <= 100
   const tvValid = !isNaN(tv) && tv > 0
   const cvValid = !isNaN(cv) && cv >= 0
   const progressPreview = tvValid && cvValid ? Math.round((cv / tv) * 1000) / 10 : null
@@ -171,7 +185,7 @@ function EditKpiModal({ kpi, kpis, objectives, onClose, onSaved, tr }) {
   return (
     <div className="modal-overlay">
       <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
-        <h3>{tr('kpim.title')}</h3>
+        <h3>{cleanIconLabel(tr('kpim.title'))}</h3>
         <p className="modal-kpi-name">{tr('kpim.note')}</p>
 
         <label className="modal-field">{tr('kpim.name')}
@@ -191,23 +205,23 @@ function EditKpiModal({ kpi, kpis, objectives, onClose, onSaved, tr }) {
         </label>
         <label className="modal-field">{tr('kpim.category')}
           <select value={f.category} onChange={(e) => set('category', e.target.value)}>
-            <option value="Work">{tr('category.work')}</option>
-            <option value="Personal">{tr('category.personal')}</option>
+            <option value="Work">{cleanIconLabel(tr('category.work'))}</option>
+            <option value="Personal">{cleanIconLabel(tr('category.personal'))}</option>
           </select>
         </label>
 
         <div className="modal-grid">
           <label className="modal-field">{tr('kpim.unit')}
-            <input placeholder="%, khóa học, báo cáo…" value={f.unit}
+            <input placeholder={tr('kpis.unit_placeholder')} value={f.unit}
               onChange={(e) => set('unit', e.target.value)} />
           </label>
           <label className="modal-field">{tr('kpim.target_value')}
-            <input type="number" min="0" step="any" value={f.target_value}
-              onChange={(e) => set('target_value', e.target.value)} />
+            <NumberStepper min="0" step="any" value={f.target_value}
+              onChange={(value) => set('target_value', normalizeNonNegativeInput(value))} />
           </label>
           <label className="modal-field">{tr('kpim.current_value')}
-            <input type="number" min="0" step="any" value={f.current_value}
-              onChange={(e) => set('current_value', e.target.value)} />
+            <NumberStepper min="0" step="any" value={f.current_value}
+              onChange={(value) => set('current_value', normalizeNonNegativeInput(value))} />
           </label>
         </div>
         <div className="modal-grid">
@@ -215,8 +229,8 @@ function EditKpiModal({ kpi, kpis, objectives, onClose, onSaved, tr }) {
             <input type="date" value={f.deadline} onChange={(e) => set('deadline', e.target.value)} />
           </label>
           <label className="modal-field">{tr('kpim.weight')}
-            <input type="number" min="0" max="100" value={f.weight}
-              onChange={(e) => set('weight', e.target.value)} />
+            <NumberStepper min="0" max="100" step="1" value={f.weight}
+              onChange={(value) => set('weight', normalizeWeightInput(value))} />
           </label>
           <div className="modal-field">{tr('kpim.progress_auto')}
             <div className="progress-preview">
@@ -240,7 +254,7 @@ function EditKpiModal({ kpi, kpis, objectives, onClose, onSaved, tr }) {
             value={reason} onChange={(e) => setReason(e.target.value)} />
         </label>
 
-        {error && <div className="error-text">⚠️ {error}</div>}
+        {error && <div className="error-text"><UiIcon name="warning" /> {error}</div>}
         <div className="modal-actions">
           <button className="btn ghost" onClick={onClose}>{tr('kpim.cancel')}</button>
           <button
@@ -258,7 +272,7 @@ function EditKpiModal({ kpi, kpis, objectives, onClose, onSaved, tr }) {
 
 function SmartPanel({ result, tr }) {
   const scoreClass = (v) => v === 2 ? 'smart-ok' : v === 1 ? 'smart-partial' : 'smart-fail'
-  const scoreIcon = (v) => v === 2 ? '✓' : v === 1 ? '~' : '✗'
+  const scoreIcon = (v) => v === 2 ? <UiIcon name="check" /> : v === 1 ? '~' : <UiIcon name="x" />
   return (
     <div className="smart-panel">
       <div className="smart-scores">
@@ -269,18 +283,18 @@ function SmartPanel({ result, tr }) {
           </span>
         ))}
         <span className={`smart-verdict ${result.valid ? 'smart-ok' : 'smart-fail'}`}>
-          {result.valid ? tr('kpis.smart_pass') : tr('kpis.smart_fail')}
+          <UiIcon name={result.valid ? 'check' : 'warning'} />{cleanIconLabel(result.valid ? tr('kpis.smart_pass') : tr('kpis.smart_fail'))}
         </span>
       </div>
       {result.issues?.length > 0 && (
         <div className="smart-section">
-          <b>⚠️ {tr('kpis.smart_issues')}</b>
+          <b className="icon-heading"><UiIcon name="warning" /> {tr('kpis.smart_issues')}</b>
           <ul>{result.issues.map((iss, i) => <li key={i}>{iss}</li>)}</ul>
         </div>
       )}
       {result.suggestions?.length > 0 && (
         <div className="smart-section">
-          <b>💡 {tr('kpis.smart_suggestions')}</b>
+          <b className="icon-heading"><UiIcon name="sparkles" /> {tr('kpis.smart_suggestions')}</b>
           <ul>{result.suggestions.map((s, i) => <li key={i}>{s}</li>)}</ul>
         </div>
       )}
@@ -288,7 +302,7 @@ function SmartPanel({ result, tr }) {
   )
 }
 
-function KpiCockpit({ objectives, visibleKpis, conflicts, totalObjWeight, onShowConflicts, onAddKpi, onImport, tr }) {
+function KpiCockpit({ objectives, visibleKpis, conflicts, totalObjWeight, locked, onShowConflicts, onAddKpi, onImport, tr }) {
   const weightedProgress = objectives.length
     ? Math.round(objectives.reduce((s, o) => s + ((o.progress || 0) * (o.weight || 0) / 100), 0) * 10) / 10
     : Math.round((visibleKpis.reduce((s, k) => s + (k.progress || 0), 0) / Math.max(visibleKpis.length, 1)) * 10) / 10
@@ -296,60 +310,72 @@ function KpiCockpit({ objectives, visibleKpis, conflicts, totalObjWeight, onShow
   const overKpis = visibleKpis.filter((k) => (k.progress || 0) > 100)
   const weightGap = Math.round((100 - totalObjWeight) * 10) / 10
   const bestNext = conflicts.length
-    ? `Gỡ ${conflicts.length} xung đột trọng số trước khi thêm KPI mới.`
+    ? tr('kpis.cockpit_best_conflicts', { count: conflicts.length })
     : totalObjWeight !== 100
-      ? `${weightGap > 0 ? 'Còn' : 'Vượt'} ${Math.abs(weightGap)}% trọng số mục tiêu cần cân lại.`
+      ? tr('kpis.cockpit_best_weight', {
+        direction: weightGap > 0 ? tr('kpis.cockpit_weight_left') : tr('kpis.cockpit_weight_over'),
+        pct: Math.abs(weightGap),
+      })
       : riskKpis.length
-        ? `Ưu tiên ${riskKpis.length} KPI đang cần chú ý trong chế độ Tập trung.`
-        : 'Khung KPI đang gọn. Bước tiếp theo là cập nhật tiến độ định kỳ.'
+        ? tr('kpis.cockpit_best_risk', { count: riskKpis.length })
+        : tr('kpis.cockpit_best_good')
 
   return (
-    <section className="kpi-cockpit" aria-label="KPI cockpit">
+    <section className="kpi-cockpit" aria-label={tr('kpis.cockpit_aria')}>
       <div className="cockpit-hero">
-        <span className="cockpit-kicker">Bức tranh 10 giây</span>
+        <span className="cockpit-kicker">{tr('kpis.cockpit_kicker')}</span>
         <h2>{weightedProgress}%</h2>
-        <p>Tiến độ có trọng số trong chu kỳ hiện tại</p>
+        <p>{tr('kpis.cockpit_weighted_progress')}</p>
         <div className="cockpit-orbit" aria-hidden="true">
           <span style={{ '--v': `${Math.min(100, weightedProgress)}%` }} />
         </div>
       </div>
       <div className="cockpit-grid">
         <div className="cockpit-metric">
-          <span>Tổng KPI</span>
+          <span>{tr('kpis.cockpit_total_kpis')}</span>
           <b>{visibleKpis.length}</b>
-          <small>{objectives.length} mục tiêu</small>
+          <small>{tr('kpis.cockpit_objective_count', { count: objectives.length })}</small>
         </div>
         <button className={`cockpit-metric clickable ${conflicts.length ? 'danger' : 'ok'}`} onClick={onShowConflicts}>
-          <span>Xung đột</span>
+          <span>{tr('kpis.cockpit_conflicts')}</span>
           <b>{conflicts.length}</b>
-          <small>{conflicts.length ? 'Cần xử lý' : 'Ổn'}</small>
+          <small>{conflicts.length ? tr('kpis.cockpit_conflicts_needs_action') : tr('kpis.cockpit_conflicts_ok')}</small>
         </button>
         <div className={`cockpit-metric ${totalObjWeight === 100 ? 'ok' : totalObjWeight > 100 ? 'danger' : 'warn'}`}>
-          <span>Trọng số mục tiêu</span>
+          <span>{tr('kpis.cockpit_objective_weight')}</span>
           <b>{totalObjWeight}%</b>
-          <small>{totalObjWeight === 100 ? 'Đủ 100%' : `${Math.abs(weightGap)}% ${weightGap > 0 ? 'còn trống' : 'vượt'}`}</small>
+          <small>{totalObjWeight === 100 ? tr('kpis.cockpit_weight_ok') : tr('kpis.cockpit_weight_gap', {
+            pct: Math.abs(weightGap),
+            direction: weightGap > 0 ? tr('kpis.cockpit_weight_left') : tr('kpis.cockpit_weight_over'),
+          })}</small>
         </div>
         <div className="cockpit-metric">
-          <span>Vượt chỉ tiêu</span>
+          <span>{tr('kpis.cockpit_over_target')}</span>
           <b>{overKpis.length}</b>
-          <small>điểm sáng</small>
+          <small>{tr('kpis.cockpit_bright_spots')}</small>
         </div>
       </div>
       <div className="cockpit-next">
         <div>
-          <span className="cockpit-kicker">Gợi ý tiếp theo</span>
+          <span className="cockpit-kicker">{tr('kpis.cockpit_next_suggestion')}</span>
           <strong>{bestNext}</strong>
         </div>
         <div className="cockpit-next-actions">
-          <button className="btn ghost" onClick={onImport}>{tr('kpis.btn_import')}</button>
-          <button className="btn primary" onClick={onAddKpi}>{tr('kpis.btn_add')}</button>
+          <button className="btn import-cta" disabled={locked} onClick={onImport}>
+            <UiIcon name="upload" />
+            <span>{cleanIconLabel(tr('kpis.btn_import'))}</span>
+          </button>
+          <button className="btn primary" disabled={locked} onClick={onAddKpi}>
+            <UiIcon name="plus" />
+            <span>{cleanIconLabel(tr('kpis.btn_add'))}</span>
+          </button>
         </div>
       </div>
     </section>
   )
 }
 
-function KpiCard({ kpi, busyId, expanded, changelog, smartResult, smartLoadingId, actions, inConflict, selected, onSelect, tr }) {
+function KpiCard({ kpi, busyId, expanded, changelog, smartResult, smartLoadingId, actions, inConflict, locked, tr }) {
   // dich ten truong/gia tri trong lich su thay doi sang tieng nguoi dung (khong lo ten field tho)
   const fieldLabel = (f) => { const k = `field.${f}`; const t = tr(k); return t === k ? f : t }
   const fieldValue = (f, v) => {
@@ -358,21 +384,25 @@ function KpiCard({ kpi, busyId, expanded, changelog, smartResult, smartLoadingId
   }
   const over = kpi.progress > 100
   const statusClass = over ? 'over' : kpi.progress >= 70 ? 'good' : kpi.progress >= 40 ? 'watch' : 'risk'
-  const statusLabel = over ? 'Vượt mục tiêu' : kpi.progress >= 70 ? 'Đang tốt' : kpi.progress >= 40 ? 'Cần theo dõi' : 'Ưu tiên xử lý'
+  const statusLabel = over
+    ? tr('kpis.status_over')
+    : kpi.progress >= 70
+      ? tr('kpis.status_good')
+      : kpi.progress >= 40
+        ? tr('kpis.status_watch')
+        : tr('kpis.status_risk')
   const measure = kpi.unit === '%'
     ? <>{tr('kpis.actual')} <b>{kpi.current_value}%</b></>
     : <>{tr('kpis.actual')} <b>{kpi.current_value}/{kpi.target_value} {kpi.unit}</b> ({kpi.progress}%)</>
   return (
     <div className={`card kpi-row status-${statusClass}${inConflict ? ' in-conflict' : ''}`}>
       <div className="kpi-card-grid">
-        <label className="bulk-check" title={tr('kpis.bulk_select_kpi')}>
-          <input type="checkbox" checked={selected} onChange={(e) => onSelect(kpi.id, e.target.checked)} />
-        </label>
         <div className="kpi-main">
           <div className="kpi-title-line">
             <strong>{kpi.name}</strong>
             <span className={`cat-badge ${kpi.category === 'Personal' ? 'personal' : 'work'}`}>
-              {kpi.category === 'Personal' ? tr('category.personal') : tr('category.work')}
+              <UiIcon name={kpi.category === 'Personal' ? 'user' : 'fileText'} />
+              {cleanIconLabel(kpi.category === 'Personal' ? tr('category.personal') : tr('category.work'))}
             </span>
             {over && <span className="over-badge">{tr('kpis.over_badge')}</span>}
             {inConflict && <span className="conflict-tag">{tr('kpis.conflict_tag')}</span>}
@@ -394,24 +424,24 @@ function KpiCard({ kpi, busyId, expanded, changelog, smartResult, smartLoadingId
         <div className="kpi-actions">
           <button
             className={`icon-btn ${busyId === kpi.id ? 'spinning' : ''}`}
-            disabled={busyId === kpi.id}
-            title={busyId === kpi.id ? tr('kpis.agent_decomposing') : tr('kpis.tip_decompose')}
+            disabled={locked || busyId === kpi.id}
+            title={locked ? tr('cycle.locked_tip') : busyId === kpi.id ? tr('kpis.agent_decomposing') : tr('kpis.tip_decompose')}
             onClick={() => actions.decompose(kpi.id)}
-          >✨</button>
+          ><UiIcon name="sparkles" /></button>
           {kpi.sub_goals?.length > 0 && (
             <button className={`icon-btn ${expanded === kpi.id ? 'on' : ''}`}
               title={tr('kpis.view_subgoals', { count: kpi.sub_goals.length })}
-              onClick={() => actions.toggleExpand(kpi.id)}>📋</button>
+              onClick={() => actions.toggleExpand(kpi.id)}><UiIcon name="list" /></button>
           )}
-          <button className="icon-btn" title={tr('kpis.tip_edit')} onClick={() => actions.edit(kpi)}>✏️</button>
-          <button className={`icon-btn ${changelog[kpi.id] ? 'on' : ''}`} title={tr('kpis.changelog_title')} onClick={() => actions.toggleLog(kpi.id)}>🕒</button>
+          <button className="icon-btn" disabled={locked} title={locked ? tr('cycle.locked_tip') : tr('kpis.tip_edit')} onClick={() => actions.edit(kpi)}><UiIcon name="edit" /></button>
+          <button className={`icon-btn ${changelog[kpi.id] ? 'on' : ''}`} title={tr('kpis.changelog_title')} onClick={() => actions.toggleLog(kpi.id)}><UiIcon name="clock" /></button>
           <button
             className={`icon-btn ${smartResult ? 'on' : ''} ${smartLoadingId === kpi.id ? 'spinning' : ''}`}
             disabled={smartLoadingId === kpi.id}
             title={smartLoadingId === kpi.id ? tr('kpis.smart_loading') : tr('kpis.tip_smart')}
             onClick={() => actions.smartCheck(kpi.id)}
-          >🎯</button>
-          <button className="icon-btn danger" title={tr('kpis.tip_archive')} onClick={() => actions.archive(kpi)}>🗑</button>
+          ><UiIcon name="target" /></button>
+          <button className="icon-btn danger" disabled={locked} title={locked ? tr('cycle.locked_tip') : tr('kpis.tip_archive')} onClick={() => actions.archive(kpi)}><UiIcon name="trash" /></button>
         </div>
       </div>
 
@@ -511,12 +541,16 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
 
   // Xay dung KPIProposalConfirm payload tu preview data + user weights
   const buildProposal = () => {
+    const readWeight = (key, fallback = 0) => {
+      const value = parseFloat(weights[key])
+      return Number.isFinite(value) ? value : fallback
+    }
     const newObjectives = preview.objectives
       .filter((o) => o.is_new)
       .map((o) => ({
         name: o.name,
         description: '',
-        weight: parseFloat(weights[objKey(o.name)]) || o.weight || 0,
+        weight: readWeight(objKey(o.name), o.weight || 0),
       }))
     const allKpis = preview.objectives.flatMap((o) =>
       o.kpis.map((k) => ({
@@ -525,7 +559,7 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
         target: '',
         unit: '%',
         target_value: 100.0,
-        weight: parseFloat(weights[kpiKey(o.name, k.name)]) || k.weight || 0,
+        weight: readWeight(kpiKey(o.name, k.name), k.weight || 0),
         objective_id: o.is_new ? null : o.objective_id,
         objective_ref: o.is_new ? o.name : null,
         category: 'Work',
@@ -578,11 +612,11 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
 
     const clientErrors = []
     if (effectiveObjTotal > 100.001)
-      clientErrors.push(`Tổng trọng số mục tiêu = ${effectiveObjTotal.toFixed(1)}% — vượt 100%`)
+      clientErrors.push(tr('import.wizard.err_obj_total_over', { pct: effectiveObjTotal.toFixed(1) }))
     preview.objectives.forEach((o) => {
       const t = getKpiTotal(o)
       if (t > 100.001)
-        clientErrors.push(`"${o.name}": tổng KPI = ${t.toFixed(1)}% — vượt 100%`)
+        clientErrors.push(tr('import.wizard.err_kpi_total_over', { name: o.name, pct: t.toFixed(1) }))
     })
     const canSaveNow = clientErrors.length === 0
 
@@ -591,25 +625,25 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
     return (
       <div className="modal-overlay">
         <div className="modal modal-wide import-wizard" onClick={(e) => e.stopPropagation()}>
-          <button className="modal-close-btn" onClick={handleClose} title={tr('kpim.cancel')}>×</button>
+          <button className="modal-close-btn" onClick={handleClose} title={tr('kpim.cancel')}><UiIcon name="x" /></button>
           <div className="wizard-steps">
             <span className="step done">{tr('import.wizard.step_preview')}</span>
             <span className="step active">{tr('import.wizard.step_assign')}</span>
             <span className="step">{tr('import.wizard.step_confirm')}</span>
           </div>
-          <h3>📊 {tr('import.wizard.assign_title')}</h3>
+          <h3 className="icon-heading"><UiIcon name="fileSpreadsheet" /> {tr('import.wizard.assign_title')}</h3>
 
           <div className={`assign-summary ${effectiveObjTotal > 100.001 ? 'danger' : 'ok'}`}>
             <div>
-              <span>Mục tiêu hiện có</span>
+              <span>{tr('import.wizard.existing_objectives')}</span>
               <b>{preview.existing_obj_total}%</b>
             </div>
             <div>
-              <span>Sau điều chỉnh</span>
+              <span>{tr('import.wizard.after_adjustment')}</span>
               <b>{Math.round(effectiveObjTotal * 10) / 10}%</b>
             </div>
             <div>
-              <span>Còn có thể phân bổ</span>
+              <span>{tr('import.wizard.remaining_allocation')}</span>
               <b>{Math.max(0, Math.round((100 - preview.existing_obj_total) * 10) / 10)}%</b>
             </div>
           </div>
@@ -630,11 +664,10 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
               {newObjs.map((o) => (
                 <div key={o.name} className="weight-input-row">
                   <span className="weight-label">{o.name}</span>
-                  <input
-                    type="number" min="0" max="100" step="1"
+                  <NumberStepper
+                    min="0" max="100" step="1" className="compact"
                     value={weights[objKey(o.name)] ?? ''}
-                    onChange={(e) => setWeights((w) => ({ ...w, [objKey(o.name)]: e.target.value }))}
-                    style={{ width: 80 }}
+                    onChange={(value) => setWeights((w) => ({ ...w, [objKey(o.name)]: normalizeWeightInput(value) }))}
                   />
                   <span>%</span>
                 </div>
@@ -664,11 +697,10 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
                 {o.kpis.map((k) => (
                   <div key={k.name} className="weight-input-row">
                     <span className="weight-label">{k.name}</span>
-                    <input
-                      type="number" min="0" max="100" step="1"
+                    <NumberStepper
+                      min="0" max="100" step="1" className="compact"
                       value={weights[kpiKey(o.name, k.name)] ?? ''}
-                      onChange={(e) => setWeights((w) => ({ ...w, [kpiKey(o.name, k.name)]: e.target.value }))}
-                      style={{ width: 80 }}
+                      onChange={(value) => setWeights((w) => ({ ...w, [kpiKey(o.name, k.name)]: normalizeWeightInput(value) }))}
                     />
                     <span>%</span>
                   </div>
@@ -685,7 +717,7 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
             )
           })}
 
-          {error && <div className="error-text">⚠️ {error}</div>}
+          {error && <div className="error-text"><UiIcon name="warning" /> {error}</div>}
           <div className="modal-actions">
             <button className="btn ghost" onClick={() => setStep('preview')}>{tr('import.wizard.back')}</button>
             <button className="btn primary" disabled={!canSaveNow} onClick={() => setStep('confirm')}>
@@ -709,13 +741,13 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
     return (
       <div className="modal-overlay">
         <div className="modal modal-wide import-wizard" onClick={(e) => e.stopPropagation()}>
-          <button className="modal-close-btn" onClick={handleClose} title={tr('kpim.cancel')}>×</button>
+          <button className="modal-close-btn" onClick={handleClose} title={tr('kpim.cancel')}><UiIcon name="x" /></button>
           <div className="wizard-steps">
             <span className="step done">{tr('import.wizard.step_preview')}</span>
             <span className="step done">{tr('import.wizard.step_assign')}</span>
             <span className="step active">{tr('import.wizard.step_confirm')}</span>
           </div>
-          <h3>✅ {tr('import.wizard.confirm_title')}</h3>
+          <h3 className="icon-heading"><UiIcon name="checkCircle" /> {tr('import.wizard.confirm_title')}</h3>
 
           <div className="assign-section">
             <p>{tr('import.wizard.confirm_summary', { objs: newObjs.length, kpis: totalKpis })}</p>
@@ -750,11 +782,11 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
             </div>
           ))}
 
-          {error && <div className="error-text">⚠️ {error}</div>}
+          {error && <div className="error-text"><UiIcon name="warning" /> {error}</div>}
           <div className="modal-actions">
             <button className="btn ghost" onClick={() => setStep('assign')}>{tr('import.wizard.back')}</button>
             <button className="btn primary" disabled={saving} onClick={handleSave}>
-              {saving ? tr('import.wizard.saving') : tr('import.wizard.save_btn')}
+              {saving ? tr('import.wizard.saving') : cleanIconLabel(tr('import.wizard.save_btn'))}
             </button>
           </div>
         </div>
@@ -767,38 +799,38 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
   return (
     <div className="modal-overlay">
       <div className="modal modal-wide import-wizard" onClick={(e) => e.stopPropagation()}>
-        <button className="modal-close-btn" onClick={handleClose} title={tr('kpim.cancel')}>×</button>
+        <button className="modal-close-btn" onClick={handleClose} title={tr('kpim.cancel')}><UiIcon name="x" /></button>
         <div className="wizard-steps">
           <span className="step active">{tr('import.wizard.step_preview')}</span>
           <span className="step">{tr('import.wizard.step_assign')}</span>
           <span className="step">{tr('import.wizard.step_confirm')}</span>
         </div>
-        <h3>📂 {tr('import.wizard.preview_title')}</h3>
+        <h3 className="icon-heading"><UiIcon name="archive" /> {tr('import.wizard.preview_title')}</h3>
 
         <div className={`import-decision-card ${hasHardErrors ? 'danger' : preview.needs_weight_input ? 'warn' : 'ok'}`}>
           <div>
-            <span>Hiện có</span>
+            <span>{tr('import.wizard.current')}</span>
             <b>{preview.existing_obj_total}%</b>
           </div>
           <div>
-            <span>File thêm</span>
+            <span>{tr('import.wizard.file_adds')}</span>
             <b>{importedObjWeight}%</b>
           </div>
           <div>
-            <span>Sau import</span>
+            <span>{tr('import.wizard.after_import')}</span>
             <b>{projectedObjWeight}%</b>
           </div>
           <strong>
             {hasHardErrors
-              ? 'Cần gán lại trọng số trước khi lưu.'
+              ? tr('import.wizard.need_reassign_weights')
               : preview.needs_weight_input
-                ? 'Cần bổ sung trọng số còn thiếu.'
-                : 'Có thể lưu ngay.'}
+                ? tr('import.wizard.need_missing_weights')
+                : tr('import.wizard.ready_to_save')}
           </strong>
         </div>
 
         <details className="import-details">
-          <summary>Xem {preview.objectives.length} mục tiêu và {totalImportKpis} KPI trong file</summary>
+          <summary>{tr('import.wizard.preview_details', { objectives: preview.objectives.length, kpis: totalImportKpis })}</summary>
         <div className="import-obj-list">
           {preview.objectives.map((o) => (
             <div key={o.name} className="import-obj-item">
@@ -838,11 +870,11 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
           {/* Khong co loi, khong can nhap → luu thang */}
           {preview.can_save && !preview.needs_weight_input && (
             <button className="btn primary" disabled={saving} onClick={handleSave}>
-              {saving ? tr('import.wizard.saving') : tr('import.wizard.save_btn')}
+              {saving ? tr('import.wizard.saving') : cleanIconLabel(tr('import.wizard.save_btn'))}
             </button>
           )}
         </div>
-        {error && <div className="error-text">⚠️ {error}</div>}
+        {error && <div className="error-text"><UiIcon name="warning" /> {error}</div>}
       </div>
 
       <ConfirmModal
@@ -863,7 +895,7 @@ let _conflictCacheKpiIds = null
 let _conflictCacheResult = null
 
 export default function Kpis() {
-  const { tr } = useLang()
+  const { tr, lang } = useLang()
   const { mode } = useView()
   const toast = useToast()
   const { activeCycleId, activeCycle, cycles, fetchCycles, currentYear } = useCycle()
@@ -891,11 +923,8 @@ export default function Kpis() {
   const [importWizard, setImportWizard] = useState(null) // { preview } | null
   const [removeObjConfirm, setRemoveObjConfirm] = useState(null)
   const [archivePrompt, setArchivePrompt] = useState(null)
-  const [bulkDeletePrompt, setBulkDeletePrompt] = useState(false)
-  const [selectedKpis, setSelectedKpis] = useState([])
-  const [selectedObjectives, setSelectedObjectives] = useState([])
-  const [bulkDeleting, setBulkDeleting] = useState(false)
   const [balancePending, setBalancePending] = useState(null)
+  const [cycleLockPrompt, setCycleLockPrompt] = useState(null) // "lock" | "unlock" | null
 
   // D4: Clone Cycle
   const [showCloneModal, setShowCloneModal] = useState(false)
@@ -913,7 +942,7 @@ export default function Kpis() {
     const nextYear = new Date().getFullYear() + (activeCycle?.start_date
       ? new Date(activeCycle.start_date).getFullYear() >= new Date().getFullYear() ? 1 : 0
       : 0)
-    setCloneForm({ name: `Năm ${nextYear}`, start_date: `${nextYear}-01-01`, end_date: `${nextYear}-12-31` })
+    setCloneForm({ name: tr('onboarding.cycle.year_name', { year: nextYear }), start_date: `${nextYear}-01-01`, end_date: `${nextYear}-12-31` })
     setCloneExcludes([])
     setCloneError('')
     setShowCloneModal(true)
@@ -931,7 +960,7 @@ export default function Kpis() {
       })
       await fetchCycles()
       setShowCloneModal(false)
-      toast.success(`Đã clone thành công chu kỳ "${cloneForm.name}"`)
+      toast.success(tr('cycle.clone_success', { name: cloneForm.name }))
     } catch (e) { setCloneError(e.message) } finally { setCloneBusy(false) }
   }
 
@@ -965,7 +994,7 @@ export default function Kpis() {
     const url = `${window.location.origin}/shared/${token}`
     navigator.clipboard.writeText(url).then(() => {
       setShareCopied(token)
-      toast.success('Đã copy link chia sẻ')
+      toast.success(tr('share.copy_success'))
       setTimeout(() => setShareCopied(''), 2000)
     })
   }
@@ -983,19 +1012,35 @@ export default function Kpis() {
     return { items: arr.slice(start, start + ITEMS_PER_PAGE), page, totalPages: Math.ceil(arr.length / ITEMS_PER_PAGE) }
   }
 
+  const isSetupComplete = (k, o) => {
+    if (k.length < 2 || o.length === 0) return false
+    const objWeight = Math.round(o.reduce((s, item) => s + (item.weight || 0), 0) * 10) / 10
+    if (objWeight !== 100) return false
+    return o.every((obj) => {
+      const group = k.filter((item) => item.objective_id === obj.id)
+      if (group.length === 0) return false
+      const total = Math.round(group.reduce((s, item) => s + (item.weight || 0), 0) * 10) / 10
+      return total === 100
+    })
+  }
+
   const load = () =>
     Promise.all([api.listKpis(activeCycleId), api.listObjectives(activeCycleId)])
       .then(([k, o]) => {
         setKpis(k); setObjectives(o)
-        if (k.length >= 2) {
-          const kpiIds = k.map((kpi) => kpi.id).sort().join(',')
+        if (isSetupComplete(k, o)) {
+          const kpiIds = `${activeCycleId || 'all'}:${k.map((kpi) => kpi.id).sort().join(',')}`
           if (_conflictCacheKpiIds === kpiIds && _conflictCacheResult !== null) {
             setConflicts(_conflictCacheResult)
             if (_conflictCacheResult.length) { setConflictsHidden(true); setConflictsClosed(false) }
           } else if (_conflictCacheKpiIds !== kpiIds) {
             _conflictCacheKpiIds = kpiIds
-            analyzeConflicts()
+            analyzeConflicts(false)
           }
+        } else {
+          setConflicts([])
+          _conflictCacheKpiIds = null
+          _conflictCacheResult = null
         }
       })
       .catch((e) => setError(e.message))
@@ -1006,16 +1051,23 @@ export default function Kpis() {
   // tong trong so KPI trong nhom dich cua form tao moi
   const formObjId = form.objective_id === '' ? null : Number(form.objective_id)
   const formW = num(form.weight) || 0
+  const formWeightValid = Number.isInteger(formW) && formW >= 0 && formW <= 100
+  const formTargetValue = num(form.target_value)
+  const formTargetValid = !isNaN(formTargetValue) && formTargetValue > 0
   const formGroupTotal =
     kpis.filter((k) => (k.objective_id ?? null) === formObjId).reduce((s, k) => s + (k.weight || 0), 0) + formW
 
   const submit = async (e) => {
     e.preventDefault()
+    if (activeCycle?.is_locked) {
+      setError(tr('cycle.locked_edit_error'))
+      return
+    }
     try {
       await api.createKpi({
         ...form,
-        weight: Number(form.weight),
-        target_value: Number(form.target_value) || 100,
+        weight: formW,
+        target_value: formTargetValue,
         deadline: form.deadline || null,
         objective_id: form.objective_id ? Number(form.objective_id) : null,
       })
@@ -1046,14 +1098,12 @@ export default function Kpis() {
     setImportAnalyzing(true)
     setImportSuggestion(null)
     const kpiList = unassigned.map(k => `- ${k.name}${k.description ? ` (${k.description})` : ''}`).join('\n')
-    const objNames = objectives.map(o => o.name).join(', ') || 'chưa có'
-    const msg = (
-      `[TỰ ĐỘNG PHÂN BỔ - KHÔNG HỎI LẠI]\n` +
-      `${unassigned.length} KPI vừa import chưa có mục tiêu:\n${kpiList}\n\n` +
-      `Mục tiêu hiện có: ${objNames}.\n\n` +
-      `Yêu cầu: Trả lời bằng danh sách phân bổ rõ ràng, mỗi KPI → mục tiêu phù hợp nhất ` +
-      `(hoặc "Tạo mới: [tên mục tiêu]" nếu chưa có). Không hỏi lại, không giải thích dài.`
-    )
+    const objNames = objectives.map(o => o.name).join(', ') || tr('kpis.none_plain')
+    const msg = tr('kpis.import_auto_map_prompt', {
+      count: unassigned.length,
+      kpis: kpiList,
+      objectives: objNames,
+    }).replaceAll('\\n', '\n')
     try {
       const res = await api.sendChat(msg)
       setImportSuggestion(res || null)
@@ -1064,15 +1114,19 @@ export default function Kpis() {
     const file = e.target.files?.[0]
     if (!file) return
     e.target.value = ''
+    if (activeCycle?.is_locked) {
+      setError(tr('cycle.locked_import_error'))
+      return
+    }
     try {
       // Thu preview (chi ho tro dinh dang Performance Appraisal)
-      const preview = await api.previewImport(file)
+      const preview = await api.previewImport(file, activeCycleId)
       setImportWizard({ preview })
     } catch (previewErr) {
       // not_appraisal: fallback sang luong import cu (flat file)
       if (previewErr._type === 'not_appraisal') {
         try {
-          const result = await api.importKpis(file)
+          const result = await api.importKpis(file, 'auto', activeCycleId)
           if (result._conflict) {
             setPendingImportFile(file)
             setImportConflict(result)
@@ -1090,20 +1144,29 @@ export default function Kpis() {
     const file = pendingImportFile
     setImportConflict(null)
     setPendingImportFile(null)
+    if (activeCycle?.is_locked) {
+      setError(tr('cycle.locked_import_error'))
+      return
+    }
     try {
-      const created = await api.importKpis(file, choice)
+      const created = await api.importKpis(file, choice, activeCycleId)
       await _afterImportSuccess(created, choice) // truyen mode de agent_map goi endpoint rieng
     } catch (err) { setError(err.message) }
   }
 
   const confirmImportProposal = async () => {
     if (!importSuggestion) return
+    if (activeCycle?.is_locked) {
+      setError(tr('cycle.locked_confirm_import_error'))
+      return
+    }
     setConfirmingProposal(true)
     try {
       await api.confirmKpiProposal({
         objectives: importSuggestion.proposed_objectives || [],
         kpis: importSuggestion.proposed_kpis || [],
         weight_changes: importSuggestion.weight_changes || [],
+        cycle_id: activeCycleId ?? null,
       })
       toast.success(tr('kpis.import_agent_confirm_success'))
       setImportSuggestion(null)
@@ -1112,19 +1175,30 @@ export default function Kpis() {
   }
 
   const openFormForGroup = (objId) => {
+    if (activeCycle?.is_locked) {
+      setError(tr('cycle.locked_add_error'))
+      return
+    }
     setForm({ ...EMPTY, objective_id: objId ? String(objId) : '' })
     setShowForm(true)
     setTimeout(() => formAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
   }
 
-  const analyzeConflicts = async () => {
+  const analyzeConflicts = async (manual = true) => {
     setAnalyzing(true)
+    setError('')
     try {
-      const res = await api.analyzeConflicts()
+      const res = await api.analyzeConflicts(activeCycleId)
       _conflictCacheResult = res.conflicts
       setConflicts(res.conflicts)
-      if (res.conflicts.length) { setConflictsHidden(true); setConflictsClosed(false) }
-    } catch {
+      if (res.conflicts.length) {
+        setConflictsHidden(!manual)
+        setConflictsClosed(false)
+      } else if (manual) {
+        toast.success(tr('kpis.conflict_none'))
+      }
+    } catch (e) {
+      setError(e.message)
       _conflictCacheKpiIds = null // allow retry next visit
     } finally { setAnalyzing(false) }
   }
@@ -1134,67 +1208,22 @@ export default function Kpis() {
   const removeObjective = (o) => setRemoveObjConfirm(o)
   const doRemoveObjective = async () => {
     if (!removeObjConfirm) return
+    if (activeCycle?.is_locked) {
+      setError(tr('cycle.locked_remove_objective_error'))
+      setRemoveObjConfirm(null)
+      return
+    }
     await api.deleteObjective(removeObjConfirm.id)
     setRemoveObjConfirm(null)
     load()
   }
 
-  const toggleKpiSelection = (id, checked) => {
-    setSelectedKpis((ids) => checked ? [...new Set([...ids, id])] : ids.filter((x) => x !== id))
-  }
-
-  const toggleObjectiveSelection = (id, checked) => {
-    setSelectedObjectives((ids) => checked ? [...new Set([...ids, id])] : ids.filter((x) => x !== id))
-  }
-
-  const clearBulkSelection = () => {
-    setSelectedKpis([])
-    setSelectedObjectives([])
-  }
-
-  const doBulkDelete = async (reason) => {
-    if (bulkDeleting) return
-    const selectedObjectiveSet = new Set(selectedObjectives)
-    const kpisToDelete = selectedKpis.filter((id) => {
-      const kpi = kpis.find((k) => k.id === id)
-      return kpi && !selectedObjectiveSet.has(kpi.objective_id)
-    })
-    const objectivesToDelete = [...selectedObjectives]
-    if (!kpisToDelete.length && !objectivesToDelete.length) return
-
-    setBulkDeleting(true)
-    setError('')
-    try {
-      for (const objectiveId of objectivesToDelete) {
-        await api.confirmDeleteKpi({
-          target_type: 'objective',
-          target_id: objectiveId,
-          reason: reason || tr('kpis.bulk_delete_default_reason'),
-        })
-      }
-      for (const kpiId of kpisToDelete) {
-        await api.confirmDeleteKpi({
-          target_type: 'kpi',
-          target_id: kpiId,
-          reason: reason || tr('kpis.bulk_delete_default_reason'),
-        })
-      }
-      toast.success(tr('kpis.bulk_delete_success', {
-        objectives: objectivesToDelete.length,
-        kpis: kpisToDelete.length,
-      }))
-      setBulkDeletePrompt(false)
-      clearBulkSelection()
-      load()
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setBulkDeleting(false)
-    }
-  }
-
   const actions = {
     decompose: async (id) => {
+      if (activeCycle?.is_locked) {
+        setError(tr('cycle.locked_decompose_error'))
+        return
+      }
       setBusyId(id)
       setError('')
       try {
@@ -1203,8 +1232,8 @@ export default function Kpis() {
         setExpanded(id)
       } catch (err) { setError(err.message) } finally { setBusyId(null) }
     },
-    archive: (kpi) => setArchivePrompt(kpi),
-    edit: (kpi) => setEditing(kpi),
+    archive: (kpi) => activeCycle?.is_locked ? setError(tr('cycle.locked_archive_error')) : setArchivePrompt(kpi),
+    edit: (kpi) => activeCycle?.is_locked ? setError(tr('cycle.locked_edit_kpi_error')) : setEditing(kpi),
     toggleExpand: (id) => setExpanded(expanded === id ? null : id),
     toggleLog: async (id) => {
       if (changelog[id]) { setChangelog((c) => ({ ...c, [id]: null })); return }
@@ -1223,6 +1252,11 @@ export default function Kpis() {
 
   const doArchive = async (reason) => {
     if (!archivePrompt) return
+    if (activeCycle?.is_locked) {
+      setError(tr('cycle.locked_archive_error'))
+      setArchivePrompt(null)
+      return
+    }
     await api.deleteKpi(archivePrompt.id, reason)
     setArchivePrompt(null)
     load()
@@ -1230,10 +1264,38 @@ export default function Kpis() {
 
   const doBalance = async () => {
     if (!balancePending) return
+    if (activeCycle?.is_locked) {
+      setError(tr('cycle.locked_balance_error'))
+      setBalancePending(null)
+      return
+    }
     try {
       await api.balanceWeights(balancePending.objId)
       load()
     } catch (e) { setError(e.message) } finally { setBalancePending(null) }
+  }
+
+  const doCycleLockChange = async (reason) => {
+    if (!activeCycleId || !cycleLockPrompt) return
+    if (!reason.trim()) {
+      setError(tr('cycle.reason_required'))
+      return
+    }
+    try {
+      if (cycleLockPrompt === 'lock') {
+        await api.lockCycle(activeCycleId, reason.trim())
+        toast.success(tr('cycle.lock_success'))
+      } else {
+        await api.unlockCycle(activeCycleId, reason.trim())
+        toast.success(tr('cycle.unlock_success'))
+      }
+      setCycleLockPrompt(null)
+      await fetchCycles()
+      await load()
+    } catch (e) {
+      setError(e.message)
+      setCycleLockPrompt(null)
+    }
   }
 
   // loc theo che do hien thi toan cuc (Work/Personal); focus & all hien tat ca tren trang nay
@@ -1241,45 +1303,60 @@ export default function Kpis() {
   const groups = [
     ...objectives.map((o) => ({ obj: o, kpis: visibleKpis.filter((k) => k.objective_id === o.id) })),
     { obj: null, kpis: visibleKpis.filter((k) => !k.objective_id) },
-  ].filter((g) => g.kpis.length > 0 || (mode === 'all' && g.obj))
-  const selectedObjectiveSet = new Set(selectedObjectives)
-  const selectedKpisOutsideObjectives = selectedKpis.filter((id) => {
-    const kpi = kpis.find((k) => k.id === id)
-    return kpi && !selectedObjectiveSet.has(kpi.objective_id)
-  })
-  const bulkSelectionCount = selectedObjectives.length + selectedKpisOutsideObjectives.length
+  ].filter((g) => g.obj || g.kpis.length > 0)
 
   return (
     <div className="page">
       <header className="page-header row">
         <div>
-          <h1>{tr('kpis.title')}</h1>
+          <h1 className="page-title-with-icon"><UiIcon name="target" /> {cleanIconLabel(tr('kpis.title'))}</h1>
           <p>{tr('kpis.subtitle')}</p>
         </div>
         <div className="header-actions">
           {analyzing && <span className="muted conflict-scanning">{tr('kpis.conflict_analyzing')}</span>}
           {!analyzing && conflictsClosed && conflicts?.length > 0 && (
             <button className="btn" onClick={() => { setConflictsClosed(false); setConflictsHidden(false) }}>
+              <UiIcon name="warning" />
               {tr('kpis.conflict_reopen', { count: conflicts.length })}
             </button>
           )}
+          <button className="btn" disabled={analyzing || visibleKpis.length < 2} onClick={() => analyzeConflicts(true)}>
+            <UiIcon name="scan" />
+            {tr('kpis.conflict_review')}
+          </button>
           <button className="btn" title={tr('kpis.btn_export_appraisal_tip')}
-            onClick={() => api.exportAppraisal().catch((e) => setError(e.message))}>
-            {tr('kpis.btn_export_appraisal')}
+            onClick={() => api.exportAppraisal(activeCycleId).catch((e) => setError(e.message))}>
+            <UiIcon name="fileSpreadsheet" />
+            {cleanIconLabel(tr('kpis.btn_export_appraisal'))}
           </button>
-          <button className="btn" onClick={() => api.exportEvaluation().catch((e) => setError(e.message))}>
-            {tr('kpis.btn_export')}
+          <button className="btn" onClick={() => api.exportEvaluation(activeCycleId).catch((e) => setError(e.message))}>
+            <UiIcon name="download" />
+            {cleanIconLabel(tr('kpis.btn_export'))}
           </button>
-          <button className="btn" onClick={openShareModal} disabled={!activeCycleId} title="Tạo link xem tổng quan KPI không cần đăng nhập">
-            Chia sẻ tổng quan
+          <button className="btn" onClick={openShareModal} disabled={!activeCycleId} title={tr('share.overview_tip')}>
+            <UiIcon name="share" />
+            {tr('share.overview_btn')}
           </button>
           <input ref={fileRef} type="file" accept=".xlsx,.csv" hidden onChange={importFile} />
           {activeCycleId && (
-            <button className="btn" title="Nhân bản chu kỳ này sang chu kỳ mới" onClick={openCloneModal}>
-              Clone chu kỳ
+            <button
+              className={`btn ${activeCycle?.is_locked ? 'primary' : ''}`}
+              onClick={() => setCycleLockPrompt(activeCycle?.is_locked ? 'unlock' : 'lock')}
+            >
+              <UiIcon name={activeCycle?.is_locked ? 'unlock' : 'lock'} />
+              {cleanIconLabel(activeCycle?.is_locked ? tr('cycle.unlock_action') : tr('cycle.lock_action'))}
             </button>
           )}
-          <button className="btn" onClick={() => setObjModal({})}>{tr('kpis.btn_add_obj')}</button>
+          {activeCycleId && (
+            <button className="btn" title={tr('cycle.clone_tip')} onClick={openCloneModal}>
+              <UiIcon name="copy" />
+              {cleanIconLabel(tr('cycle.clone'))}
+            </button>
+          )}
+          <button className="btn" disabled={activeCycle?.is_locked} onClick={() => setObjModal({})}>
+            <UiIcon name="plus" />
+            {cleanIconLabel(tr('kpis.btn_add_obj'))}
+          </button>
         </div>
       </header>
 
@@ -1290,30 +1367,17 @@ export default function Kpis() {
         visibleKpis={visibleKpis}
         conflicts={conflicts || []}
         totalObjWeight={totalObjWeight}
+        locked={!!activeCycle?.is_locked}
         tr={tr}
         onShowConflicts={() => { setConflictsClosed(false); setConflictsHidden(false) }}
-        onAddKpi={() => setShowForm((v) => !v)}
+        onAddKpi={() => {
+          if (activeCycle?.is_locked) setError(tr('cycle.locked_add_error'))
+          else setShowForm((v) => !v)
+        }}
         onImport={() => fileRef.current?.click()}
       />
 
-      {error && <div className="error-text">⚠️ {error}</div>}
-
-      {bulkSelectionCount > 0 && (
-        <div className="card bulk-action-bar">
-          <span>
-            {tr('kpis.bulk_selected', {
-              objectives: selectedObjectives.length,
-              kpis: selectedKpisOutsideObjectives.length,
-            })}
-          </span>
-          <div className="row" style={{ gap: 8 }}>
-            <button className="btn small ghost" onClick={clearBulkSelection}>{tr('kpis.bulk_clear')}</button>
-            <button className="btn small danger" disabled={bulkDeleting} onClick={() => setBulkDeletePrompt(true)}>
-              {bulkDeleting ? tr('import.wizard.saving') : tr('kpis.bulk_delete')}
-            </button>
-          </div>
-        </div>
-      )}
+      {error && <div className="error-text"><UiIcon name="warning" /> {error}</div>}
 
       {importWizard && (
         <ImportWizard
@@ -1333,7 +1397,7 @@ export default function Kpis() {
 
       {importConflict && (
         <div className="card import-conflict-panel">
-          <h3>⚠️ {tr('kpis.import_conflict_title')}</h3>
+          <h3 className="icon-heading"><UiIcon name="warning" /> {tr('kpis.import_conflict_title')}</h3>
           <p className="muted">{importConflict.message}</p>
           <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
             <button className="btn" onClick={() => handleImportConflictChoice('ungrouped')}>
@@ -1365,7 +1429,7 @@ export default function Kpis() {
           {conflictsHidden && (
             <div className="conflict-summary-strip">
               <strong>{conflicts[0]?.kpi_names?.slice(0, 2).join(' ↔ ')}</strong>
-              <span>{conflicts[0]?.suggestion || 'Có KPI đang cạnh tranh cùng trọng số hoặc nguồn lực.'}</span>
+              <span>{conflicts[0]?.suggestion || tr('kpis.conflict_fallback_suggestion')}</span>
             </div>
           )}
           {!conflictsHidden && conflicts.map((c, i) => (
@@ -1377,7 +1441,7 @@ export default function Kpis() {
                 <strong>{c.kpi_names.join(' ↔ ')}</strong>
               </div>
               <p><b>{tr('kpis.conflict_why')}</b> {c.explanation}</p>
-              {c.suggestion && <p className="conflict-suggestion">💡 <b>{tr('kpis.conflict_suggestion')}</b> {c.suggestion}</p>}
+              {c.suggestion && <p className="conflict-suggestion"><span className="inline-ui-icon"><UiIcon name="sparkles" /></span> <b>{tr('kpis.conflict_suggestion')}</b> {c.suggestion}</p>}
             </div>
           ))}
         </div>
@@ -1386,7 +1450,7 @@ export default function Kpis() {
       {(importAnalyzing || importSuggestion) && (
         <div className="card import-suggestion-panel">
           <div className="row">
-            <h3>🤖 {tr('kpis.import_agent_result')}</h3>
+            <h3 className="icon-heading"><UiIcon name="bot" /> {tr('kpis.import_agent_result')}</h3>
             {importSuggestion && (
               <button className="btn small ghost" onClick={() => setImportSuggestion(null)}>
                 {tr('kpis.conflict_close')}
@@ -1428,7 +1492,7 @@ export default function Kpis() {
                   )}
                   <div className="row" style={{ gap: 8, marginTop: 12 }}>
                     <button className="btn primary" disabled={confirmingProposal} onClick={confirmImportProposal}>
-                      {confirmingProposal ? '…' : tr('kpis.import_agent_confirm')}
+                      {confirmingProposal ? '…' : cleanIconLabel(tr('kpis.import_agent_confirm'))}
                     </button>
                     <button className="btn small ghost" onClick={() => setImportSuggestion(null)}>
                       {tr('kpis.import_agent_cancel')}
@@ -1456,27 +1520,30 @@ export default function Kpis() {
             </label>
             <label>{tr('kpis.form_category')}
               <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
-                <option value="Work">{tr('category.work')}</option>
-                <option value="Personal">{tr('category.personal')}</option>
+                <option value="Work">{cleanIconLabel(tr('category.work'))}</option>
+                <option value="Personal">{cleanIconLabel(tr('category.personal'))}</option>
               </select>
             </label>
             <label>{tr('kpis.form_unit')}
-              <input style={{ width: 110 }} placeholder="%, khóa học…" value={form.unit}
+              <input style={{ width: 110 }} placeholder={tr('kpis.unit_placeholder')} value={form.unit}
                 onChange={(e) => setForm({ ...form, unit: e.target.value })} />
             </label>
             <label>{tr('kpis.form_target_value')}
-              <input type="number" min="0" step="any" style={{ width: 100 }} value={form.target_value}
-                onChange={(e) => setForm({ ...form, target_value: e.target.value })} />
+              <NumberStepper min="0" step="any" className="inline" value={form.target_value}
+                onChange={(value) => setForm({ ...form, target_value: normalizeNonNegativeInput(value) })} />
             </label>
             <label>{tr('kpis.weight_label')}
-              <input type="number" min="0" max="100" style={{ width: 90 }} value={form.weight}
-                onChange={(e) => setForm({ ...form, weight: e.target.value })} />
+              <NumberStepper min="0" max="100" step="1" className="inline" value={form.weight}
+                onChange={(value) => setForm({ ...form, weight: normalizeWeightInput(value) })} />
             </label>
             <label>{tr('kpis.deadline_label')}
               <input type="date" value={form.deadline}
                 onChange={(e) => setForm({ ...form, deadline: e.target.value })} />
             </label>
-            <button className="btn primary" type="submit" disabled={formGroupTotal > 100}>{tr('kpis.save_btn')}</button>
+            <button className="btn primary" type="submit"
+              disabled={activeCycle?.is_locked || !formWeightValid || !formTargetValid || formGroupTotal > 100}>
+              {tr('kpis.save_btn')}
+            </button>
           </div>
           {formW > 0 && (
             <WeightHint total={formGroupTotal} tr={tr}
@@ -1491,6 +1558,7 @@ export default function Kpis() {
       )}
       {objModal && (
         <ObjectiveModal objective={objModal.id ? objModal : null} objectives={objectives} tr={tr}
+          cycleId={activeCycleId}
           onClose={() => setObjModal(null)} onSaved={() => { setObjModal(null); load() }} />
       )}
       <ConfirmModal
@@ -1520,71 +1588,72 @@ export default function Kpis() {
         onCancel={() => setArchivePrompt(null)}
       />
       <PromptModal
-        open={bulkDeletePrompt}
-        title={tr('kpis.bulk_delete')}
-        message={tr('kpis.bulk_delete_prompt', {
-          objectives: selectedObjectives.length,
-          kpis: selectedKpisOutsideObjectives.length,
-        })}
-        placeholder={tr('kpim.reason_ph')}
-        confirmLabel={bulkDeleting ? tr('import.wizard.saving') : tr('kpis.bulk_delete')}
-        onConfirm={doBulkDelete}
-        onCancel={() => setBulkDeletePrompt(false)}
+        open={!!cycleLockPrompt}
+        title={cycleLockPrompt === 'lock' ? tr('cycle.lock_kpi_title') : tr('cycle.unlock_kpi_title')}
+        message={
+          cycleLockPrompt === 'lock'
+            ? tr('cycle.lock_confirm', { name: activeCycle?.name || '' })
+            : tr('cycle.unlock_confirm', { name: activeCycle?.name || '' })
+        }
+        placeholder={tr('cycle.reason_placeholder')}
+        confirmLabel={cycleLockPrompt === 'lock' ? tr('cycle.lock_confirm_label') : tr('cycle.unlock_confirm_label')}
+        onConfirm={doCycleLockChange}
+        onCancel={() => setCycleLockPrompt(null)}
       />
-
       <Modal
         open={showShareModal}
-        title="Chia sẻ tổng quan KPI"
+        title={tr('share.overview_title')}
         onClose={() => setShowShareModal(false)}
-        actions={<button className="btn" onClick={() => setShowShareModal(false)}>Đóng</button>}
+        actions={<button className="btn" onClick={() => setShowShareModal(false)}>{tr('common.close')}</button>}
       >
         <div className="share-modal-intro">
           <div className="share-modal-icon" aria-hidden="true">↗</div>
           <div>
-            <b>Read-only link</b>
-            <p>Người nhận xem được tổng quan chu kỳ, Objective và KPI mà không cần đăng nhập; không có quyền chỉnh sửa.</p>
+            <b>{tr('share.readonly_link')}</b>
+            <p>{tr('share.readonly_desc')}</p>
           </div>
         </div>
         <div className="share-create-row">
-          <label>Hết hạn sau</label>
+          <label>{tr('share.expires_after')}</label>
           <select value={shareExpireDays} onChange={e => setShareExpireDays(Number(e.target.value))}
             className="share-expiry-select">
-            {[1, 3, 7, 14, 30].map(d => <option key={d} value={d}>{d} ngày</option>)}
+            {[1, 3, 7, 14, 30].map(d => <option key={d} value={d}>{tr('share.days', { days: d })}</option>)}
           </select>
           <button className="btn primary small" onClick={createShareLink} disabled={shareBusy || !activeCycleId}>
-            {shareBusy ? 'Đang tạo...' : 'Tạo link'}
+            {shareBusy ? tr('share.creating') : tr('share.create_link')}
           </button>
         </div>
-        {!activeCycleId && <p style={{ color: '#ca8a04', fontSize: 13 }}>Chọn chu kỳ ở thanh trên để tạo link chia sẻ.</p>}
+        {!activeCycleId && <p style={{ color: '#ca8a04', fontSize: 13 }}>{tr('share.pick_cycle')}</p>}
         {shareLinks.length === 0
-          ? <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Chưa có link nào.</p>
+          ? <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>{tr('share.empty')}</p>
           : shareLinks.map(link => {
             const url = `${window.location.origin}/shared/${link.token}`
             const expired = new Date(link.expires_at) < new Date()
             const revoked = !!link.revoked_at
             const invalid = expired || revoked
-            const state = revoked ? 'Đã hủy' : expired ? 'Hết hạn' : 'Đang hoạt động'
+            const state = revoked ? tr('share.revoked') : expired ? tr('share.expired') : tr('share.active')
+            const locale = lang === 'vi' ? 'vi-VN' : 'en-US'
             return (
               <div key={link.token} className={`share-link-item${invalid ? ' invalid' : ''}`}>
                 <div className="share-link-main">
                   <div className="share-link-head">
                     <span className={`share-link-state${invalid ? ' invalid' : ''}`}>{state}</span>
-                    <span className="share-link-meta">Hết hạn {new Date(link.expires_at).toLocaleDateString('vi-VN')}</span>
+                    <span className="share-link-meta">{tr('share.expires_on', { date: new Date(link.expires_at).toLocaleDateString(locale) })}</span>
                   </div>
                   <div className={`share-link-url${invalid ? ' share-link-revoked' : ''}`}>{url}</div>
                   <div className="share-link-meta">
-                    {revoked && ' · Đã hủy'}{expired && !revoked && ' · Hết hạn'}
+                    {revoked && tr('share.revoked_meta')}{expired && !revoked && tr('share.expired_meta')}
                   </div>
                 </div>
                 <div className="share-link-actions">
                   {!invalid && (
                     <button className="btn small" onClick={() => copyShareLink(link.token)}>
-                      {shareCopied === link.token ? '✓ Đã copy' : 'Copy'}
+                      {shareCopied === link.token ? tr('share.copied') : tr('share.copy')}
                     </button>
                   )}
                   {!revoked && (
                     <button className="btn small" style={{ color: '#dc2626' }} onClick={() => revokeShareLink(link.token)}>
-                      Hủy
+                      {tr('common.cancel')}
                     </button>
                   )}
                 </div>
@@ -1607,21 +1676,12 @@ export default function Kpis() {
             <div className="objective-head">
               <div className="objective-title">
                 <h2>
-                  {obj && (
-                    <label className="bulk-check objective-check" title={tr('kpis.bulk_select_objective')}>
-                      <input
-                        type="checkbox"
-                        checked={selectedObjectives.includes(obj.id)}
-                        onChange={(e) => toggleObjectiveSelection(obj.id, e.target.checked)}
-                      />
-                    </label>
-                  )}
                   {obj ? obj.name : tr('kpis.ungrouped')}
                 </h2>
                 {obj && (
                   <span className="obj-stats">
                     <span className="obj-stat">{tr('kpis.obj_weight')} <b>{obj.weight}%</b></span>
-                    <span className="obj-stat"><b>{obj.kpi_count}</b> KPI</span>
+                    <span className="obj-stat"><b>{groupKpis.length}</b> KPI</span>
                     <span className="obj-stat">{tr('kpis.obj_progress')} <b>{obj.progress}%</b></span>
                   </span>
                 )}
@@ -1629,7 +1689,7 @@ export default function Kpis() {
                   <span className={`sum-chip ${sumCls}`} title={tr('kpis.sum_chip_tip')}>
                     Σ KPI: {sumW}/100%
                     {sumW !== 100 && (
-                      <button className="balance-btn" title={tr('kpis.balance_tip')} onClick={balance}>
+                      <button className="balance-btn" disabled={activeCycle?.is_locked} title={activeCycle?.is_locked ? tr('cycle.locked_tip') : tr('kpis.balance_tip')} onClick={balance}>
                         {tr('kpis.balance_btn')}
                       </button>
                     )}
@@ -1641,8 +1701,8 @@ export default function Kpis() {
                   <div className="progress-track objective-bar">
                     <div className="progress-fill gradient" style={{ width: `${Math.min(100, obj.progress)}%` }} />
                   </div>
-                  <button className="icon-btn" title={tr('objm.edit')} onClick={() => setObjModal(obj)}>✏️</button>
-                  <button className="icon-btn danger" title={tr('kpis.obj_remove_tip')} onClick={() => removeObjective(obj)}>✕</button>
+                  <button className="icon-btn" disabled={activeCycle?.is_locked} title={cleanIconLabel(activeCycle?.is_locked ? tr('cycle.locked_tip') : tr('objm.edit'))} onClick={() => setObjModal(obj)}><UiIcon name="edit" /></button>
+                  <button className="icon-btn danger" disabled={activeCycle?.is_locked} title={activeCycle?.is_locked ? tr('cycle.locked_tip') : tr('kpis.obj_remove_tip')} onClick={() => removeObjective(obj)}><UiIcon name="trash" /></button>
                 </div>
               )}
             </div>
@@ -1654,9 +1714,7 @@ export default function Kpis() {
                   <KpiCard key={kpi.id} kpi={kpi} busyId={busyId} expanded={expanded} tr={tr}
                     changelog={changelog} smartResult={smartResults[kpi.id] ?? null}
                     smartLoadingId={smartLoadingId}
-                    actions={actions} inConflict={conflictKpiIds.has(kpi.id)}
-                    selected={selectedKpis.includes(kpi.id)}
-                    onSelect={toggleKpiSelection} />
+                    actions={actions} inConflict={conflictKpiIds.has(kpi.id)} locked={!!activeCycle?.is_locked} />
                 ))}
                 {needsPagination && totalPages > 1 && (
                   <div className="pagination">
@@ -1677,38 +1735,38 @@ export default function Kpis() {
       {showCloneModal && (
         <div className="modal-overlay" onClick={() => setShowCloneModal(false)}>
           <div className="modal clone-cycle-modal" onClick={e => e.stopPropagation()}>
-            <h3>Clone chu kỳ</h3>
+            <h3>{tr('cycle.clone')}</h3>
             <div className="clone-summary">
               <div>
-                <span className="clone-summary-label">Nguồn</span>
+                <span className="clone-summary-label">{tr('cycle.clone_source')}</span>
                 <b>{activeCycle?.name}</b>
               </div>
               <div>
-                <span className="clone-summary-label">Sao chép</span>
+                <span className="clone-summary-label">{tr('cycle.clone_copy')}</span>
                 <b>{objectives.reduce((sum, obj) => sum + (obj.kpi_count || 0), 0)} KPI</b>
               </div>
               {activeCycle?.is_locked && (
-                <span className="clone-locked-badge">Đã chốt</span>
+                <span className="clone-locked-badge">{tr('cycle.locked_badge')}</span>
               )}
             </div>
             <div className="clone-rules">
-              <div><b>Giữ nguyên</b><span>Tên KPI, trọng số, đơn vị, target</span></div>
-              <div><b>Reset</b><span>Actual value, ghi chú, tiến độ</span></div>
+              <div><b>{tr('cycle.clone_keep')}</b><span>{tr('cycle.clone_keep_desc')}</span></div>
+              <div><b>{tr('cycle.clone_reset')}</b><span>{tr('cycle.clone_reset_desc')}</span></div>
             </div>
-            <label className="modal-field">Tên chu kỳ mới
+            <label className="modal-field">{tr('cycle.clone_new_name')}
               <input autoFocus value={cloneForm.name} onChange={e => setCloneForm({ ...cloneForm, name: e.target.value })} />
             </label>
             <div className="clone-date-row">
-              <label className="modal-field">Ngày bắt đầu
+              <label className="modal-field">{tr('cycle.start_date')}
                 <input type="date" value={cloneForm.start_date} onChange={e => setCloneForm({ ...cloneForm, start_date: e.target.value })} />
               </label>
-              <label className="modal-field">Ngày kết thúc
+              <label className="modal-field">{tr('cycle.end_date')}
                 <input type="date" value={cloneForm.end_date} onChange={e => setCloneForm({ ...cloneForm, end_date: e.target.value })} />
               </label>
             </div>
             {objectives.length > 0 && (
               <div className="clone-objective-box">
-                <label>Chọn mục tiêu sẽ mang sang</label>
+                <label>{tr('cycle.clone_select_objectives')}</label>
                 <div className="clone-objective-list">
                   {objectives.map(obj => (
                     <label key={obj.id} className="clone-objective-item">
@@ -1724,11 +1782,11 @@ export default function Kpis() {
                 </div>
               </div>
             )}
-            {cloneError && <div className="error-text">⚠️ {cloneError}</div>}
+            {cloneError && <div className="error-text"><UiIcon name="warning" /> {cloneError}</div>}
             <div className="modal-actions">
-              <button className="btn ghost" onClick={() => setShowCloneModal(false)}>Hủy</button>
+              <button className="btn ghost" onClick={() => setShowCloneModal(false)}>{tr('common.cancel')}</button>
               <button className="btn primary" disabled={cloneBusy || !cloneForm.name.trim()} onClick={doClone}>
-                {cloneBusy ? 'Đang tạo...' : 'Tạo chu kỳ mới'}
+                {cloneBusy ? tr('cycle.creating') : tr('cycle.create_new')}
               </button>
             </div>
           </div>

@@ -5,6 +5,7 @@ import { prefs, EXPORT_FORMATS, EXPORT_SECTIONS } from '../prefs'
 import { ConfirmModal } from '../components/Modal'
 import { useToast } from '../components/Toast'
 import { api } from '../api'
+import { UiIcon, cleanIconLabel } from '../components/UiIcon'
 
 function PasswordInput({ id, label, value, onChange, visible, onToggle, autoComplete, showLabel, hideLabel }) {
   return (
@@ -26,7 +27,7 @@ function PasswordInput({ id, label, value, onChange, visible, onToggle, autoComp
           title={visible ? hideLabel : showLabel}
           aria-label={visible ? hideLabel : showLabel}
         >
-          {visible ? '🙈' : '👁'}
+          <UiIcon name={visible ? 'eyeOff' : 'eye'} />
         </button>
       </div>
     </>
@@ -81,6 +82,7 @@ export default function Settings({ user, onUserUpdate }) {
   const [notifEmail, setNotifEmail] = useState('')
   const [notifSaving, setNotifSaving] = useState(false)
   const [notifMsg, setNotifMsg] = useState('')
+  const [notifOk, setNotifOk] = useState(false)
 
   useEffect(() => {
     api.getNotificationSettings().then(s => {
@@ -104,8 +106,8 @@ export default function Settings({ user, onUserUpdate }) {
         recipient_email: notifEmail.trim(),
       })
       setNotifSettings(updated)
-      flash('Đã lưu cài đặt thông báo')
-    } catch (e) { setNotifMsg(e.message) } finally { setNotifSaving(false) }
+      flash(tr('settings.notif_saved'))
+    } catch (e) { setNotifMsg(e.message); setNotifOk(false) } finally { setNotifSaving(false) }
   }
 
   const toggleNotif = (key) => {
@@ -114,10 +116,12 @@ export default function Settings({ user, onUserUpdate }) {
 
   const sendTestEmail = async () => {
     setNotifMsg('')
+    setNotifOk(false)
     try {
-      const r = await api.sendTestEmail()
-      setNotifMsg(r.message)
-    } catch (e) { setNotifMsg(e.message) }
+      await api.sendTestEmail()
+      setNotifMsg(tr('settings.notif_test_sent'))
+      setNotifOk(true)
+    } catch (e) { setNotifMsg(e.message); setNotifOk(false) }
   }
 
   const saveProfile = async () => {
@@ -256,7 +260,7 @@ export default function Settings({ user, onUserUpdate }) {
           title={visible ? tr('password.hide') : tr('password.show')}
           aria-label={visible ? tr('password.hide') : tr('password.show')}
         >
-          {visible ? '🙈' : '👁'}
+          <UiIcon name={visible ? 'eyeOff' : 'eye'} />
         </button>
       </div>
     </>
@@ -266,7 +270,7 @@ export default function Settings({ user, onUserUpdate }) {
     <div className="page settings-page">
       <header className="page-header row">
         <div>
-          <h1>{tr('settings.title')}</h1>
+          <h1 className="page-title-with-icon"><UiIcon name="settings" /> {cleanIconLabel(tr('settings.title'))}</h1>
           <p>{tr('settings.subtitle')}</p>
         </div>
         {saved && <span className="settings-saved">{saved}</span>}
@@ -274,7 +278,7 @@ export default function Settings({ user, onUserUpdate }) {
 
       {/* Tai khoan */}
       <div className="card">
-        <h3>{tr('account.section')}</h3>
+        <h3 className="icon-heading"><UiIcon name="user" /> {tr('account.section')}</h3>
         <div className="account-grid">
           <div>
             <div className="setting-label">{tr('account.profile')}</div>
@@ -315,7 +319,7 @@ export default function Settings({ user, onUserUpdate }) {
             </div>
             <div className="avatar-upload-row">
               <label className="btn small" htmlFor="profile-avatar-file">
-                {avatarUploading ? tr('account.uploading_avatar') : tr('account.upload_avatar')}
+                <UiIcon name="upload" />{avatarUploading ? tr('account.uploading_avatar') : tr('account.upload_avatar')}
               </label>
               <input
                 id="profile-avatar-file"
@@ -337,7 +341,7 @@ export default function Settings({ user, onUserUpdate }) {
                 profilePicture.trim() === (user?.picture || '')
               )}
             >
-              {accountSaving ? tr('account.saving') : tr('account.save_profile')}
+              <UiIcon name="check" />{accountSaving ? tr('account.saving') : tr('account.save_profile')}
             </button>
           </div>
         </div>
@@ -383,7 +387,7 @@ export default function Settings({ user, onUserUpdate }) {
             />
             {passwordMsg && <div className={`form-msg ${passwordMsg.includes('✓') ? 'ok' : ''}`}>{passwordMsg}</div>}
             <button className="btn primary small" onClick={savePassword} disabled={passwordSaving || !newPassword || !confirmPassword}>
-              {passwordSaving ? tr('account.saving') : tr('account.save_password')}
+              <UiIcon name="lock" />{passwordSaving ? tr('account.saving') : tr('account.save_password')}
             </button>
           </div>
         </div>
@@ -391,27 +395,27 @@ export default function Settings({ user, onUserUpdate }) {
 
       {/* Giao dien & Ngon ngu */}
       <div className="card">
-        <h3>{tr('settings.appearance')}</h3>
+        <h3 className="icon-heading"><UiIcon name="palette" /> {cleanIconLabel(tr('settings.appearance'))}</h3>
         <div className="setting-row">
           <div className="setting-label">{tr('settings.theme')}</div>
           <div className="seg">
-            <button className={`seg-btn ${themeMode === 'light' ? 'active' : ''}`} onClick={() => applyTheme('light')}>☀️ {tr('theme.light')}</button>
-            <button className={`seg-btn ${themeMode === 'dark' ? 'active' : ''}`} onClick={() => applyTheme('dark')}>🌙 {tr('theme.dark')}</button>
-            <button className={`seg-btn ${themeMode === 'system' ? 'active' : ''}`} onClick={() => applyTheme('system')}>🖥️ {tr('theme.system')}</button>
+            <button className={`seg-btn ${themeMode === 'light' ? 'active' : ''}`} onClick={() => applyTheme('light')}><UiIcon name="sun" />{tr('theme.light')}</button>
+            <button className={`seg-btn ${themeMode === 'dark' ? 'active' : ''}`} onClick={() => applyTheme('dark')}><UiIcon name="moon" />{tr('theme.dark')}</button>
+            <button className={`seg-btn ${themeMode === 'system' ? 'active' : ''}`} onClick={() => applyTheme('system')}><UiIcon name="monitor" />{tr('theme.system')}</button>
           </div>
         </div>
         <div className="setting-row">
           <div className="setting-label">{tr('settings.language')}</div>
           <div className="seg">
-            <button className={`seg-btn ${lang === 'vi' ? 'active' : ''}`} onClick={() => applyLang('vi')}>Tiếng Việt</button>
-            <button className={`seg-btn ${lang === 'en' ? 'active' : ''}`} onClick={() => applyLang('en')}>English</button>
+            <button className={`seg-btn ${lang === 'vi' ? 'active' : ''}`} onClick={() => applyLang('vi')}>{tr('settings.lang_vi')}</button>
+            <button className={`seg-btn ${lang === 'en' ? 'active' : ''}`} onClick={() => applyLang('en')}>{tr('settings.lang_en')}</button>
           </div>
         </div>
       </div>
 
       {/* Tro ly AI */}
       <div className="card">
-        <h3>{tr('settings.ai_section')}</h3>
+        <h3 className="icon-heading"><UiIcon name="bot" /> {cleanIconLabel(tr('settings.ai_section'))}</h3>
         <div className="setting-row">
           <div>
             <div className="setting-label">{tr('settings.autocoach')}</div>
@@ -423,7 +427,7 @@ export default function Settings({ user, onUserUpdate }) {
 
       {/* Export mac dinh */}
       <div className="card">
-        <h3>{tr('settings.export_section')}</h3>
+        <h3 className="icon-heading"><UiIcon name="package" /> {cleanIconLabel(tr('settings.export_section'))}</h3>
         <p className="muted setting-hint">{tr('settings.export_hint')}</p>
         <div className="setting-row">
           <div className="setting-label">{tr('export.formats_label')}</div>
@@ -456,14 +460,14 @@ export default function Settings({ user, onUserUpdate }) {
 
       {/* D2: Notification settings */}
       <div className="card">
-        <h3>Thông báo email</h3>
-        <p className="muted setting-hint">Cấu hình email nhắc nhở tự động. Yêu cầu SMTP_EMAIL và SMTP_PASSWORD trong file .env.</p>
+        <h3 className="icon-heading"><UiIcon name="mail" /> {tr('settings.email_notifications')}</h3>
+        <p className="muted setting-hint">{tr('settings.email_notifications_hint')}</p>
         {notifSettings ? (
           <>
             <div className="notif-toggle-row">
               <div className="notif-toggle-info">
-                <div className="notif-toggle-label">Nhắc nhở KPI</div>
-                <div className="notif-toggle-desc">Thứ Sáu hàng tuần — khi có KPI chưa cập nhật trong 5 ngày</div>
+                <div className="notif-toggle-label">{tr('settings.notif_kpi_reminder')}</div>
+                <div className="notif-toggle-desc">{tr('settings.notif_kpi_reminder_desc')}</div>
               </div>
               <label className="toggle-switch">
                 <input type="checkbox" checked={notifSettings.kpi_reminder_enabled}
@@ -473,8 +477,8 @@ export default function Settings({ user, onUserUpdate }) {
             </div>
             <div className="notif-toggle-row">
               <div className="notif-toggle-info">
-                <div className="notif-toggle-label">Tóm tắt tuần</div>
-                <div className="notif-toggle-desc">Thứ Hai hàng tuần — tổng quan KPI đạt/chưa đạt</div>
+                <div className="notif-toggle-label">{tr('settings.notif_weekly_summary')}</div>
+                <div className="notif-toggle-desc">{tr('settings.notif_weekly_summary_desc')}</div>
               </div>
               <label className="toggle-switch">
                 <input type="checkbox" checked={notifSettings.weekly_summary_enabled}
@@ -484,8 +488,8 @@ export default function Settings({ user, onUserUpdate }) {
             </div>
             <div className="notif-toggle-row">
               <div className="notif-toggle-info">
-                <div className="notif-toggle-label">Lỗi đồng bộ</div>
-                <div className="notif-toggle-desc">Ngay khi job đồng bộ dữ liệu thất bại liên tiếp ≥ 2 lần</div>
+                <div className="notif-toggle-label">{tr('settings.notif_sync_error')}</div>
+                <div className="notif-toggle-desc">{tr('settings.notif_sync_error_desc')}</div>
               </div>
               <label className="toggle-switch">
                 <input type="checkbox" checked={notifSettings.sync_error_enabled}
@@ -494,39 +498,39 @@ export default function Settings({ user, onUserUpdate }) {
               </label>
             </div>
             <div className="setting-row" style={{ marginTop: 12 }}>
-              <div className="setting-label">Email nhận thông báo</div>
+              <div className="setting-label">{tr('settings.notif_recipient')}</div>
               <input
-                placeholder="Để trống = dùng email tài khoản"
+                placeholder={tr('settings.notif_recipient_ph')}
                 value={notifEmail}
                 onChange={e => setNotifEmail(e.target.value)}
                 style={{ flex: 1, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 13 }}
               />
             </div>
-            {notifMsg && <div style={{ fontSize: 13, color: notifMsg.startsWith('Đã') ? '#16a34a' : '#dc2626', marginTop: 8 }}>{notifMsg}</div>}
+            {notifMsg && <div style={{ fontSize: 13, color: notifOk ? '#16a34a' : '#dc2626', marginTop: 8 }}>{notifMsg}</div>}
             <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
               <button className="btn primary small" onClick={saveNotifSettings} disabled={notifSaving}>
-                {notifSaving ? 'Đang lưu...' : 'Lưu cài đặt'}
+                <UiIcon name="check" />{notifSaving ? tr('account.saving') : tr('settings.notif_save')}
               </button>
-              <button className="btn small" onClick={sendTestEmail}>Gửi email thử</button>
+              <button className="btn small" onClick={sendTestEmail}><UiIcon name="mail" />{tr('settings.notif_test_email')}</button>
             </div>
           </>
         ) : (
-          <div className="muted" style={{ fontSize: 13 }}>Đang tải...</div>
+          <div className="muted" style={{ fontSize: 13 }}>{tr('common.loading')}</div>
         )}
       </div>
 
       <div className="card">
-        <h3>{tr('settings.reset_section')}</h3>
+        <h3 className="icon-heading"><UiIcon name="refresh" /> {tr('settings.reset_section')}</h3>
         <div className="setting-row">
           <div className="muted setting-hint">{tr('settings.reset_hint')}</div>
-          <button className="btn danger" onClick={() => setShowResetConfirm(true)}>{tr('settings.reset_btn')}</button>
+          <button className="btn danger" onClick={() => setShowResetConfirm(true)}><UiIcon name="refresh" />{tr('settings.reset_btn')}</button>
         </div>
       </div>
 
       {/* Nut Luu tong */}
       <div className="settings-footer">
         <button className={`btn primary${dirty ? '' : ' muted'}`} onClick={saveAll} disabled={!dirty}>
-          {tr('settings.save_all')}
+          <UiIcon name="check" />{tr('settings.save_all')}
         </button>
       </div>
 

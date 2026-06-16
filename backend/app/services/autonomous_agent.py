@@ -1,0 +1,593 @@
+"""Autonomous Agent loop: Perceive -> Reason -> Act -> Remember.
+
+The loop is deliberately conservative:
+- It observes KPI/work-item state on a timer.
+- It reasons deterministically about the most urgent next nudge.
+- It acts by writing a chat insight/proposal only.
+- It remembers the cycle in AgentCycleLog to avoid repeating the same nudge.
+
+It never confirms proposals or mutates KPI/objective/work-item data directly.
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import logging
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from .. import models, schemas
+from ..agent.llm import call_json
+from ..config import settings
+from ..database import SessionLocal
+from . import kpi_service
+
+logger = logging.getLogger(__name__)
+
+AUTONOMOUS_SESSION_TITLE = "Agent tự chủ"
+MIN_INTERVAL_SECONDS = 60
+
+
+@dataclass
+class AutonomousEvent:
+    event_type: str
+    fingerprint: str
+    priority: int
+    title: str
+    perceive: str
+    reason: str
+    act: str
+    remember: str
+    kpi: models.KPI | None = None
+    work_item: models.WorkItem | None = None
+    category_suggestion: dict | None = None
+
+
+CATEGORY_CLASSIFY_SYSTEM = """Bạn là trợ lý phân loại KPI theo ngữ cảnh.
+
+Nhiệm vụ: đọc danh sách Objective/KPI và phát hiện KPI đang nằm sai nhóm Work/Personal.
+
+Quy tắc phân loại:
+- Work: mục tiêu phục vụ công việc, hiệu suất nghề nghiệp, KPI công ty/phòng ban, dự án, khách hàng, doanh thu, vận hành, chứng chỉ bắt buộc cho vai trò công việc.
+- Personal: mục tiêu đời sống cá nhân, giải trí, sức khỏe, học tập cho bản thân, tài chính cá nhân, gia đình, du lịch, sở thích, âm nhạc, thể thao, phát triển bản thân không gắn trực tiếp với trách nhiệm công việc.
+- Nếu lẫn cả hai, chọn nhóm chi phối theo mục đích chính của Objective/KPI.
+- Nếu không đủ chắc, trả suggested_category là "uncertain".
+
+Chỉ trả JSON hợp lệ:
+{
+  "items": [
+    {
+      "kpi_id": 123,
+      "suggested_category": "Work|Personal|uncertain",
+      "confidence": 0.0,
+      "reason": "Một câu ngắn bằng tiếng Việt, không nhắc ID."
+    }
+  ]
+}
+
+Chỉ đưa vào "items" những KPI nên đổi nhóm hoặc cần kiểm tra lại. Không dùng native function calling."""
+
+
+def _recent_work_date(db: Session, kpi_id: int) -> datetime | None:
+    return db.scalar(
+        select(func.max(models.WorkItem.created_at)).where(
+            models.WorkItem.kpi_id == kpi_id,
+            models.WorkItem.confirmed == True,  # noqa: E712
+        )
+    )
+
+
+def _already_remembered(db: Session, user_id: int, fingerprint: str) -> bool:
+    return (
+        db.scalars(
+            select(models.AgentCycleLog)
+            .where(
+                models.AgentCycleLog.user_id == user_id,
+                models.AgentCycleLog.event_fingerprint == fingerprint,
+                models.AgentCycleLog.status == "acted",
+            )
+            .limit(1)
+        ).first()
+        is not None
+    )
+
+
+def _already_evaluated_category(db: Session, user_id: int, fingerprint: str) -> bool:
+    return (
+        db.scalars(
+            select(models.AgentCycleLog)
+            .where(
+                models.AgentCycleLog.user_id == user_id,
+                models.AgentCycleLog.event_fingerprint == fingerprint,
+                models.AgentCycleLog.status.in_(["acted", "checked"]),
+            )
+            .limit(1)
+        ).first()
+        is not None
+    )
+
+
+def _work_status_label(status: str) -> str:
+    labels = {
+        "se_lam": "chưa bắt đầu",
+        "dang_lam": "đang thực hiện",
+        "da_lam": "đã hoàn tất",
+        "phat_sinh": "mới phát sinh",
+        "loai_bo": "đã loại bỏ",
+    }
+    return labels.get(status, "cần rà soát")
+
+
+def _category_label(category: str) -> str:
+    return "Cá nhân" if category == "Personal" else "Công việc"
+
+
+def _category_fingerprint(kpi: models.KPI) -> str:
+    raw = "|".join(
+        [
+            str(kpi.id),
+            kpi.category or "",
+            kpi.objective_name or "",
+            kpi.name or "",
+            kpi.description or "",
+            kpi.target or "",
+            kpi.unit or "",
+        ]
+    )
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+    return f"category:{kpi.id}:{digest}"
+
+
+def _category_context(kpi: models.KPI) -> dict:
+    obj = kpi.objective
+    return {
+        "kpi_id": kpi.id,
+        "current_category": kpi.category or "Work",
+        "objective_name": obj.name if obj else "",
+        "objective_description": obj.description if obj else "",
+        "kpi_name": kpi.name or "",
+        "kpi_description": kpi.description or "",
+        "target_text": kpi.target or "",
+        "unit": kpi.unit or "",
+        "target_value": kpi.target_value,
+    }
+
+
+def _ai_category_event(
+    db: Session, user_id: int, kpis: list[models.KPI], today: date
+) -> AutonomousEvent | None:
+    candidates = [
+        kpi
+        for kpi in kpis
+        if (kpi.category or "Work") in {"Work", "Personal"}
+        and not _already_evaluated_category(db, user_id, _category_fingerprint(kpi))
+    ]
+    if not candidates:
+        return None
+
+    try:
+        data = call_json(
+            CATEGORY_CLASSIFY_SYSTEM,
+            json.dumps({"today": today.isoformat(), "kpis": [_category_context(k) for k in candidates]}, ensure_ascii=False),
+            temperature=0.0,
+            max_tokens=900,
+        )
+    except Exception:
+        logger.exception("AI category classification failed for user_id=%s", user_id)
+        return None
+
+    kpi_by_id = {k.id: k for k in candidates}
+    suggestions: list[tuple[float, models.KPI, str, str]] = []
+    suggested_ids: set[int] = set()
+    for item in data.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            kpi_id = int(item.get("kpi_id"))
+        except (TypeError, ValueError):
+            continue
+        kpi = kpi_by_id.get(kpi_id)
+        if not kpi:
+            continue
+        suggested = str(item.get("suggested_category") or "").strip()
+        if suggested not in {"Work", "Personal"}:
+            continue
+        current = kpi.category or "Work"
+        if suggested == current:
+            continue
+        suggested_ids.add(kpi.id)
+        try:
+            confidence = float(item.get("confidence", 0.75))
+        except (TypeError, ValueError):
+            confidence = 0.75
+        reason = str(item.get("reason") or "").strip()
+        if not reason:
+            reason = (
+                f'AI đánh giá KPI "{kpi.name}" phù hợp hơn với nhóm '
+                f"{_category_label(suggested).lower()}."
+            )
+        suggestions.append((confidence, kpi, suggested, reason[:260]))
+
+    for kpi in candidates:
+        if kpi.id in suggested_ids:
+            continue
+        db.add(
+            models.AgentCycleLog(
+                user_id=user_id,
+                cycle_key=f"autonomous-category:{today.isoformat()}",
+                phase="category_check",
+                status="checked",
+                event_fingerprint=_category_fingerprint(kpi),
+                summary=f'AI đã kiểm tra phân loại KPI "{kpi.name}"',
+                meta={"event_type": "category_check", "suggestion": False},
+            )
+        )
+    if candidates:
+        db.flush()
+
+    if not suggestions:
+        return None
+
+    confidence, kpi, suggested, reason = sorted(suggestions, key=lambda x: x[0], reverse=True)[0]
+    current = kpi.category or "Work"
+    suggestion = {
+        "kpi_id": kpi.id,
+        "kpi_name": kpi.name,
+        "current_category": current,
+        "suggested_category": suggested,
+        "reason": reason,
+        "confidence": max(0.0, min(1.0, confidence)),
+    }
+    return AutonomousEvent(
+        event_type="category_mismatch",
+        fingerprint=_category_fingerprint(kpi),
+        priority=110,
+        title=f'KPI "{kpi.name}" có vẻ thuộc nhóm {_category_label(suggested).lower()}',
+        perceive=(
+            f'KPI "{kpi.name}" hiện đang nằm trong nhóm {_category_label(current)}, '
+            f"nhưng AI đánh giá ngữ cảnh phù hợp hơn với nhóm {_category_label(suggested)}."
+        ),
+        reason=reason,
+        act=(
+            f"Mình nghĩ nên đưa KPI này về nhóm {_category_label(suggested)} "
+            "để dashboard và báo cáo không bị lẫn ngữ cảnh."
+        ),
+        remember="Đã ghi nhận lần đánh giá phân loại này để không nhắc lặp cùng một nội dung.",
+        kpi=kpi,
+        category_suggestion=suggestion,
+    )
+
+
+def _proposal_for_event(event: AutonomousEvent, today: date) -> list[schemas.ProposedWorkItem]:
+    kpi = event.kpi
+    if not kpi:
+        return []
+    title = f'Rà soát KPI "{kpi.name}"'
+    if event.event_type == "deadline":
+        title = f'Chốt bước còn thiếu cho KPI "{kpi.name}"'
+    elif event.event_type == "overdue":
+        title = f'Xử lý đầu việc quá hạn của KPI "{kpi.name}"'
+    elif event.event_type == "stale":
+        title = f'Cập nhật bằng chứng tiến độ cho KPI "{kpi.name}"'
+    return [
+        schemas.ProposedWorkItem(
+            title=title[:500],
+            detail=(
+                f"{event.reason} "
+                "Mình đã chuẩn bị thẻ này như một bước theo dõi tiếp theo. "
+                "Nếu phù hợp, bạn có thể xác nhận; thẻ chưa cộng thêm kết quả KPI và có thể chỉnh trước khi lưu."
+            ),
+            status="se_lam",
+            kpi_id=kpi.id,
+            kpi_name=kpi.name,
+            kpi_unit=kpi.unit,
+            value_delta=0.0,
+            source="agent_loop",
+            source_ref="",
+            work_date=today,
+            mapping_reason="Đề xuất từ trợ lý chủ động dựa trên dữ liệu KPI và đầu việc hiện có.",
+            confidence=0.9,
+        )
+    ]
+
+
+def _event_message(event: AutonomousEvent, proposed: list[schemas.ProposedWorkItem]) -> str:
+    if event.category_suggestion:
+        action_note = (
+            "Mình đã chuẩn bị sẵn nút xác nhận bên dưới. "
+            "Bạn chỉ cần xem lại và bấm chuyển nhóm nếu đề xuất này đúng."
+        )
+    elif proposed:
+        action_note = (
+            "Mình đã chuẩn bị sẵn một thẻ đề xuất bên dưới. "
+            "Bạn chỉ cần xem lại, chỉnh nếu cần, rồi xác nhận khi thấy phù hợp."
+        )
+    else:
+        action_note = "Mình sẽ tiếp tục theo dõi và chỉ nhắc lại khi có tín hiệu mới đáng chú ý."
+    return (
+        f"**Mình vừa nhận thấy {event.title}.**\n\n"
+        f"{event.perceive} {event.reason}\n\n"
+        f"{event.act} {action_note} Mình chưa ghi thay đổi nào vào KPI; dữ liệu chỉ được lưu khi bạn xác nhận."
+    )
+
+
+def _get_or_create_session(db: Session, user_id: int) -> models.ChatSession:
+    session = db.scalars(
+        select(models.ChatSession)
+        .where(
+            models.ChatSession.user_id == user_id,
+            models.ChatSession.title == AUTONOMOUS_SESSION_TITLE,
+        )
+        .order_by(models.ChatSession.created_at.desc())
+        .limit(1)
+    ).first()
+    if session:
+        return session
+    session = models.ChatSession(user_id=user_id, title=AUTONOMOUS_SESSION_TITLE)
+    db.add(session)
+    db.flush()
+    return session
+
+
+def _choose_event(db: Session, user_id: int, today: date) -> AutonomousEvent | None:
+    kpis = kpi_service.get_active_kpis(db, user_id)
+    if not kpis:
+        return AutonomousEvent(
+            event_type="empty",
+            fingerprint=f"empty:{user_id}:{today.isoformat()}",
+            priority=10,
+            title="chưa có KPI hoạt động",
+            perceive="Không tìm thấy KPI hoạt động nào trong hệ thống.",
+            reason="Mình chưa có đủ dữ liệu để đánh giá tiến độ hoặc đề xuất bước tiếp theo.",
+            act="Mình tạm thời chỉ ghi nhận trạng thái này.",
+            remember="Vòng sau sẽ kiểm tra lại khi đã có KPI mới.",
+        )
+
+    events: list[AutonomousEvent] = []
+
+    category_event = _ai_category_event(db, user_id, kpis, today)
+    if category_event:
+        events.append(category_event)
+
+    overdue = db.scalars(
+        select(models.WorkItem)
+        .where(
+            models.WorkItem.user_id == user_id,
+            models.WorkItem.confirmed == True,  # noqa: E712
+            models.WorkItem.status.in_(["se_lam", "dang_lam"]),
+            models.WorkItem.work_date.isnot(None),
+            models.WorkItem.work_date < today,
+        )
+        .order_by(models.WorkItem.work_date.asc())
+        .limit(1)
+    ).first()
+    if overdue:
+        kpi = db.get(models.KPI, overdue.kpi_id) if overdue.kpi_id else None
+        days = (today - overdue.work_date).days if overdue.work_date else 0
+        events.append(
+            AutonomousEvent(
+                event_type="overdue",
+                fingerprint=f"overdue:{overdue.id}:{overdue.status}:{overdue.work_date}",
+                priority=100,
+                title=f"đầu việc quá hạn {days} ngày",
+                perceive=(
+                    f'Đầu việc "{overdue.title}" vẫn {_work_status_label(overdue.status)} '
+                    f"và đã quá hạn {days} ngày."
+                ),
+                reason="Việc này có thể kéo KPI liên quan tiếp tục lệch nhịp nếu chưa được xử lý hoặc tái hẹn.",
+                act="Mình đề xuất thêm một bước theo dõi nhỏ để bạn quyết định xử lý tiếp.",
+                remember="Đã lưu dấu vết quá hạn này để không nhắc lặp cùng một trạng thái.",
+                kpi=kpi,
+                work_item=overdue,
+            )
+        )
+
+    for kpi in kpis:
+        health, gap = kpi_service.health_of(kpi, today)
+        expected = kpi_service.expected_progress(kpi, today)
+        end = kpi.deadline or date(kpi.year, 12, 31)
+        days_left = (end - today).days
+        if health in {"red", "yellow"}:
+            events.append(
+                AutonomousEvent(
+                    event_type="behind",
+                    fingerprint=f"behind:{kpi.id}:{health}",
+                    priority=90 if health == "red" else 75,
+                    title=f'KPI "{kpi.name}" lệch kỳ vọng',
+                    perceive=(
+                        f'KPI "{kpi.name}" đạt {kpi.progress:.0f}%, kỳ vọng khoảng {expected:.0f}%, '
+                        f"lệch {gap:+.0f}%."
+                    ),
+                    reason="Mức lệch này đủ lớn để cần một bước xử lý rõ ràng trong kỳ hiện tại.",
+                    act="Mình đề xuất một bước rà soát nguyên nhân và thống nhất việc cần làm tiếp theo.",
+                    remember="Đã lưu dấu vết trạng thái lệch kỳ vọng này cho vòng sau.",
+                    kpi=kpi,
+                )
+            )
+        if 0 <= days_left <= 14 and kpi.progress < 100:
+            events.append(
+                AutonomousEvent(
+                    event_type="deadline",
+                    fingerprint=f"deadline:{kpi.id}:{end.isoformat()}",
+                    priority=85 if days_left <= 7 else 70,
+                    title=f'KPI "{kpi.name}" sắp tới hạn',
+                    perceive=f'KPI "{kpi.name}" còn {days_left} ngày tới hạn chót và đang đạt {kpi.progress:.0f}%.',
+                    reason="Hạn chót đã gần nhưng KPI chưa hoàn tất, nên cần chốt bước nhỏ nhất có thể xác nhận.",
+                    act="Mình đề xuất một bước nhỏ để chốt phần còn thiếu trước hạn.",
+                    remember="Đã lưu dấu vết deadline này cho vòng sau.",
+                    kpi=kpi,
+                )
+            )
+        last_work = _recent_work_date(db, kpi.id)
+        if kpi.progress < 100 and (last_work is None or last_work < datetime.now() - timedelta(days=5)):
+            last_key = last_work.date().isoformat() if last_work else "none"
+            events.append(
+                AutonomousEvent(
+                    event_type="stale",
+                    fingerprint=f"stale:{kpi.id}:{last_key}",
+                    priority=55,
+                    title=f'KPI "{kpi.name}" thiếu cập nhật gần đây',
+                    perceive=(
+                        f'KPI "{kpi.name}" chưa có đầu việc xác nhận trong hơn 5 ngày.'
+                        if last_work
+                        else f'KPI "{kpi.name}" chưa có đầu việc xác nhận nào.'
+                    ),
+                    reason="Thiếu bằng chứng tiến độ làm dự báo và nhắc việc kém chính xác.",
+                    act="Mình đề xuất cập nhật một bằng chứng tiến độ để dữ liệu rõ hơn.",
+                    remember="Đã lưu dấu vết thiếu cập nhật này cho vòng sau.",
+                    kpi=kpi,
+                )
+            )
+
+    if not events:
+        return AutonomousEvent(
+            event_type="idle",
+            fingerprint=f"idle:{user_id}:{today.isoformat()}",
+            priority=1,
+            title="không có cảnh báo mới",
+            perceive=f"Đã quét {len(kpis)} KPI hoạt động và các đầu việc liên quan.",
+            reason="Không có KPI lệch kỳ vọng, hạn chót gấp, thiếu cập nhật, hoặc đầu việc quá hạn mới.",
+            act="Mình không tạo đề xuất mới lúc này.",
+            remember="Đã lưu trạng thái ổn định cho ngày hôm nay.",
+        )
+
+    events.sort(key=lambda e: e.priority, reverse=True)
+    return events[0]
+
+
+def _save_event(db: Session, user_id: int, event: AutonomousEvent, today: date) -> models.AgentCycleLog:
+    proposed = [] if event.event_type in {"idle", "empty", "category_mismatch"} else _proposal_for_event(event, today)
+    category_suggestions = [event.category_suggestion] if event.category_suggestion else []
+    session = _get_or_create_session(db, user_id)
+    message = models.ChatMessage(
+        user_id=user_id,
+        session_id=session.id,
+        role="assistant",
+        content=_event_message(event, proposed),
+        meta={
+            "intent": "autonomous_agent",
+            "autonomous_cycle": {
+                "event_type": event.event_type,
+                "priority": event.priority,
+                "summary": event.title,
+            },
+            "proposed_items": [p.model_dump(mode="json") for p in proposed],
+            "category_suggestions": category_suggestions,
+            "proposed_objectives": [],
+            "proposed_kpis": [],
+            "weight_changes": [],
+            "delete_proposal": None,
+            "proposal_status": "pending" if (proposed or category_suggestions) else None,
+        },
+    )
+    db.add(message)
+    log = models.AgentCycleLog(
+        user_id=user_id,
+        cycle_key=f"autonomous:{today.isoformat()}",
+        phase="complete",
+        status="acted",
+        event_fingerprint=event.fingerprint,
+        summary=event.title,
+        meta={
+            "event_type": event.event_type,
+            "message_session_id": session.id,
+            "proposed_items": len(proposed),
+            "category_suggestions": len(category_suggestions),
+        },
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    return log
+
+
+def run_category_guard_for_kpis(
+    db: Session, user_id: int, kpis: list[models.KPI]
+) -> models.AgentCycleLog | None:
+    """Run the AI Work/Personal classifier for freshly changed KPI context.
+
+    This may create an Autonomous Inbox proposal, but never changes KPI data directly.
+    """
+    try:
+        today = date.today()
+        event = _ai_category_event(db, user_id, kpis, today)
+        if not event:
+            db.commit()
+            return None
+        return _save_event(db, user_id, event, today)
+    except Exception:
+        db.rollback()
+        logger.exception("AI category guard failed for user_id=%s", user_id)
+        return None
+
+
+def run_once_for_user(db: Session, user_id: int, force: bool = False) -> models.AgentCycleLog | None:
+    today = date.today()
+    event = _choose_event(db, user_id, today)
+    if not event:
+        return None
+    if not force and _already_remembered(db, user_id, event.fingerprint):
+        return None
+    return _save_event(db, user_id, event, today)
+
+
+def run_once_all_users() -> int:
+    db = SessionLocal()
+    try:
+        users = list(db.scalars(select(models.User).order_by(models.User.id.asc())))
+        count = 0
+        for user in users:
+            try:
+                if run_once_for_user(db, user.id):
+                    count += 1
+            except Exception:
+                db.rollback()
+                logger.exception("Autonomous Agent loop failed for user_id=%s", user.id)
+        return count
+    finally:
+        db.close()
+
+
+class AutonomousAgentRunner:
+    def __init__(self) -> None:
+        self._task: asyncio.Task | None = None
+        self._stop = asyncio.Event()
+
+    @property
+    def running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    async def start(self) -> None:
+        if not settings.agent_autonomous_enabled or self.running:
+            return
+        self._stop.clear()
+        self._task = asyncio.create_task(self._loop(), name="kpi-autonomous-agent")
+        logger.info("Autonomous Agent loop started")
+
+    async def stop(self) -> None:
+        if not self._task:
+            return
+        self._stop.set()
+        await self._task
+        self._task = None
+        logger.info("Autonomous Agent loop stopped")
+
+    async def _loop(self) -> None:
+        interval = max(MIN_INTERVAL_SECONDS, int(settings.agent_autonomous_interval_seconds or 0))
+        await asyncio.sleep(5)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(run_once_all_users)
+            except Exception:
+                logger.exception("Autonomous Agent loop tick failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+
+
+runner = AutonomousAgentRunner()

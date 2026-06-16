@@ -5,23 +5,82 @@ import { useLang } from '../LangContext'
 import ProposalList from '../components/ProposalList'
 import KpiProposal from '../components/KpiProposal'
 import { ConfirmModal } from '../components/Modal'
+import { UiIcon, cleanIconLabel } from '../components/UiIcon'
+
+const MAX_CHAT_ATTACHMENTS = 5
+const CHAT_ATTACHMENT_ACCEPT = [
+    'image/png', 'image/jpeg', 'image/webp', 'image/gif',
+    '.txt', '.md', '.csv', '.json', '.log', '.xlsx', '.xlsm', '.docx', '.pdf',
+].join(',')
+
+function formatBytes(size = 0) {
+    if (!size) return '0 B'
+    const units = ['B', 'KB', 'MB', 'GB']
+    const idx = Math.min(Math.floor(Math.log(size) / Math.log(1024)), units.length - 1)
+    const value = size / (1024 ** idx)
+    return `${value >= 10 || idx === 0 ? Math.round(value) : value.toFixed(1)} ${units[idx]}`
+}
+
+function attachmentIcon(att) {
+    if (att.kind === 'spreadsheet') return 'table'
+    if (att.kind === 'document' || att.kind === 'pdf' || att.kind === 'text') return 'fileText'
+    return 'paperclip'
+}
+
+function AttachmentList({ attachments = [], tr }) {
+    if (!attachments.length) return null
+    return (
+        <div className="msg-attachments">
+            {attachments.map((att) => (
+                <a
+                    key={att.id || att.url || att.name}
+                    className={`msg-attachment ${att.kind === 'image' ? 'image' : ''}`}
+                    href={att.url || '#'}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={tr('chat.attach_open')}
+                >
+                    {att.kind === 'image' && att.url ? (
+                        <img src={att.url} alt={att.name} />
+                    ) : (
+                        <span className="attachment-file-icon"><UiIcon name={attachmentIcon(att)} /></span>
+                    )}
+                    <span className="attachment-meta">
+                        <span className="attachment-name">{att.name}</span>
+                        <span className="attachment-size">{formatBytes(att.size)}</span>
+                        {att.error && <span className="attachment-warning"><UiIcon name="warning" /> {tr('chat.attach_read_warning')}</span>}
+                    </span>
+                </a>
+            ))}
+        </div>
+    )
+}
 
 function Message({ msg, onConfirmed, onConfirmMeeting, onEdit, onResend, tr }) {
+    const [expanded, setExpanded] = useState(false)
     const html = { __html: marked.parse(msg.content || '') }
     const mp = msg.meeting_proposal
     const mpEmailAttendees = mp ? (mp.attendees || []).filter(a => a.includes('@')) : []
     const mpNameOnly = mp
         ? (mp.unresolved_names?.length ? mp.unresolved_names : (mp.attendees || []).filter(a => !a.includes('@')))
         : []
+    const avatarIcon = msg.role === 'user' ? 'userCircle' : 'assistant'
+    const isLongAssistant = msg.role === 'assistant' && (msg.content || '').length > 1400
     return (
         <div className={`msg ${msg.role}`}>
-            <div className="msg-avatar">{msg.role === 'user' ? '🧑' : '🤖'}</div>
+            <div className="msg-avatar icon-avatar"><UiIcon name={avatarIcon} /></div>
             <div className="msg-body">
-                <div className="msg-content" dangerouslySetInnerHTML={html} />
+                <div className={`msg-content ${isLongAssistant && !expanded ? 'collapsed' : ''}`} dangerouslySetInnerHTML={html} />
+                {isLongAssistant && (
+                    <button className="msg-expand" type="button" onClick={() => setExpanded((v) => !v)}>
+                        {expanded ? tr('chat.show_less') : tr('chat.show_more')}
+                    </button>
+                )}
+                <AttachmentList attachments={msg.attachments || []} tr={tr} />
                 {msg.role === 'user' && (
                     <div className="msg-tools">
-                        <button className="msg-tool" title={tr('chat.edit_title')} onClick={() => onEdit(msg.content)}>{tr('chat.edit_btn')}</button>
-                        <button className="msg-tool" title={tr('chat.resend_title')} onClick={() => onResend(msg.content)}>{tr('chat.resend_btn')}</button>
+                        <button className="msg-tool" title={tr('chat.edit_title')} onClick={() => onEdit(msg.content)}><UiIcon name="edit" />{cleanIconLabel(tr('chat.edit_btn'))}</button>
+                        <button className="msg-tool" title={tr('chat.resend_title')} onClick={() => onResend(msg.content)}><UiIcon name="refresh" />{cleanIconLabel(tr('chat.resend_btn'))}</button>
                     </div>
                 )}
                 {msg.duration != null && (
@@ -39,7 +98,7 @@ function Message({ msg, onConfirmed, onConfirmMeeting, onEdit, onResend, tr }) {
                     <div className="delete-proposal">
                         <div className="proposal-card">
                             <div className="proposal-header">
-                                <span className="proposal-icon">🗑️</span>
+                                <span className="proposal-icon"><UiIcon name="trash" /></span>
                                 <span>{tr(msg.delete_proposal.target_type === 'kpi' ? 'delete_proposal.title_kpi' : 'delete_proposal.title_objective')}</span>
                             </div>
                             <div className="proposal-body">
@@ -50,8 +109,8 @@ function Message({ msg, onConfirmed, onConfirmMeeting, onEdit, onResend, tr }) {
                                 <p className="reason">{tr('delete_proposal.archive_note')}</p>
                             </div>
                             <div className="proposal-actions">
-                                <button className="btn-confirm" onClick={() => onConfirmed(msg)}>{tr('delete_proposal.confirm')}</button>
-                                <button className="btn-cancel" onClick={() => onConfirmed(msg, true)}>{tr('delete_proposal.cancel')}</button>
+                                <button className="btn-confirm" onClick={() => onConfirmed(msg)}><UiIcon name="trash" />{tr('delete_proposal.confirm')}</button>
+                                <button className="btn-cancel" onClick={() => onConfirmed(msg, true)}><UiIcon name="x" />{tr('delete_proposal.cancel')}</button>
                             </div>
                         </div>
                     </div>
@@ -119,7 +178,7 @@ function Thinking({ tr }) {
     }, [])
     return (
         <div className="msg assistant">
-            <div className="msg-avatar">🤖</div>
+            <div className="msg-avatar icon-avatar assistant-thinking-avatar"><UiIcon name="assistant" /></div>
             <div className="msg-body">
                 <div className="typing">
                     <span className="typing-dots"><span></span><span></span><span></span></span>
@@ -145,9 +204,13 @@ export default function Chat() {
     const [activeId, setActiveId] = useState(null)
     const [messages, setMessages] = useState([])
     const [input, setInput] = useState('')
+    const [attachments, setAttachments] = useState([])
+    const [attachmentError, setAttachmentError] = useState('')
     const [busy, setBusy] = useState(false)
     const bottomRef = useRef(null)
     const inputRef = useRef(null)
+    const fileRef = useRef(null)
+    const abortRef = useRef(null)
 
     const loadSessions = () => api.chatSessions().then(setSessions).catch(() => {})
     useEffect(() => { loadSessions() }, [])
@@ -171,6 +234,7 @@ export default function Chat() {
                     weight_changes: m.meta?.weight_changes || [],
                     delete_proposal: m.meta?.delete_proposal,
                     meeting_proposal: null,
+                    attachments: m.meta?.attachments || [],
                     confirmed: status === 'pending' ? undefined : (status || 'history'),
                 }
             }),
@@ -192,6 +256,8 @@ export default function Chat() {
     const newChat = () => {
         setActiveId(null)
         setMessages([])
+        setAttachments([])
+        setAttachmentError('')
         inputRef.current?.focus()
     }
 
@@ -207,15 +273,62 @@ export default function Chat() {
         loadSessions()
     }
 
+    const uploadAttachments = async (files) => {
+        const picked = Array.from(files || [])
+        if (!picked.length) return
+        setAttachmentError('')
+        const slots = Math.max(0, MAX_CHAT_ATTACHMENTS - attachments.length)
+        if (slots === 0) {
+            setAttachmentError(tr('chat.attach_limit', { count: MAX_CHAT_ATTACHMENTS }))
+            return
+        }
+        if (picked.length > slots) {
+            setAttachmentError(tr('chat.attach_limit', { count: MAX_CHAT_ATTACHMENTS }))
+        }
+        const selected = picked.slice(0, slots)
+        for (const file of selected) {
+            const localId = `upload-${Date.now()}-${Math.random().toString(16).slice(2)}`
+            const draft = {
+                id: localId,
+                name: file.name,
+                size: file.size,
+                content_type: file.type || '',
+                kind: file.type?.startsWith('image/') ? 'image' : 'file',
+                uploading: true,
+            }
+            setAttachments((prev) => [...prev, draft])
+            try {
+                const uploaded = await api.uploadChatAttachment(file)
+                setAttachments((prev) => prev.map((att) => (att.id === localId ? uploaded : att)))
+            } catch (e) {
+                setAttachments((prev) => prev.filter((att) => att.id !== localId))
+                setAttachmentError(e.message)
+            }
+        }
+        if (fileRef.current) fileRef.current.value = ''
+    }
+
+    const removeAttachment = (id) => {
+        setAttachments((prev) => prev.filter((att) => att.id !== id))
+    }
+
     const send = async (text) => {
-        const message = (text ?? input).trim()
-        if (!message || busy) return
-        setInput('')
-        setMessages((m) => [...m, { role: 'user', content: message }])
+        const fromComposer = text == null
+        const outgoingAttachments = fromComposer ? attachments.filter((att) => !att.uploading) : []
+        const message = (text ?? input).trim() || (outgoingAttachments.length ? tr('chat.attach_default_message') : '')
+        if (!message || busy || (fromComposer && attachments.some((att) => att.uploading))) return
+        if (fromComposer) {
+            setInput('')
+            setAttachments([])
+            setAttachmentError('')
+        }
+        setMessages((m) => [...m, { role: 'user', content: message, attachments: outgoingAttachments }])
         setBusy(true)
         const started = Date.now()
+        const controller = new AbortController()
+        abortRef.current = controller
         try {
-            const res = await api.sendChat(message, activeId, lang)
+            const res = await api.sendChat(message, activeId, lang, outgoingAttachments, 90000, controller.signal)
             const duration = Math.round((Date.now() - started) / 10) / 100
             if (res.session_id && res.session_id !== activeId) {
                 setActiveId(res.session_id)
@@ -237,13 +350,20 @@ export default function Chat() {
                 },
             ])
         } catch (e) {
-            const msg = e.name === 'AbortError'
+            const msg = controller.signal.aborted
+                ? tr('chat.stopped')
+                : e.name === 'AbortError'
                 ? tr('chat.timeout_error')
                 : tr('chat.error_prefix', { message: e.message })
             setMessages((m) => [...m, { role: 'assistant', content: msg }])
         } finally {
+            abortRef.current = null
             setBusy(false)
         }
+    }
+
+    const stopGenerating = () => {
+        abortRef.current?.abort()
     }
 
     const editMessage = (content) => {
@@ -293,12 +413,14 @@ export default function Chat() {
         if (msg.id) api.setProposalStatus(msg.id, status).catch(() => {})
     }
 
+    const uploadingAttachments = attachments.some((att) => att.uploading)
+    const canSend = !busy && !uploadingAttachments && (input.trim() || attachments.length > 0)
 
     return (
         <>
         <div className="chat-layout">
             <aside className="chat-sessions">
-                <button className="btn primary new-chat-btn" onClick={newChat}>{tr('chat.new_session')}</button>
+                <button className="btn primary new-chat-btn" onClick={newChat}><UiIcon name="plus" />{cleanIconLabel(tr('chat.new_session'))}</button>
                 <div className="session-list">
                     {sessions.map((s) => (
                         <div
@@ -309,7 +431,7 @@ export default function Chat() {
                         >
                             <span className="session-title">{s.title}</span>
                             <span className="session-date">{s.created_at?.slice(0, 16).replace('T', ' ')}</span>
-                            <button className="btn-icon session-del" title={tr('chat.delete_session')} onClick={(e) => removeSession(e, s.id)}>✕</button>
+                            <button className="btn-icon session-del" title={tr('chat.delete_session')} onClick={(e) => removeSession(e, s.id)}><UiIcon name="x" /></button>
                         </div>
                     ))}
                     {sessions.length === 0 && <p className="muted session-empty">{tr('chat.no_sessions')}</p>}
@@ -320,13 +442,13 @@ export default function Chat() {
 
             <div className="chat-page">
                 <header className="page-header">
-                    <h1>{tr('chat.title')}</h1>
+                    <h1 className="page-title-with-icon"><UiIcon name="message" /> {cleanIconLabel(tr('chat.title'))}</h1>
                     <p>{tr('chat.subtitle')}</p>
                 </header>
                 <div className="chat-messages">
                     {messages.length === 0 && (
                         <div className="chat-empty">
-                            <h3>{tr('chat.greeting')}</h3>
+                            <h3 className="icon-heading"><UiIcon name="message" /> {cleanIconLabel(tr('chat.greeting'))}</h3>
                             <p>{tr('chat.try_these')}</p>
                             <div className="suggestions">
                                 {SUGGESTIONS.map((s) => (
@@ -342,22 +464,74 @@ export default function Chat() {
                     <div ref={bottomRef} />
                 </div>
                 <div className="chat-input">
-                    <textarea
-                        ref={inputRef}
-                        rows={2}
-                        placeholder={tr('chat.input_placeholder')}
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={(e) => {
-                            if (e.key === 'Enter' && !e.shiftKey) {
-                                e.preventDefault()
-                                send()
-                            }
-                        }}
-                    />
-                    <button className="btn primary" onClick={() => send()} disabled={busy || !input.trim()}>
-                        {tr('chat.send_btn')}
-                    </button>
+                    <div className="chat-composer">
+                        {attachments.length > 0 && (
+                            <div className="composer-attachments">
+                                {attachments.map((att) => (
+                                    <span key={att.id} className={`composer-attachment ${att.uploading ? 'uploading' : ''}`}>
+                                        <UiIcon name={attachmentIcon(att)} />
+                                        <span className="composer-attachment-name">{att.name}</span>
+                                        <span className="composer-attachment-size">
+                                            {att.uploading ? tr('chat.attach_uploading') : formatBytes(att.size)}
+                                        </span>
+                                        {att.error && <span className="composer-attachment-warning" title={att.error}><UiIcon name="warning" /></span>}
+                                        <button
+                                            type="button"
+                                            className="btn-icon"
+                                            title={tr('chat.attach_remove')}
+                                            onClick={() => removeAttachment(att.id)}
+                                            disabled={att.uploading}
+                                        >
+                                            <UiIcon name="x" />
+                                        </button>
+                                    </span>
+                                ))}
+                            </div>
+                        )}
+                        {attachmentError && <div className="attachment-error"><UiIcon name="warning" /> {attachmentError}</div>}
+                        <textarea
+                            ref={inputRef}
+                            rows={2}
+                            placeholder={tr('chat.input_placeholder')}
+                            value={input}
+                            onChange={(e) => setInput(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault()
+                                    send()
+                                }
+                            }}
+                        />
+                    </div>
+                    <div className="chat-actions">
+                        <button
+                            type="button"
+                            className="icon-btn chat-attach-btn"
+                            title={tr('chat.attach_title')}
+                            aria-label={tr('chat.attach_title')}
+                            onClick={() => fileRef.current?.click()}
+                            disabled={busy || uploadingAttachments || attachments.length >= MAX_CHAT_ATTACHMENTS}
+                        >
+                            <UiIcon name="paperclip" />
+                        </button>
+                        <input
+                            ref={fileRef}
+                            className="visually-hidden"
+                            type="file"
+                            multiple
+                            accept={CHAT_ATTACHMENT_ACCEPT}
+                            onChange={(e) => uploadAttachments(e.target.files)}
+                        />
+                        {busy ? (
+                            <button className="btn danger" type="button" onClick={stopGenerating}>
+                                <UiIcon name="x" />{tr('chat.stop_btn')}
+                            </button>
+                        ) : (
+                            <button className="btn primary" onClick={() => send()} disabled={!canSend}>
+                                <UiIcon name="send" />{tr('chat.send_btn')}
+                            </button>
+                        )}
+                    </div>
                 </div>
             </div>
         </div>

@@ -3,6 +3,7 @@ import { api, STATUS_COLORS } from '../api'
 import { useLang } from '../LangContext'
 import { ConfirmModal } from '../components/Modal'
 import { useToast } from '../components/Toast'
+import { UiIcon, cleanIconLabel } from '../components/UiIcon'
 
 const PAGE_SIZE = 20
 
@@ -12,11 +13,11 @@ function Pagination({ page, pageSize, total, onPage, tr }) {
   return (
     <div className="pagination">
       <button className="btn small ghost" disabled={page <= 1} onClick={() => onPage(page - 1)}>
-        ← {tr('pagination.prev')}
+        <UiIcon name="arrowLeft" />{tr('pagination.prev')}
       </button>
       <span className="pagination-info">{tr('pagination.page', { page, total: totalPages })}</span>
       <button className="btn small ghost" disabled={page >= totalPages} onClick={() => onPage(page + 1)}>
-        {tr('pagination.next')} →
+        {tr('pagination.next')}<UiIcon name="arrowRight" />
       </button>
     </div>
   )
@@ -70,7 +71,7 @@ function EvidenceTab() {
 
   return (
     <>
-      {error && <div className="error-text">⚠️ {error}</div>}
+      {error && <div className="error-text"><UiIcon name="warning" /> {error}</div>}
       <div className="journal-filter-row evidence-filters">
         <label>{tr('journal.filter_status')}
           <select value={status} onChange={(e) => resetPage(() => setStatus(e.target.value))}>
@@ -124,7 +125,7 @@ function EvidenceTab() {
                   <td className="muted">{w.source_ref}</td>
                   <td className="nowrap">
                     <button className="btn small danger" onClick={() => setDeletePending(w)}>
-                      {tr('journal.delete_permanent')}
+                      <UiIcon name="trash" />{tr('journal.delete_permanent')}
                     </button>
                   </td>
                 </tr>
@@ -216,22 +217,22 @@ function HistoryTab() {
 
   return (
     <>
-      {error && <div className="error-text">⚠️ {error}</div>}
+      {error && <div className="error-text"><UiIcon name="warning" /> {error}</div>}
       {archived.length > 0 && (
         <div className="card">
-          <h3>{tr('journal.archived_kpis', { count: archived.length })}</h3>
+          <h3 className="icon-heading"><UiIcon name="archive" /> {cleanIconLabel(tr('journal.archived_kpis', { count: archived.length }))}</h3>
           {archived.map((k) => (
             <div className="todo-row" key={k.id}>
               <div className="todo-main">
                 <span className="todo-title">{k.name}</span>
                 <span className="muted">
                   {k.unit === '%' ? `Actual ${k.current_value}%` : `Actual ${k.current_value}/${k.target_value} ${k.unit}`}
-                  {k.objective_name ? ` · 🏁 ${k.objective_name}` : ''}
+                  {k.objective_name ? <> · <span className="inline-ui-icon"><UiIcon name="flag" /></span> {k.objective_name}</> : ''}
                 </span>
               </div>
               <div className="row" style={{ gap: 8 }}>
-                <button className="btn small" onClick={() => setRestorePending(k)}>{tr('journal.restore')}</button>
-                <button className="btn small danger" onClick={() => setDeleteKpiPending(k)}>{tr('journal.delete_permanent')}</button>
+                <button className="btn small" onClick={() => setRestorePending(k)}><UiIcon name="restore" />{cleanIconLabel(tr('journal.restore'))}</button>
+                <button className="btn small danger" onClick={() => setDeleteKpiPending(k)}><UiIcon name="trash" />{tr('journal.delete_permanent')}</button>
               </div>
             </div>
           ))}
@@ -252,7 +253,7 @@ function HistoryTab() {
       </div>
 
       <div className="card">
-        <h3>{tr('journal.changelog_all', { count: totalLogs })}</h3>
+        <h3 className="icon-heading"><UiIcon name="clock" /> {cleanIconLabel(tr('journal.changelog_all', { count: totalLogs }))}</h3>
         {logs.length === 0 ? <p className="muted">{tr('journal.no_changes')}</p> : (
           <table className="table">
             <thead>
@@ -269,7 +270,7 @@ function HistoryTab() {
               {logs.map((l) => (
                 <tr key={l.id}>
                   <td className="nowrap">{l.changed_at?.slice(0, 19).replace('T', ' ')}</td>
-                  <td>{l.kpi_name || `#${l.kpi_id}`}</td>
+                  <td>{l.kpi_name || <span className="muted">{tr('journal.kpi_unavailable')}</span>}</td>
                   <td className="nowrap">{FIELD_LABELS[l.field] || l.field}</td>
                   <td>{l.old_value}</td>
                   <td><b>{l.new_value}</b></td>
@@ -311,19 +312,19 @@ export default function Journal() {
     <div className="page journal-page">
       <header className="page-header row">
         <div>
-          <h1>{tr('journal.title')}</h1>
+          <h1 className="page-title-with-icon"><UiIcon name="bookOpen" /> {cleanIconLabel(tr('journal.title'))}</h1>
           <p>{tr('journal.subtitle')}</p>
         </div>
         <button className="btn" onClick={() => api.exportData(['xlsx'], ['work_items', 'changelog']).catch((e) => toast.error(e.message))}>
-          {tr('journal.export')}
+          <UiIcon name="download" />{cleanIconLabel(tr('journal.export'))}
         </button>
       </header>
       <div className="period-tabs">
         <button className={`period-tab ${tab === 'evidence' ? 'active' : ''}`} onClick={() => setTab('evidence')}>
-          {tr('journal.tab_evidence')}
+          <UiIcon name="clipboardList" />{cleanIconLabel(tr('journal.tab_evidence'))}
         </button>
         <button className={`period-tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
-          {tr('journal.tab_history')}
+          <UiIcon name="clock" />{cleanIconLabel(tr('journal.tab_history'))}
         </button>
       </div>
       {tab === 'evidence' ? <EvidenceTab /> : <HistoryTab />}
