@@ -3,10 +3,8 @@ import { useLang } from '../LangContext'
 import { UiIcon } from './UiIcon'
 
 const MODE_ICONS = {
-  all: 'table',
   work: 'fileText',
   personal: 'user',
-  focus: 'target',
 }
 
 // Global context filter: All / Work / Personal / Focus.

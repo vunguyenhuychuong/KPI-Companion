@@ -1004,6 +1004,7 @@ def handle_message(
     db: Session, text: str, user_id: int = 1, history: list[dict] | None = None, lang: str = "vi"
 ) -> schemas.ChatResponse:
     """Diem vao chinh cua Agent cho moi tin nhan chat. history giup hieu cau hoi noi tiep."""
+    visible_text = _strip_attachment_context(text)
     kpis = kpi_service.get_active_kpis(db, user_id)
     intent = classify_intent(text, history)
     profile_context = _user_profile_context(db, user_id, lang)

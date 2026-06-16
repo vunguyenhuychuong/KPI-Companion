@@ -309,6 +309,11 @@ class WorkItemOut(BaseModel):
     confirmed: bool
     created_at: datetime
 
+    @field_validator("alternative_kpis", mode="before")
+    @classmethod
+    def _coerce_alt_kpis(cls, v):
+        return v if v is not None else []
+
 
 class ConfirmItemsRequest(BaseModel):
     items: list[ProposedWorkItem]

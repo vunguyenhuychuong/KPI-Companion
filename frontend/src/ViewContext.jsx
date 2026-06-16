@@ -2,16 +2,16 @@ import { createContext, useContext, useState } from 'react'
 
 const ViewContext = createContext(null)
 
-export const VIEW_MODES = ['all', 'work', 'personal', 'focus']
+export const VIEW_MODES = ['work', 'personal']
 
 export function ViewProvider({ children }) {
   const [mode, setModeState] = useState(() => {
     const saved = localStorage.getItem('kpi_view')
-    return VIEW_MODES.includes(saved) ? saved : 'all'
+    return VIEW_MODES.includes(saved) ? saved : 'work'
   })
 
   function setMode(next) {
-    const v = VIEW_MODES.includes(next) ? next : 'all'
+    const v = VIEW_MODES.includes(next) ? next : 'work'
     setModeState(v)
     localStorage.setItem('kpi_view', v)
   }
