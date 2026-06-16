@@ -1,0 +1,25 @@
+Hướng dẫn Coaching KPI — Khi KPI bị trễ
+
+Dấu hiệu KPI đang có vấn đề:
+- Tiến độ thực tế < 70% kỳ vọng theo kế hoạch tuyến tính.
+- Không có đầu việc nào được ghi nhận trong 2 tuần liên tiếp.
+- Khoảng cách (gap) với kỳ vọng ngày càng rộng.
+
+Quy trình Coaching 5 bước:
+1. Xác nhận thực trạng: thu thập số liệu thực tế, không phán xét.
+2. Phân tích nguyên nhân gốc rễ (RCA): dùng kỹ thuật "5 Whys" để tìm nguyên nhân thực sự.
+3. Đặt câu hỏi khám phá: "Điều gì đang cản trở bạn đạt được mục tiêu này?"
+4. Lên kế hoạch hành động cụ thể: 1-3 việc cần làm ngay trong tuần tới.
+5. Theo dõi và điều chỉnh: review mỗi tuần để đảm bảo đi đúng hướng.
+
+Nguyên nhân phổ biến KPI bị trễ:
+- Mục tiêu đặt quá cao so với nguồn lực hiện có.
+- Thiếu kỹ năng hoặc kiến thức cần thiết.
+- Ưu tiên bị phân tán, quá nhiều việc cùng lúc.
+- Phụ thuộc vào người khác hoặc yếu tố ngoài tầm kiểm soát.
+- Chưa có hệ thống theo dõi và nhắc nhở đủ tốt.
+
+Nguyên tắc coaching hiệu quả:
+- Đặt câu hỏi nhiều hơn đưa ra câu trả lời.
+- Tập trung vào giải pháp tương lai, không phán xét quá khứ.
+- Mỗi buổi coaching kết thúc bằng cam kết hành động cụ thể.

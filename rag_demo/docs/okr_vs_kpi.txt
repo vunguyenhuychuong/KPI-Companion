@@ -1,0 +1,21 @@
+OKR vs KPI — Sự khác biệt
+
+OKR (Objectives and Key Results) và KPI (Key Performance Indicator) đều là công cụ quản lý hiệu suất nhưng có mục đích khác nhau.
+
+KPI:
+- Đo lường trạng thái hiện tại của hoạt động kinh doanh.
+- Thường là chỉ số liên tục, theo dõi định kỳ.
+- Ví dụ: tỷ lệ chuyển đổi khách hàng, doanh thu tháng, số ticket hỗ trợ giải quyết.
+- Phù hợp để vận hành ổn định và kiểm soát chất lượng.
+
+OKR:
+- Tập trung vào thay đổi và đột phá trong một kỳ nhất định.
+- Objective: mục tiêu định tính, truyền cảm hứng.
+- Key Results: 2-5 kết quả đo lường được để đạt Objective đó.
+- Ví dụ Objective: "Trở thành đơn vị dẫn đầu về trải nghiệm khách hàng".
+- Key Results tương ứng: NPS tăng từ 40 lên 70; thời gian phản hồi < 2 giờ; tỷ lệ giữ chân khách hàng 90%.
+
+Khi nào dùng KPI? Khi cần vận hành ổn định, theo dõi sức khỏe tổ chức liên tục.
+Khi nào dùng OKR? Khi cần thúc đẩy tăng trưởng, chuyển đổi, hoặc tập trung toàn tổ chức vào ưu tiên mới.
+
+Nhiều tổ chức dùng cả hai: OKR cho chiến lược, KPI cho vận hành.
