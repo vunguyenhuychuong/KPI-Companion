@@ -17,19 +17,23 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..agent.llm import call_json
 from ..config import settings
+from ..connectors import fetch_activities
 from ..database import SessionLocal
-from . import kpi_service
+from . import kpi_service, oauth_service
 
 logger = logging.getLogger(__name__)
 
 AUTONOMOUS_SESSION_TITLE = "Agent tự chủ"
 MIN_INTERVAL_SECONDS = 60
+DAILY_SCAN_SOURCES = ["gmail", "calendar", "sheets", "notion", "slack", "outlook"]
+SOURCE_SCAN_LOOKBACK_DAYS = 1
+MIN_SOURCE_CONFIDENCE = 0.55
 
 
 @dataclass
@@ -45,6 +49,8 @@ class AutonomousEvent:
     kpi: models.KPI | None = None
     work_item: models.WorkItem | None = None
     category_suggestion: dict | None = None
+    proposed_items: list[schemas.ProposedWorkItem] | None = None
+    scan_summary: dict | None = None
 
 
 CATEGORY_CLASSIFY_SYSTEM = """Bạn là trợ lý phân loại KPI theo ngữ cảnh.
@@ -70,6 +76,83 @@ Chỉ trả JSON hợp lệ:
 }
 
 Chỉ đưa vào "items" những KPI nên đổi nhóm hoặc cần kiểm tra lại. Không dùng native function calling."""
+
+
+CATEGORY_ASSIGN_SYSTEM = """You classify unsaved Objective/KPI candidates into Work or Personal.
+
+Product context: KPI Companion is work-first. However, when the content clearly describes
+personal life goals, hobbies, travel, health, family, personal finance, entertainment, or
+self-development not tied to job responsibility, classify it as Personal instead of leaving
+it in the default Work bucket.
+
+Rules:
+- Work: job performance, company/team KPIs, professional delivery, customers, revenue,
+  operations, work projects, role-required learning or certification.
+- Personal: personal life goals, hobbies, travel, health, family, personal finance,
+  entertainment, music, sports, or self-development not directly tied to work duties.
+- If mixed, choose the category that dominates the candidate's main purpose.
+- If uncertain, choose Work with low confidence because the product is work-first.
+
+Return only valid JSON:
+{
+  "items": [
+    {
+      "local_id": "source_id",
+      "category": "Work|Personal",
+      "confidence": 0.0,
+      "reason": "One short Vietnamese sentence."
+    }
+  ]
+}
+
+Return exactly one item for every local_id in the input. Do not use native function calling."""
+
+
+def classify_category_candidates(candidates: list[dict]) -> dict[str, dict]:
+    """Classify unsaved Objective/KPI candidates with the LLM.
+
+    Returns local_id -> {category, confidence, reason}. Failure is non-blocking and
+    defaults to Work so imports/proposals remain usable.
+    """
+    if not candidates:
+        return {}
+    defaults = {
+        str(c.get("local_id")): {
+            "category": "Work",
+            "confidence": 0.0,
+            "reason": "Khong du du lieu phan loai, tam xep vao nhom Cong viec.",
+        }
+        for c in candidates
+        if c.get("local_id") is not None
+    }
+    try:
+        data = call_json(
+            CATEGORY_ASSIGN_SYSTEM,
+            json.dumps({"items": candidates}, ensure_ascii=False),
+            temperature=0.0,
+            max_tokens=1600,
+        )
+    except Exception:
+        logger.exception("AI category assignment failed for unsaved candidates")
+        return defaults
+
+    for item in data.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        local_id = str(item.get("local_id") or "")
+        if local_id not in defaults:
+            continue
+        category = schemas._normalize_category(item.get("category"))
+        try:
+            confidence = float(item.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        defaults[local_id] = {
+            "category": category,
+            "confidence": max(0.0, min(1.0, confidence)),
+            "reason": str(item.get("reason") or "").strip()[:260],
+        }
+    return defaults
 
 
 def _recent_work_date(db: Session, kpi_id: int) -> datetime | None:
@@ -108,6 +191,259 @@ def _already_evaluated_category(db: Session, user_id: int, fingerprint: str) -> 
             .limit(1)
         ).first()
         is not None
+    )
+
+
+def _already_checked(db: Session, user_id: int, fingerprint: str) -> bool:
+    return (
+        db.scalars(
+            select(models.AgentCycleLog)
+            .where(
+                models.AgentCycleLog.user_id == user_id,
+                models.AgentCycleLog.event_fingerprint == fingerprint,
+                models.AgentCycleLog.status.in_(["acted", "checked"]),
+            )
+            .limit(1)
+        ).first()
+        is not None
+    )
+
+
+def _connected_sources(db: Session, user_id: int) -> list[str]:
+    modes = oauth_service.source_modes(db, user_id, settings.google_mock_mode)
+    return [src for src in DAILY_SCAN_SOURCES if modes.get(src) == "real"]
+
+
+def _record_source_scan_check(
+    db: Session,
+    user_id: int,
+    fingerprint: str,
+    today: date,
+    summary: str,
+    meta: dict | None = None,
+) -> None:
+    db.add(
+        models.AgentCycleLog(
+            user_id=user_id,
+            cycle_key=f"autonomous-source-scan:{today.isoformat()}",
+            phase="source_scan",
+            status="checked",
+            event_fingerprint=fingerprint,
+            summary=summary,
+            meta={"event_type": "source_scan", **(meta or {})},
+        )
+    )
+    db.commit()
+
+
+def _source_scan_fingerprint(user_id: int, today: date, sources: list[str]) -> str:
+    raw = f"{user_id}|{today.isoformat()}|{','.join(sorted(sources))}"
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+    return f"source_scan:{user_id}:{today.isoformat()}:{digest}"
+
+
+def _source_activity_fingerprint(activity: dict) -> str:
+    raw = json.dumps(
+        {
+            "source": activity.get("source") or "",
+            "date": activity.get("date") or "",
+            "ref": activity.get("ref") or "",
+            "text": str(activity.get("text") or "")[:500],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _proposed_source_refs(db: Session, user_id: int) -> set[tuple[str, str]]:
+    refs: set[tuple[str, str]] = set()
+    rows = db.scalars(
+        select(models.ChatMessage)
+        .where(
+            models.ChatMessage.user_id == user_id,
+            models.ChatMessage.role == "assistant",
+            models.ChatMessage.meta.isnot(None),
+        )
+        .order_by(models.ChatMessage.created_at.desc())
+        .limit(200)
+    )
+    for msg in rows:
+        meta = msg.meta or {}
+        for item in meta.get("proposed_items") or []:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source") or "").strip()
+            ref = str(item.get("source_ref") or "").strip()
+            if source and ref:
+                refs.add((source, ref))
+    return refs
+
+
+def _already_has_source_item(
+    db: Session,
+    user_id: int,
+    item: schemas.ProposedWorkItem,
+    proposed_refs: set[tuple[str, str]],
+) -> bool:
+    source = (item.source or "").strip()
+    ref = (item.source_ref or "").strip()
+    if source and ref:
+        if (source, ref) in proposed_refs:
+            return True
+        existing = db.scalars(
+            select(models.WorkItem)
+            .where(
+                models.WorkItem.user_id == user_id,
+                models.WorkItem.confirmed == True,  # noqa: E712
+                models.WorkItem.source == source,
+                models.WorkItem.source_ref == ref,
+            )
+            .limit(1)
+        ).first()
+        return existing is not None
+    existing = db.scalars(
+        select(models.WorkItem)
+        .where(
+            models.WorkItem.user_id == user_id,
+            models.WorkItem.confirmed == True,  # noqa: E712
+            models.WorkItem.source == source,
+            models.WorkItem.title == item.title,
+            models.WorkItem.work_date == item.work_date,
+        )
+        .limit(1)
+    ).first()
+    return existing is not None
+
+
+def _source_item_confidence(item: schemas.ProposedWorkItem) -> float:
+    if item.confidence is not None:
+        return max(0.0, min(1.0, float(item.confidence)))
+    return 0.72 if item.kpi_id else 0.0
+
+
+def _filter_source_items(
+    db: Session, user_id: int, items: list[schemas.ProposedWorkItem]
+) -> tuple[list[schemas.ProposedWorkItem], dict[str, int]]:
+    ignored = {
+        "no_kpi": 0,
+        "low_confidence": 0,
+        "not_evidence": 0,
+        "duplicate": 0,
+    }
+    proposed_refs = _proposed_source_refs(db, user_id)
+    kept: list[schemas.ProposedWorkItem] = []
+    seen_refs: set[tuple[str, str]] = set()
+    for item in items:
+        confidence = _source_item_confidence(item)
+        ref_key = (item.source or "", item.source_ref or "")
+        if ref_key[1] and ref_key in seen_refs:
+            ignored["duplicate"] += 1
+            continue
+        if not item.kpi_id:
+            ignored["no_kpi"] += 1
+            continue
+        if item.status in {"se_lam", "loai_bo"}:
+            ignored["not_evidence"] += 1
+            continue
+        if confidence < MIN_SOURCE_CONFIDENCE:
+            ignored["low_confidence"] += 1
+            continue
+        if _already_has_source_item(db, user_id, item, proposed_refs):
+            ignored["duplicate"] += 1
+            continue
+        item.confidence = confidence
+        if not item.mapping_reason:
+            item.mapping_reason = (
+                "AI tìm thấy bằng chứng từ nguồn đã kết nối và gán vào KPI này "
+                "vì nội dung hoạt động khớp với mục tiêu đo lường."
+            )
+        kept.append(item)
+        if ref_key[1]:
+            seen_refs.add(ref_key)
+    return kept, ignored
+
+
+def _daily_source_scan_event(
+    db: Session, user_id: int, kpis: list[models.KPI], today: date
+) -> AutonomousEvent | None:
+    if not kpis:
+        return None
+    sources = _connected_sources(db, user_id)
+    if not sources:
+        return None
+    fingerprint = _source_scan_fingerprint(user_id, today, sources)
+    if _already_checked(db, user_id, fingerprint):
+        return None
+
+    start = today - timedelta(days=SOURCE_SCAN_LOOKBACK_DAYS)
+    activities = [
+        a for a in fetch_activities(sources, start, today, db=db, user_id=user_id)
+        if a.get("ref") != "error"
+    ]
+    if not activities:
+        _record_source_scan_check(
+            db,
+            user_id,
+            fingerprint,
+            today,
+            "Đã quét nguồn kết nối nhưng chưa có hoạt động mới.",
+            {"sources": sources, "activity_count": 0, "proposed_items": 0},
+        )
+        return None
+
+    # Import locally to avoid coupling the autonomous loop startup to the chat agent module.
+    from ..agent import agent as kpi_agent
+
+    try:
+        extracted = kpi_agent.extract_work_items("", kpis, activities=activities)
+    except Exception:
+        logger.exception("Daily source scan extraction failed for user_id=%s", user_id)
+        return None
+
+    proposed, ignored = _filter_source_items(db, user_id, extracted)
+    summary = {
+        "sources": sources,
+        "scan_start": start.isoformat(),
+        "scan_end": today.isoformat(),
+        "activity_count": len(activities),
+        "extracted_items": len(extracted),
+        "proposed_items": len(proposed),
+        "ignored": ignored,
+        "activity_fingerprints": [_source_activity_fingerprint(a) for a in activities[:50]],
+    }
+    if not proposed:
+        _record_source_scan_check(
+            db,
+            user_id,
+            fingerprint,
+            today,
+            "Đã quét nguồn kết nối nhưng không có bằng chứng KPI đủ tin cậy.",
+            summary,
+        )
+        return None
+
+    source_names = ", ".join(sources)
+    return AutonomousEvent(
+        event_type="source_scan",
+        fingerprint=fingerprint,
+        priority=120,
+        title=f"có {len(proposed)} cập nhật mới từ nguồn đã kết nối",
+        perceive=(
+            f"Mình đã quét {len(activities)} hoạt động trong {source_names} "
+            f"từ {start.isoformat()} đến {today.isoformat()}."
+        ),
+        reason=(
+            f"Có {len(proposed)} hoạt động đủ liên quan KPI và đủ độ tin cậy để chuẩn bị thành nhật ký công việc; "
+            f"{sum(ignored.values())} hoạt động còn lại đã được bỏ qua vì trùng lặp, chưa liên quan KPI, "
+            "chỉ là kế hoạch, hoặc độ tin cậy thấp."
+        ),
+        act=(
+            "Mình đã tạo các thẻ nhật ký nháp kèm nguồn, lý do gán KPI và độ tin cậy để bạn rà lại."
+        ),
+        remember="Đã ghi nhận lần quét nguồn hôm nay để tránh nhắc lặp cùng một loạt dữ liệu.",
+        proposed_items=proposed,
+        scan_summary=summary,
     )
 
 
@@ -296,6 +632,21 @@ def _proposal_for_event(event: AutonomousEvent, today: date) -> list[schemas.Pro
 
 
 def _event_message(event: AutonomousEvent, proposed: list[schemas.ProposedWorkItem]) -> str:
+    if event.event_type == "source_scan":
+        scan = event.scan_summary or {}
+        ignored = scan.get("ignored") or {}
+        ignored_count = sum(int(v or 0) for v in ignored.values()) if isinstance(ignored, dict) else 0
+        action_note = (
+            "Mình đã chuẩn bị các thẻ nhật ký công việc bên dưới kèm nguồn, lý do gán KPI và độ tin cậy. "
+            "Bạn có thể chỉnh lại KPI, trạng thái hoặc số tiến độ trước khi xác nhận."
+        )
+        return (
+            f"**Mình vừa nhận thấy {event.title}.**\n\n"
+            f"{event.perceive} {event.reason}\n\n"
+            f"{event.act} {action_note} "
+            f"Mình đã bỏ qua {ignored_count} mục chưa đủ liên quan hoặc chưa đủ tin cậy. "
+            "Chưa có dữ liệu nào được ghi vào nhật ký chính thức; tiến độ KPI chỉ được cộng sau khi bạn xác nhận."
+        )
     if event.category_suggestion:
         action_note = (
             "Mình đã chuẩn bị sẵn nút xác nhận bên dưới. "
@@ -334,8 +685,9 @@ def _get_or_create_session(db: Session, user_id: int) -> models.ChatSession:
 
 
 def _choose_event(db: Session, user_id: int, today: date) -> AutonomousEvent | None:
-    kpis = kpi_service.get_active_kpis(db, user_id)
-    if not kpis:
+    all_kpis = kpi_service.get_active_kpis(db, user_id)
+    kpis = [k for k in all_kpis if (k.category or "Work") == "Work"]
+    if not all_kpis:
         return AutonomousEvent(
             event_type="empty",
             fingerprint=f"empty:{user_id}:{today.isoformat()}",
@@ -349,18 +701,24 @@ def _choose_event(db: Session, user_id: int, today: date) -> AutonomousEvent | N
 
     events: list[AutonomousEvent] = []
 
-    category_event = _ai_category_event(db, user_id, kpis, today)
+    source_scan_event = _daily_source_scan_event(db, user_id, all_kpis, today)
+    if source_scan_event:
+        events.append(source_scan_event)
+
+    category_event = _ai_category_event(db, user_id, all_kpis, today)
     if category_event:
         events.append(category_event)
 
     overdue = db.scalars(
         select(models.WorkItem)
+        .outerjoin(models.KPI, models.WorkItem.kpi_id == models.KPI.id)
         .where(
             models.WorkItem.user_id == user_id,
             models.WorkItem.confirmed == True,  # noqa: E712
             models.WorkItem.status.in_(["se_lam", "dang_lam"]),
             models.WorkItem.work_date.isnot(None),
             models.WorkItem.work_date < today,
+            or_(models.WorkItem.kpi_id.is_(None), models.KPI.category == "Work"),
         )
         .order_by(models.WorkItem.work_date.asc())
         .limit(1)
@@ -460,7 +818,12 @@ def _choose_event(db: Session, user_id: int, today: date) -> AutonomousEvent | N
 
 
 def _save_event(db: Session, user_id: int, event: AutonomousEvent, today: date) -> models.AgentCycleLog:
-    proposed = [] if event.event_type in {"idle", "empty", "category_mismatch"} else _proposal_for_event(event, today)
+    if event.proposed_items is not None:
+        proposed = event.proposed_items
+    elif event.event_type in {"idle", "empty", "category_mismatch"}:
+        proposed = []
+    else:
+        proposed = _proposal_for_event(event, today)
     category_suggestions = [event.category_suggestion] if event.category_suggestion else []
     session = _get_or_create_session(db, user_id)
     message = models.ChatMessage(
@@ -474,6 +837,7 @@ def _save_event(db: Session, user_id: int, event: AutonomousEvent, today: date) 
                 "event_type": event.event_type,
                 "priority": event.priority,
                 "summary": event.title,
+                "source_scan": event.scan_summary,
             },
             "proposed_items": [p.model_dump(mode="json") for p in proposed],
             "category_suggestions": category_suggestions,
@@ -497,6 +861,7 @@ def _save_event(db: Session, user_id: int, event: AutonomousEvent, today: date) 
             "message_session_id": session.id,
             "proposed_items": len(proposed),
             "category_suggestions": len(category_suggestions),
+            "source_scan": event.scan_summary,
         },
     )
     db.add(log)

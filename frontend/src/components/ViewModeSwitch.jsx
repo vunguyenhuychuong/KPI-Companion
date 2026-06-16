@@ -3,13 +3,11 @@ import { useLang } from '../LangContext'
 import { UiIcon } from './UiIcon'
 
 const MODE_ICONS = {
-  all: 'table',
   work: 'fileText',
   personal: 'user',
-  focus: 'target',
 }
 
-// Global context filter: All / Work / Personal / Focus.
+// Global context filter: Work / Personal.
 export default function ViewModeSwitch() {
   const { mode, setMode } = useView()
   const { tr } = useLang()

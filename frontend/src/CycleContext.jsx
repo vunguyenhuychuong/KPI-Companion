@@ -10,11 +10,14 @@ export function CycleProvider({ children }) {
     const saved = localStorage.getItem('kpi_active_cycle')
     return saved ? parseInt(saved, 10) : null
   })
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(() => !!localStorage.getItem('kpi_token'))
 
   const fetchCycles = useCallback(async () => {
     const token = localStorage.getItem('kpi_token')
-    if (!token) return
+    if (!token) {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     try {
       const data = await api.listCycles()

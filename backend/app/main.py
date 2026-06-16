@@ -77,6 +77,8 @@ def migrate():
         # Phan vung Work/Personal: KPI cu mac dinh "Work"
         if kpi_cols and "category" not in kpi_cols:
             conn.execute(text("ALTER TABLE kpis ADD COLUMN category VARCHAR(20) DEFAULT 'Work'"))
+        if obj_cols and "category" not in obj_cols:
+            conn.execute(text("ALTER TABLE objectives ADD COLUMN category VARCHAR(20) DEFAULT 'Work'"))
 
         # He don vi do: unit / target_value / current_value (giu nguyen % cu)
         if kpi_cols and "unit" not in kpi_cols:

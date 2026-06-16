@@ -76,6 +76,7 @@ class Objective(Base):
     name: Mapped[str] = mapped_column(String(300))
     description: Mapped[str] = mapped_column(Text, default="")
     weight: Mapped[float] = mapped_column(Float, default=0.0)  # trong so % (tong <= 100)
+    category: Mapped[str] = mapped_column(String(20), default="Work")
     year: Mapped[int] = mapped_column(Integer, default=2026)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

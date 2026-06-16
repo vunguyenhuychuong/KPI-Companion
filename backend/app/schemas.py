@@ -136,8 +136,14 @@ class ObjectiveCreate(BaseModel):
     name: str
     description: str = ""
     weight: float = 0.0
+    category: str = "Work"
     year: int = 2026
     cycle_id: int | None = None
+
+    @field_validator("category")
+    @classmethod
+    def _norm_category(cls, v: str) -> str:
+        return _normalize_category(v)
 
     @field_validator("weight")
     @classmethod
@@ -149,7 +155,13 @@ class ObjectiveUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     weight: float | None = None
+    category: str | None = None
     cycle_id: int | None = None
+
+    @field_validator("category")
+    @classmethod
+    def _norm_category(cls, v: str | None) -> str | None:
+        return _normalize_category(v) if v is not None else None
 
     @field_validator("weight")
     @classmethod
@@ -163,6 +175,7 @@ class ObjectiveOut(BaseModel):
     name: str
     description: str
     weight: float = 0.0
+    category: str = "Work"
     year: int
     cycle_id: int | None = None
     progress: float = 0.0  # trung binh co trong so cua cac KPI con (da cap 100%)
@@ -286,7 +299,7 @@ class ProposedWorkItem(BaseModel):
     work_date: date | None = None
     mapping_reason: str = ""
     confidence: float | None = None
-    alternative_kpis: list[KpiCandidate] = []
+    alternative_kpis: list[KpiCandidate] = Field(default_factory=list)
     original_kpi_id: int | None = None
     original_status: str | None = None
 
@@ -305,9 +318,14 @@ class WorkItemOut(BaseModel):
     work_date: date | None
     mapping_reason: str = ""
     confidence: float | None = None
-    alternative_kpis: list[KpiCandidate] = []
+    alternative_kpis: list[KpiCandidate] = Field(default_factory=list)
     confirmed: bool
     created_at: datetime
+
+    @field_validator("alternative_kpis", mode="before")
+    @classmethod
+    def _alternative_kpis_list(cls, v):
+        return v or []
 
 
 class ConfirmItemsRequest(BaseModel):
@@ -316,6 +334,12 @@ class ConfirmItemsRequest(BaseModel):
 
 class BalanceRequest(BaseModel):
     objective_id: int | None = None  # None = nhom KPI chua gan muc tieu
+    category: str = "Work"
+
+    @field_validator("category")
+    @classmethod
+    def _norm_category(cls, v: str) -> str:
+        return _normalize_category(v)
 
 
 class AutoMapRequest(BaseModel):
@@ -329,16 +353,32 @@ class ImportPreviewKpi(BaseModel):
     weight: float
     has_weight: bool  # weight > 0
     note: str = ""
+    category: str = "Work"
+    category_confidence: float = 0.0
+    category_reason: str = ""
+
+    @field_validator("category")
+    @classmethod
+    def _norm_category(cls, v: str) -> str:
+        return _normalize_category(v)
 
 
 class ImportPreviewObjective(BaseModel):
     name: str
     weight: float  # trong so muc tieu tu file (0 neu khong co)
+    category: str = "Work"
+    category_confidence: float = 0.0
+    category_reason: str = ""
     is_new: bool  # True neu chua ton tai trong he thong
     objective_id: int | None = None  # id objective hien co (neu is_new=False)
     kpis: list[ImportPreviewKpi]
     kpi_total: float  # tong trong so KPI trong file nay
     existing_kpi_total: float = 0.0  # tong trong so KPI da co trong objective
+
+    @field_validator("category")
+    @classmethod
+    def _norm_category(cls, v: str) -> str:
+        return _normalize_category(v)
 
 
 class ImportValidationMessage(BaseModel):
@@ -350,6 +390,7 @@ class ImportValidationMessage(BaseModel):
 
 class ImportPreviewOut(BaseModel):
     existing_obj_total: float  # tong trong so objective hien co
+    existing_obj_totals_by_category: dict[str, float] = Field(default_factory=dict)
     objectives: list[ImportPreviewObjective]
     messages: list[ImportValidationMessage]
     can_save: bool  # False neu co loi cung (hard error)
@@ -363,6 +404,12 @@ class ProposedObjective(BaseModel):
     name: str
     description: str = ""
     weight: float = 0.0
+    category: str = "Work"
+
+    @field_validator("category")
+    @classmethod
+    def _norm_category(cls, v: str) -> str:
+        return _normalize_category(v)
 
     @field_validator("weight")
     @classmethod
@@ -383,6 +430,11 @@ class ProposedKPI(BaseModel):
     objective_name: str | None = None
     # ten muc tieu MOI trong proposed_objectives ma KPI nay thuoc ve (None = dung objective_id)
     objective_ref: str | None = None
+
+    @field_validator("category")
+    @classmethod
+    def _norm_category(cls, v: str) -> str:
+        return _normalize_category(v)
 
     @field_validator("weight")
     @classmethod

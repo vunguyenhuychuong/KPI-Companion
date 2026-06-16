@@ -4,7 +4,7 @@ import { translations } from './i18n'
 const LangContext = createContext(null)
 
 const WORK_STATUSES = ['da_lam', 'dang_lam', 'se_lam', 'phat_sinh', 'loai_bo']
-const SOURCES = ['chat', 'csv', 'gmail', 'calendar', 'sheets', 'notion', 'slack', 'outlook', 'agent_loop']
+const SOURCES = ['chat', 'csv', 'gmail', 'calendar', 'sheets', 'notion', 'slack', 'outlook', 'manual', 'agent_loop']
 const cleanIconLabel = (value) => String(value || '').replace(/^[^\p{L}\p{N}\[]+/u, '').trim()
 
 export function LangProvider({ children }) {

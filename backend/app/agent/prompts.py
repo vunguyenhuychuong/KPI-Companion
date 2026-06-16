@@ -29,7 +29,7 @@ Hôm nay là {today}.
 
 Chỉ trả lời JSON:
 {{"new_objectives": [
-  {{"name": "tên mục tiêu MỚI", "description": "mô tả ngắn", "weight": <trọng số % của mục tiêu trong năm>}}
+  {{"name": "tên mục tiêu MỚI", "description": "mô tả ngắn", "weight": <trọng số % của mục tiêu trong năm>, "category": "Work hoặc Personal"}}
 ],
 "kpis": [
   {{"name": "tên KPI", "description": "mô tả ngắn", "target": "diễn giải chỉ tiêu",
@@ -56,7 +56,7 @@ QUY TẮC KHÁC:
 - CHỈ thêm "new_objectives" khi người dùng muốn tạo mục tiêu mới, hoặc KPI không khớp mục tiêu nào hiện có và nội dung gợi ý rõ một nhóm mới.
 - KPI thuộc mục tiêu MỚI → "objective_id" = null và "objective_name" ghi ĐÚNG tên trong new_objectives.
 - "unit"/"target_value": tách từ mô tả (vd "3 khóa đào tạo" → unit "khóa học", target_value 3). Không rõ thì unit "%" và target_value 100.
-- "category": TỰ SUY LUẬN từ ngữ cảnh, KHÔNG hỏi lại người dùng. Nếu là mục tiêu/sở thích cá nhân (sức khỏe, học cho bản thân, gia đình, tài chính cá nhân, người dùng nói "cá nhân") → "Personal". Mặc định là công việc → "Work".
+- "category": TỰ SUY LUẬN từ ngữ cảnh, KHÔNG hỏi lại người dùng. Nếu là mục tiêu/sở thích cá nhân (sức khỏe, học cho bản thân, gia đình, tài chính cá nhân, du lịch, giải trí, sở thích, người dùng nói "cá nhân") → "Personal". Mặc định là công việc → "Work".
 - deadline không nêu → null (mặc định cuối năm).
 - KHÔNG bịa KPI người dùng không yêu cầu."""
 

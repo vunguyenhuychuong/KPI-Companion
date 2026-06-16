@@ -126,7 +126,9 @@ export default function AutonomousAgentInbox() {
                 </div>
               </div>
               <div className="agent-inbox-copy" dangerouslySetInnerHTML={{ __html: marked.parse(item.content || '') }} />
-              <div className="agent-inbox-ready">{tr('agent_inbox.ready')}</div>
+              <div className="agent-inbox-ready">
+                {item.event_type === 'source_scan' ? tr('agent_inbox.source_scan_ready') : tr('agent_inbox.ready')}
+              </div>
               {item.proposed_items?.length > 0 && (
                 <ProposalList
                   items={item.proposed_items}

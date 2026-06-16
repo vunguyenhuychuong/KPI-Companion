@@ -2,7 +2,7 @@
 import calendar
 from datetime import date, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -65,11 +65,13 @@ def health_of(kpi: models.KPI, today: date | None = None) -> tuple[str, float]:
 
 
 def get_active_kpis(
-    db: Session, user_id: int = 1, cycle_id: int | None = None
+    db: Session, user_id: int = 1, cycle_id: int | None = None, category: str | None = None
 ) -> list[models.KPI]:
     q = select(models.KPI).where(
         models.KPI.user_id == user_id, models.KPI.archived == False  # noqa: E712
     )
+    if category in schemas.KPI_CATEGORIES:
+        q = q.where(models.KPI.category == category)
     if cycle_id is not None:
         q = (
             q.join(models.Objective, models.KPI.objective_id == models.Objective.id)
@@ -82,9 +84,11 @@ def get_active_kpis(
     return list(db.scalars(q))
 
 
-def _group_progress(kpis: list[models.KPI]) -> float:
+def _group_progress(kpis: list[models.KPI], category: str | None = None) -> float:
     """Tien do nhom = trung binh co trong so cua KPI con, moi KPI cap 100% (chuan OKR)."""
     kpis = [k for k in kpis if not k.archived]
+    if category in schemas.KPI_CATEGORIES:
+        kpis = [k for k in kpis if (k.category or "Work") == category]
     total_w = sum(k.weight for k in kpis)
     if total_w > 0:
         return round(sum(k.progress_capped * k.weight for k in kpis) / total_w, 1)
@@ -94,54 +98,62 @@ def _group_progress(kpis: list[models.KPI]) -> float:
 
 
 def objectives_with_progress(
-    db: Session, user_id: int = 1, cycle_id: int | None = None
+    db: Session, user_id: int = 1, cycle_id: int | None = None, category: str | None = None
 ) -> list[schemas.ObjectiveOut]:
     """Danh sach Objective kem tien do tong hop tu KPI con."""
     q = select(models.Objective).where(
         models.Objective.user_id == user_id,
         models.Objective.archived == False,  # noqa: E712
     )
+    if category in schemas.KPI_CATEGORIES:
+        q = q.where(models.Objective.category == category)
     if cycle_id is not None:
         q = q.where(models.Objective.cycle_id == cycle_id)
     objs = list(db.scalars(q))
     out = []
     for o in objs:
         item = schemas.ObjectiveOut.model_validate(o)
-        item.progress = _group_progress(o.kpis)
-        item.kpi_count = len([k for k in o.kpis if not k.archived])
+        item.progress = _group_progress(o.kpis, category=category)
+        item.kpi_count = len([
+            k for k in o.kpis
+            if not k.archived and (category not in schemas.KPI_CATEGORIES or (k.category or "Work") == category)
+        ])
         out.append(item)
     return out
 
 
-def overall_progress(db: Session, user_id: int = 1, cycle_id: int | None = None) -> float:
+def overall_progress(
+    db: Session, user_id: int = 1, cycle_id: int | None = None, category: str | None = "Work"
+) -> float:
     """Diem tong nam = trung binh co trong so theo Objective.
 
     KPI chua gan muc tieu duoc gop vao nhom ao "Khac" dung phan trong so con lai
     (100% - tong trong so Objective) de khong KPI nao bi bo sot.
     """
-    objs = objectives_with_progress(db, user_id, cycle_id=cycle_id)
+    objs = objectives_with_progress(db, user_id, cycle_id=cycle_id, category=category)
     ungrouped = [] if cycle_id is not None else [
-        k for k in get_active_kpis(db, user_id) if k.objective_id is None
+        k for k in get_active_kpis(db, user_id, category=category) if k.objective_id is None
     ]
     total = sum(o.weight * o.progress for o in objs)
     denom = sum(o.weight for o in objs)
     if ungrouped:
         khac_weight = max(0.0, 100.0 - denom)
         if khac_weight > 0:
-            total += khac_weight * _group_progress(ungrouped)
+            total += khac_weight * _group_progress(ungrouped, category=category)
             denom += khac_weight
     if denom <= 0:
         # chua phan bo trong so nao -> trung binh don gian
-        kpis = get_active_kpis(db, user_id, cycle_id=cycle_id)
-        return _group_progress(kpis) if kpis else 0.0
+        kpis = get_active_kpis(db, user_id, cycle_id=cycle_id, category=category)
+        return _group_progress(kpis, category=category) if kpis else 0.0
     return round(total / denom, 1)
 
 
 def build_dashboard(
-    db: Session, user_id: int = 1, cycle_id: int | None = None
+    db: Session, user_id: int = 1, cycle_id: int | None = None, category: str | None = "Work"
 ) -> schemas.DashboardOut:
     cycle = db.get(models.KPICycle, cycle_id) if cycle_id is not None else None
-    kpis = get_active_kpis(db, user_id, cycle_id=cycle_id)
+    category = category if category in schemas.KPI_CATEGORIES else None
+    kpis = get_active_kpis(db, user_id, cycle_id=cycle_id, category=category)
     today = date.today()
     statuses: list[schemas.KPIStatus] = []
     warnings: list[str] = []
@@ -173,17 +185,25 @@ def build_dashboard(
             )
 
     counts: dict[str, int] = {s: 0 for s in schemas.WORK_STATUSES}
-    for status_value, cnt in db.execute(
-            select(models.WorkItem.status, func.count())
-                    .where(models.WorkItem.user_id == user_id, models.WorkItem.confirmed == True)  # noqa: E712
-                    .group_by(models.WorkItem.status)
-    ).all():
+    item_filter = [
+        models.WorkItem.user_id == user_id,
+        models.WorkItem.confirmed == True,  # noqa: E712
+    ]
+    if category == "Work":
+        item_filter.append(or_(models.WorkItem.kpi_id.is_(None), models.KPI.category == category))
+    elif category == "Personal":
+        item_filter.append(models.KPI.category == category)
+    item_status_q = select(models.WorkItem.status, func.count()).outerjoin(
+        models.KPI, models.WorkItem.kpi_id == models.KPI.id
+    ).where(*item_filter).group_by(models.WorkItem.status)
+    for status_value, cnt in db.execute(item_status_q).all():
         counts[status_value] = cnt
 
     recent = list(
         db.scalars(
             select(models.WorkItem)
-            .where(models.WorkItem.user_id == user_id, models.WorkItem.confirmed == True)  # noqa: E712
+            .outerjoin(models.KPI, models.WorkItem.kpi_id == models.KPI.id)
+            .where(*item_filter)
             .order_by(models.WorkItem.created_at.desc())
             .limit(10)
         )
@@ -193,9 +213,9 @@ def build_dashboard(
     todos = list(
         db.scalars(
             select(models.WorkItem)
+            .outerjoin(models.KPI, models.WorkItem.kpi_id == models.KPI.id)
             .where(
-                models.WorkItem.user_id == user_id,
-                models.WorkItem.confirmed == True,  # noqa: E712
+                *item_filter,
                 models.WorkItem.status.in_(["se_lam", "dang_lam"]),
                 )
             .order_by(models.WorkItem.work_date.asc().nullslast(), models.WorkItem.created_at.asc())
@@ -207,9 +227,9 @@ def build_dashboard(
     # nhip ghi nhan 8 tuan gan nhat (theo ngay thuc hien viec)
     all_items = list(
         db.scalars(
-            select(models.WorkItem).where(
-                models.WorkItem.user_id == user_id, models.WorkItem.confirmed == True  # noqa: E712
-            )
+            select(models.WorkItem)
+            .outerjoin(models.KPI, models.WorkItem.kpi_id == models.KPI.id)
+            .where(*item_filter)
         )
     )
     this_monday = today - timedelta(days=today.weekday())
@@ -230,8 +250,8 @@ def build_dashboard(
             if cycle and cycle.start_date
             else (kpis[0].year if kpis else today.year)
         ),
-        overall_progress=overall_progress(db, user_id, cycle_id=cycle_id),
-        objectives=objectives_with_progress(db, user_id, cycle_id=cycle_id),
+        overall_progress=overall_progress(db, user_id, cycle_id=cycle_id, category=category),
+        objectives=objectives_with_progress(db, user_id, cycle_id=cycle_id, category=category),
         kpi_statuses=statuses,
         warnings=warnings,
         counts_by_status=counts,
@@ -375,7 +395,18 @@ def confirm_items(
         db.add(wi)
         if kpi and it.value_delta:
             # cong vao THUC DAT theo don vi; cho phep vuot chi tieu (>100%)
-            kpi.current_value = max(0.0, round(kpi.current_value + it.value_delta, 2))
+            old_value = kpi.current_value
+            new_value = max(0.0, round(kpi.current_value + it.value_delta, 2))
+            kpi.current_value = new_value
+            db.add(
+                models.KPIChangeLog(
+                    kpi_id=kpi.id,
+                    field="current_value",
+                    old_value=str(old_value),
+                    new_value=str(new_value),
+                    reason=f'Ghi nhận đầu việc "{it.title}"',
+                )
+            )
         if it.original_kpi_id is not None and it.original_kpi_id != (kpi.id if kpi else None):
             old = db.get(models.KPI, it.original_kpi_id)
             old_name = old.name if old else "khong gan KPI"
@@ -486,9 +517,10 @@ def period_context_text(
     return "\n".join(parts)
 
 
-def full_context_text(db: Session, user_id: int = 1) -> str:
+def full_context_text(db: Session, user_id: int = 1, category: str | None = None) -> str:
     """Toan bo boi canh KPI + dau viec gan day cho prompt tra loi cau hoi."""
-    kpis = get_active_kpis(db, user_id)
+    category = schemas._normalize_category(category) if category is not None else None
+    kpis = get_active_kpis(db, user_id, category=category)
     today = date.today()
     parts = ["## KPI năm:"]
     for k in kpis:
@@ -505,7 +537,16 @@ def full_context_text(db: Session, user_id: int = 1) -> str:
     items = list(
         db.scalars(
             select(models.WorkItem)
-            .where(models.WorkItem.user_id == user_id, models.WorkItem.confirmed == True)  # noqa: E712
+            .outerjoin(models.KPI, models.WorkItem.kpi_id == models.KPI.id)
+            .where(
+                models.WorkItem.user_id == user_id,
+                models.WorkItem.confirmed == True,  # noqa: E712
+                *(
+                    [or_(models.WorkItem.kpi_id.is_(None), models.KPI.category == category)]
+                    if category == "Work"
+                    else ([models.KPI.category == category] if category == "Personal" else [])
+                ),
+            )
             .order_by(models.WorkItem.created_at.desc())
             .limit(40)
         )

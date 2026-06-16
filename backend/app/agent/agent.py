@@ -144,6 +144,17 @@ def _language_name(lang: str) -> str:
     return "English" if lang == "en" else "Vietnamese"
 
 
+def _work_first_context(db: Session, user_id: int = 1) -> str:
+    work_context = kpi_service.full_context_text(db, user_id, category="Work")
+    personal_context = kpi_service.full_context_text(db, user_id, category="Personal")
+    return (
+        "## WORK CONTEXT - primary source for answers and performance assessment\n"
+        f"{work_context}\n\n"
+        "## PERSONAL CONTEXT - secondary support only; do not include in Work metrics\n"
+        f"{personal_context}"
+    )
+
+
 def _strip_attachment_context(text: str) -> str:
     if ATTACHMENT_CONTEXT_MARKER not in text:
         return text
@@ -474,7 +485,12 @@ def extract_kpi_proposal(
         except (TypeError, ValueError):
             w = 0.0
         new_objs.append(
-            schemas.ProposedObjective(name=name, description=str(r.get("description") or ""), weight=w)
+            schemas.ProposedObjective(
+                name=name,
+                description=str(r.get("description") or ""),
+                weight=w,
+                category=schemas._normalize_category(r.get("category")),
+            )
         )
         new_obj_names[name.lower()] = name
 
@@ -819,7 +835,10 @@ def extract_work_items(
         user_prompt = (
             "Dưới đây là danh sách hoạt động thu thập tự động từ các nguồn dữ liệu. "
             "Hãy phân loại từng hoạt động thành đầu việc. Thêm trường \"ref_index\" = số trong ngoặc vuông "
-            "để giữ nguồn gốc:\n\n" + "\n".join(lines)
+            "để giữ nguồn gốc. Chỉ giữ hoạt động là bằng chứng công việc thật sự; bỏ qua thư quảng bá, "
+            "thông báo hệ thống, trao đổi xã giao, dữ liệu cá nhân không liên quan KPI, hoặc hoạt động "
+            "không đủ cơ sở để gán KPI. Nếu chưa chắc KPI phù hợp, để confidence thấp và đưa KPI thay thế:\n\n"
+            + "\n".join(lines)
         )
     else:
         user_prompt = text
@@ -864,6 +883,28 @@ def extract_work_items(
                 delta = round(max(0.0, float(set_val)) - kpi_by_id[kpi_id].current_value, 2)
             except (TypeError, ValueError):
                 pass
+        confidence = None
+        if r.get("confidence") is not None:
+            try:
+                confidence = max(0.0, min(1.0, float(r.get("confidence"))))
+            except (TypeError, ValueError):
+                confidence = None
+        alternatives: list[schemas.KpiCandidate] = []
+        for alt in r.get("alternative_kpis") or []:
+            if not isinstance(alt, dict):
+                continue
+            alt_id = alt.get("kpi_id")
+            if not isinstance(alt_id, int) or alt_id not in kpi_by_id or alt_id == kpi_id:
+                continue
+            alternatives.append(
+                schemas.KpiCandidate(
+                    kpi_id=alt_id,
+                    kpi_name=kpi_by_id[alt_id].name,
+                    reason=str(alt.get("reason") or "")[:260],
+                )
+            )
+            if len(alternatives) >= 2:
+                break
         out.append(
             schemas.ProposedWorkItem(
                 title=str(r["title"])[:500],
@@ -876,6 +917,11 @@ def extract_work_items(
                 source=src,
                 source_ref=src_ref,
                 work_date=wd,
+                mapping_reason=str(r.get("mapping_reason") or "")[:600],
+                confidence=confidence,
+                alternative_kpis=alternatives,
+                original_kpi_id=kpi_id,
+                original_status=status,
             )
         )
     return out
@@ -1219,7 +1265,7 @@ def handle_message(
         return schemas.ChatResponse(reply=reply, intent=intent, meeting_proposal=proposal)
 
     if intent == "question":
-        context = kpi_service.full_context_text(db, user_id) + user_context
+        context = _work_first_context(db, user_id) + user_context
 
         # Neu user hoi ve Google data (lich/email/sheets) -> fetch va inject vao context
         google_sources = _google_sources_for_query(text)
@@ -1293,7 +1339,7 @@ def handle_message(
 
     # other / chitchat
     if _is_account_help_question(visible_text):
-        context = kpi_service.full_context_text(db, user_id) + user_context
+        context = _work_first_context(db, user_id) + user_context
         reply = call_text(
             prompts.ANSWER_SYSTEM.format(context=context, today=_today()) + _lang_suffix(lang),
             visible_text, history=history, max_tokens=700,
@@ -1308,8 +1354,8 @@ def handle_message(
 
 
 def weekly_report(db: Session, user_id: int = 1, lang: str = "vi") -> str:
-    kpis = kpi_service.get_active_kpis(db, user_id)
-    context = kpi_service.full_context_text(db, user_id)
+    kpis = kpi_service.get_active_kpis(db, user_id, category="Work")
+    context = kpi_service.full_context_text(db, user_id, category="Work")
     prompt_text = "Write the weekly summary for me." if lang == "en" else "Viết bản tổng kết tuần này cho tôi."
     reply = call_text(
         prompts.WEEKLY_REPORT_SYSTEM.format(context=context, today=_today()) + _lang_suffix(lang),
@@ -1320,8 +1366,8 @@ def weekly_report(db: Session, user_id: int = 1, lang: str = "vi") -> str:
 
 def self_review(db: Session, period_label: str, user_id: int = 1) -> str:
     """Sinh ban tu danh gia cuoi ky bang LLM tu du lieu KPI hien tai."""
-    kpis = kpi_service.get_active_kpis(db, user_id)
-    context = kpi_service.full_context_text(db, user_id)
+    kpis = kpi_service.get_active_kpis(db, user_id, category="Work")
+    context = kpi_service.full_context_text(db, user_id, category="Work")
     system = prompts.SELF_REVIEW_SYSTEM.format(
         context=context, today=_today(), period_label=period_label
     )
@@ -1341,7 +1387,7 @@ def period_report(
     user_id: int = 1,
     lang: str = "vi",
 ) -> str:
-    kpis = kpi_service.get_active_kpis(db, user_id)
+    kpis = kpi_service.get_active_kpis(db, user_id, category="Work")
     context = kpi_service.period_context_text(db, start, end, period_type, user_id)
     system = prompts.PERIOD_REPORT_SYSTEM.format(
         period_name=PERIOD_NAMES.get(period_type, "KỲ"),

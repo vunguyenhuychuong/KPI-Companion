@@ -33,6 +33,15 @@
 - ⚠️ KHÔNG dùng PowerShell `Get-Content`/`Set-Content` để sửa hàng loạt file Python — đã từng làm hỏng encoding UTF-8 tiếng Việt.
 - ⚠️ KHÔNG ghi đè cả file `agent/prompts.py` — đã từng bị dán đè bằng bản nháp cũ làm mất 4 prompt (KPI_CREATE / SYNC_PARSE / SMART / CONFLICT_SYSTEM) gây AttributeError khi tạo KPI (đã khôi phục 13/06 từ commit 829bfe5). Chỉ edit từng block prompt; sau khi sửa, đối chiếu `grep -o "prompts\.[A-Z_]*" agent.py memory.py` với các hằng đã định nghĩa.
 
+## 2.1 Quy tắc UI/UX bắt buộc cho mọi thay đổi mới
+
+- Mọi thay đổi chức năng, điều chỉnh dữ liệu, filter, dashboard, form, proposal, báo cáo, nhật ký hoặc luồng xác nhận đều phải rà UI/UX đi kèm trong cùng lượt làm; không chỉ sửa logic/API.
+- Mọi thay đổi liên quan CRUD (tạo/sửa/xóa/khôi phục/lưu/xác nhận dữ liệu) phải rà và cập nhật luôn năng lực tương ứng cho Trợ lý AI: intent/router/extractor/proposal card/confirm endpoint/quyền thao tác phù hợp. Trợ lý AI vẫn phải giữ human-in-the-loop, không tự ghi DB và không lộ internal ID.
+- UI mới phải match style hiện tại: compact, utilitarian, dark-mode friendly, cùng spacing, border radius, icon, trạng thái loading/error/empty, responsive mobile/desktop và i18n vi/en.
+- UI/UX phải cover tốt nhất cả desktop và mobile: kiểm tra breakpoint chính, không overflow ngang, không chồng text/control, thao tác cảm ứng đủ dễ bấm, và browser verification phải bao gồm màn hình liên quan ở desktop lẫn viewport mobile khi có thay đổi user-facing.
+- Khi thêm control mới, phải đặt đúng vị trí trong workflow người dùng, có trạng thái disabled/loading, validation rõ ràng, không làm layout nhảy, không để text tràn hoặc chồng chéo.
+- Sau frontend change phải build và kiểm bằng browser ở màn hình liên quan trước khi kết luận hoàn thành.
+
 ---
 
 ## 3. Tính năng đã triển khai
