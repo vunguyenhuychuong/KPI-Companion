@@ -47,6 +47,7 @@ function ObjectiveModal({ objective, objectives, cycleId, onClose, onSaved, tr }
     name: objective?.name || '',
     description: objective?.description || '',
     weight: String(objective?.weight ?? 0),
+    category: objective?.category || 'Work',
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -55,6 +56,7 @@ function ObjectiveModal({ objective, objectives, cycleId, onClose, onSaved, tr }
   const wValid = !isNaN(w) && Number.isInteger(w) && w >= 0 && w <= 100
   const totalOthers = objectives
     .filter((o) => o.id !== objective?.id)
+    .filter((o) => (o.category || 'Work') === f.category)
     .reduce((s, o) => s + (o.weight || 0), 0)
   const newTotal = wValid ? totalOthers + w : null
 
@@ -62,7 +64,7 @@ function ObjectiveModal({ objective, objectives, cycleId, onClose, onSaved, tr }
     setSaving(true)
     setError('')
     try {
-      const payload = { name: f.name.trim(), description: f.description, weight: w }
+      const payload = { name: f.name.trim(), description: f.description, weight: w, category: f.category }
       if (isNew && cycleId) payload.cycle_id = cycleId
       if (isNew) await api.createObjective(payload)
       else await api.updateObjective(objective.id, payload)
@@ -83,6 +85,12 @@ function ObjectiveModal({ objective, objectives, cycleId, onClose, onSaved, tr }
         <label className="modal-field">{tr('objm.weight')}
           <NumberStepper min="0" max="100" step="1" value={f.weight}
             onChange={(value) => setF({ ...f, weight: normalizeWeightInput(value) })} />
+        </label>
+        <label className="modal-field">{tr('kpim.category')}
+          <select value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })}>
+            <option value="Work">{cleanIconLabel(tr('category.work'))}</option>
+            <option value="Personal">{cleanIconLabel(tr('category.personal'))}</option>
+          </select>
         </label>
         <WeightHint total={newTotal} label={tr('wh.obj_total')} tr={tr} />
         {error && <div className="error-text"><UiIcon name="warning" /> {error}</div>}
@@ -134,6 +142,7 @@ function EditKpiModal({ kpi, kpis, objectives, onClose, onSaved, tr }) {
   const groupTotal = wValid
     ? kpis
         .filter((k) => k.id !== kpi.id && (k.objective_id ?? null) === targetObjId)
+        .filter((k) => targetObjId !== null || (k.category || 'Work') === f.category)
         .reduce((s, k) => s + (k.weight || 0), 0) + w
     : null
   // server xac nhan lai tong moi nhat (400ms debounce) — uu tien khi co du lieu
@@ -145,12 +154,12 @@ function EditKpiModal({ kpi, kpis, objectives, onClose, onSaved, tr }) {
     clearTimeout(svTimerRef.current)
     svTimerRef.current = setTimeout(async () => {
       try {
-        const res = await api.validateKpiWeights(targetObjId, w, kpi.id)
+        const res = await api.validateKpiWeights(targetObjId, w, kpi.id, f.category)
         setServerTotal(res.projected_total)
       } catch { setServerTotal(null) }
     }, 400)
     return () => clearTimeout(svTimerRef.current)
-  }, [w, targetObjId, wValid])
+  }, [w, targetObjId, wValid, f.category])
   const groupName = targetObjId
     ? objectives.find((o) => o.id === targetObjId)?.name
     : tr('kpis.ungrouped_plain')
@@ -198,7 +207,11 @@ function EditKpiModal({ kpi, kpis, objectives, onClose, onSaved, tr }) {
           <input value={f.target} onChange={(e) => set('target', e.target.value)} />
         </label>
         <label className="modal-field">{tr('kpim.objective')}
-          <select value={f.objective_id} onChange={(e) => set('objective_id', e.target.value)}>
+          <select value={f.objective_id} onChange={(e) => {
+            const value = e.target.value
+            const obj = objectives.find((o) => String(o.id) === String(value))
+            setF((s) => ({ ...s, objective_id: value, category: obj?.category || s.category }))
+          }}>
             <option value="">{tr('kpim.none_obj')}</option>
             {objectives.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
           </select>
@@ -512,7 +525,15 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
   const importedObjWeight = Math.round(preview.objectives
     .filter((o) => o.is_new)
     .reduce((s, o) => s + (o.weight || 0), 0) * 10) / 10
-  const projectedObjWeight = Math.round((preview.existing_obj_total + importedObjWeight) * 10) / 10
+  const existingByCategory = preview.existing_obj_totals_by_category || { Work: preview.existing_obj_total || 0, Personal: 0 }
+  const projectedObjWeightByCategory = ['Work', 'Personal'].reduce((acc, cat) => {
+    const added = preview.objectives
+      .filter((o) => o.is_new && (o.category || 'Work') === cat)
+      .reduce((s, o) => s + (o.weight || 0), 0)
+    acc[cat] = Math.round(((existingByCategory[cat] || 0) + added) * 10) / 10
+    return acc
+  }, {})
+  const projectedObjWeight = Math.max(projectedObjWeightByCategory.Work || 0, projectedObjWeightByCategory.Personal || 0)
   const totalImportKpis = preview.objectives.reduce((s, o) => s + (o.kpis?.length || 0), 0)
 
   // Kiểm tra có thay đổi so với ban đầu không
@@ -551,6 +572,7 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
         name: o.name,
         description: '',
         weight: readWeight(objKey(o.name), o.weight || 0),
+        category: o.category || 'Work',
       }))
     const allKpis = preview.objectives.flatMap((o) =>
       o.kpis.map((k) => ({
@@ -562,7 +584,7 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
         weight: readWeight(kpiKey(o.name, k.name), k.weight || 0),
         objective_id: o.is_new ? null : o.objective_id,
         objective_ref: o.is_new ? o.name : null,
-        category: 'Work',
+        category: k.category || o.category || 'Work',
       }))
     )
     return { objectives: newObjectives, kpis: allKpis, weight_changes: [], cycle_id: cycleId ?? null }
@@ -602,17 +624,28 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
     // Client-side real-time validation
     const getW = (key, def) => { const v = parseFloat(weights[key]); return isNaN(v) ? def : v }
 
-    const effectiveNewObjTotal = preview.objectives
-      .filter((o) => o.is_new)
-      .reduce((s, o) => s + getW(objKey(o.name), o.weight || 0), 0)
-    const effectiveObjTotal = preview.existing_obj_total + effectiveNewObjTotal
+    const effectiveObjTotalsByCategory = ['Work', 'Personal'].reduce((acc, cat) => {
+      const effectiveNewObjTotal = preview.objectives
+        .filter((o) => o.is_new && (o.category || 'Work') === cat)
+        .reduce((s, o) => s + getW(objKey(o.name), o.weight || 0), 0)
+      acc[cat] = (existingByCategory[cat] || 0) + effectiveNewObjTotal
+      return acc
+    }, {})
+    const effectiveObjTotal = Math.max(
+      effectiveObjTotalsByCategory.Work || 0,
+      effectiveObjTotalsByCategory.Personal || 0,
+    )
 
     const getKpiTotal = (o) =>
       o.existing_kpi_total + o.kpis.reduce((s, k) => s + getW(kpiKey(o.name, k.name), k.weight || 0), 0)
 
     const clientErrors = []
-    if (effectiveObjTotal > 100.001)
-      clientErrors.push(tr('import.wizard.err_obj_total_over', { pct: effectiveObjTotal.toFixed(1) }))
+    Object.entries(effectiveObjTotalsByCategory).forEach(([cat, total]) => {
+      if (total > 100.001) {
+        const label = cat === 'Personal' ? cleanIconLabel(tr('category.personal')) : cleanIconLabel(tr('category.work'))
+        clientErrors.push(`${label}: ${tr('import.wizard.err_obj_total_over', { pct: total.toFixed(1) })}`)
+      }
+    })
     preview.objectives.forEach((o) => {
       const t = getKpiTotal(o)
       if (t > 100.001)
@@ -636,7 +669,7 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
           <div className={`assign-summary ${effectiveObjTotal > 100.001 ? 'danger' : 'ok'}`}>
             <div>
               <span>{tr('import.wizard.existing_objectives')}</span>
-              <b>{preview.existing_obj_total}%</b>
+              <b>{Math.max(existingByCategory.Work || 0, existingByCategory.Personal || 0)}%</b>
             </div>
             <div>
               <span>{tr('import.wizard.after_adjustment')}</span>
@@ -644,7 +677,7 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
             </div>
             <div>
               <span>{tr('import.wizard.remaining_allocation')}</span>
-              <b>{Math.max(0, Math.round((100 - preview.existing_obj_total) * 10) / 10)}%</b>
+              <b>{Math.max(0, Math.round((100 - Math.max(existingByCategory.Work || 0, existingByCategory.Personal || 0)) * 10) / 10)}%</b>
             </div>
           </div>
 
@@ -673,10 +706,13 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
                 </div>
               ))}
               <button className="btn small ghost" onClick={() => {
-                const remaining = Math.max(0, 100 - preview.existing_obj_total)
-                const each = newObjs.length > 0 ? Math.floor(remaining / newObjs.length) : 0
                 const upd = {}
-                newObjs.forEach((o) => { upd[objKey(o.name)] = String(each) })
+                ;['Work', 'Personal'].forEach((cat) => {
+                  const catObjs = newObjs.filter((o) => (o.category || 'Work') === cat)
+                  const remaining = Math.max(0, 100 - (existingByCategory[cat] || 0))
+                  const each = catObjs.length > 0 ? Math.floor(remaining / catObjs.length) : 0
+                  catObjs.forEach((o) => { upd[objKey(o.name)] = String(each) })
+                })
                 setWeights((w) => ({ ...w, ...upd }))
               }}>{tr('import.wizard.even_split')}</button>
               <WeightHint total={effectiveObjTotal} label={tr('wh.obj_total')} tr={tr} />
@@ -734,8 +770,17 @@ function ImportWizard({ preview, objectives, kpis, cycleId, onClose, onSaved, tr
   if (step === 'confirm') {
     const getW = (key, def) => { const v = parseFloat(weights[key]); return isNaN(v) ? def : v }
     const newObjs = preview.objectives.filter((o) => o.is_new)
-    const effectiveNewObjTotal = newObjs.reduce((s, o) => s + getW(objKey(o.name), o.weight || 0), 0)
-    const effectiveObjTotal = preview.existing_obj_total + effectiveNewObjTotal
+    const effectiveObjTotalsByCategory = ['Work', 'Personal'].reduce((acc, cat) => {
+      const added = newObjs
+        .filter((o) => (o.category || 'Work') === cat)
+        .reduce((s, o) => s + getW(objKey(o.name), o.weight || 0), 0)
+      acc[cat] = (existingByCategory[cat] || 0) + added
+      return acc
+    }, {})
+    const effectiveObjTotal = Math.max(
+      effectiveObjTotalsByCategory.Work || 0,
+      effectiveObjTotalsByCategory.Personal || 0,
+    )
     const totalKpis = preview.objectives.reduce((s, o) => s + o.kpis.length, 0)
 
     return (
@@ -1014,13 +1059,18 @@ export default function Kpis() {
 
   const isSetupComplete = (k, o) => {
     if (k.length < 2 || o.length === 0) return false
-    const objWeight = Math.round(o.reduce((s, item) => s + (item.weight || 0), 0) * 10) / 10
-    if (objWeight !== 100) return false
-    return o.every((obj) => {
-      const group = k.filter((item) => item.objective_id === obj.id)
-      if (group.length === 0) return false
-      const total = Math.round(group.reduce((s, item) => s + (item.weight || 0), 0) * 10) / 10
-      return total === 100
+    return ['Work', 'Personal'].some((cat) => {
+      const catObjectives = o.filter((item) => (item.category || 'Work') === cat)
+      const catKpis = k.filter((item) => (item.category || 'Work') === cat)
+      if (catKpis.length < 2 || catObjectives.length === 0) return false
+      const objWeight = Math.round(catObjectives.reduce((s, item) => s + (item.weight || 0), 0) * 10) / 10
+      if (objWeight !== 100) return false
+      return catObjectives.every((obj) => {
+        const group = catKpis.filter((item) => item.objective_id === obj.id)
+        if (group.length === 0) return false
+        const total = Math.round(group.reduce((s, item) => s + (item.weight || 0), 0) * 10) / 10
+        return total === 100
+      })
     })
   }
 
@@ -1046,7 +1096,9 @@ export default function Kpis() {
       .catch((e) => setError(e.message))
   useEffect(() => { load() }, [activeCycleId])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  const totalObjWeight = Math.round(objectives.reduce((s, o) => s + (o.weight || 0), 0) * 10) / 10
+  const activeCategory = mode === 'personal' ? 'Personal' : 'Work'
+  const activeObjectives = objectives.filter((o) => (o.category || 'Work') === activeCategory)
+  const totalObjWeight = Math.round(activeObjectives.reduce((s, o) => s + (o.weight || 0), 0) * 10) / 10
 
   // tong trong so KPI trong nhom dich cua form tao moi
   const formObjId = form.objective_id === '' ? null : Number(form.objective_id)
@@ -1055,7 +1107,10 @@ export default function Kpis() {
   const formTargetValue = num(form.target_value)
   const formTargetValid = !isNaN(formTargetValue) && formTargetValue > 0
   const formGroupTotal =
-    kpis.filter((k) => (k.objective_id ?? null) === formObjId).reduce((s, k) => s + (k.weight || 0), 0) + formW
+    kpis
+      .filter((k) => (k.objective_id ?? null) === formObjId)
+      .filter((k) => formObjId !== null || (k.category || 'Work') === form.category)
+      .reduce((s, k) => s + (k.weight || 0), 0) + formW
 
   const submit = async (e) => {
     e.preventDefault()
@@ -1179,7 +1234,8 @@ export default function Kpis() {
       setError(tr('cycle.locked_add_error'))
       return
     }
-    setForm({ ...EMPTY, objective_id: objId ? String(objId) : '' })
+    const obj = objectives.find((o) => o.id === objId)
+    setForm({ ...EMPTY, objective_id: objId ? String(objId) : '', category: obj?.category || activeCategory })
     setShowForm(true)
     setTimeout(() => formAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
   }
@@ -1270,7 +1326,7 @@ export default function Kpis() {
       return
     }
     try {
-      await api.balanceWeights(balancePending.objId)
+      await api.balanceWeights(balancePending.objId, balancePending.category || activeCategory)
       load()
     } catch (e) { setError(e.message) } finally { setBalancePending(null) }
   }
@@ -1298,10 +1354,11 @@ export default function Kpis() {
     }
   }
 
-  // loc theo che do hien thi toan cuc (Work/Personal); focus & all hien tat ca tren trang nay
+  // loc theo che do hien thi toan cuc (Work/Personal)
   const visibleKpis = kpis.filter((k) => matchView(mode, k.category))
+  const visibleObjectives = objectives.filter((o) => (o.category || 'Work') === activeCategory)
   const groups = [
-    ...objectives.map((o) => ({ obj: o, kpis: visibleKpis.filter((k) => k.objective_id === o.id) })),
+    ...visibleObjectives.map((o) => ({ obj: o, kpis: visibleKpis.filter((k) => k.objective_id === o.id) })),
     { obj: null, kpis: visibleKpis.filter((k) => !k.objective_id) },
   ].filter((g) => g.obj || g.kpis.length > 0)
 
@@ -1513,7 +1570,11 @@ export default function Kpis() {
             onChange={(e) => setForm({ ...form, target: e.target.value })} />
           <div className="form-row">
             <label>{tr('kpis.form_objective')}
-              <select value={form.objective_id} onChange={(e) => setForm({ ...form, objective_id: e.target.value })}>
+              <select value={form.objective_id} onChange={(e) => {
+                const value = e.target.value
+                const obj = objectives.find((o) => String(o.id) === String(value))
+                setForm({ ...form, objective_id: value, category: obj?.category || form.category })
+              }}>
                 <option value="">{tr('kpis.form_none')}</option>
                 {objectives.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
               </select>
@@ -1666,7 +1727,7 @@ export default function Kpis() {
       {groups.map(({ obj, kpis: groupKpis }) => {
         const sumW = Math.round(groupKpis.reduce((s, k) => s + (k.weight || 0), 0) * 10) / 10
         const sumCls = sumW === 100 ? 'green' : sumW > 100 ? 'red' : 'yellow'
-        const balance = () => setBalancePending({ objId: obj?.id ?? null, count: groupKpis.length })
+        const balance = () => setBalancePending({ objId: obj?.id ?? null, count: groupKpis.length, category: obj?.category || activeCategory })
         const objId = obj?.id ?? 'none'
         const { items: paginatedKpis, page, totalPages } = paginate(groupKpis, objId)
         const needsPagination = groupKpis.length > ITEMS_PER_PAGE

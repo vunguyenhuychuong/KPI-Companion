@@ -190,21 +190,25 @@ def _clean_kpi_id(value, valid_ids: set[int]) -> int | None:
 def dashboard(
     current_user: CurrentUser,
     cycle_id: int | None = Query(None),
+    category: str = Query("Work"),
     db: Session = Depends(get_db),
 ):
     _validate_cycle(db, cycle_id, current_user.id)
-    return kpi_service.build_dashboard(db, user_id=current_user.id, cycle_id=cycle_id)
+    cat = None if category == "all" else schemas._normalize_category(category)
+    return kpi_service.build_dashboard(db, user_id=current_user.id, cycle_id=cycle_id, category=cat)
 
 
 @router.post("/dashboard-insight", response_model=schemas.DashboardInsightOut)
 def dashboard_insight(
     current_user: CurrentUser,
     cycle_id: int | None = Query(None),
+    category: str = Query("Work"),
     db: Session = Depends(get_db),
 ):
     """Sinh AI Insight cho Dashboard bằng LLM, chỉ đọc dữ liệu, không ghi DB."""
     _validate_cycle(db, cycle_id, current_user.id)
-    dash = kpi_service.build_dashboard(db, user_id=current_user.id, cycle_id=cycle_id)
+    cat = None if category == "all" else schemas._normalize_category(category)
+    dash = kpi_service.build_dashboard(db, user_id=current_user.id, cycle_id=cycle_id, category=cat)
     payload = _dashboard_insight_payload(dash)
     signature = _dashboard_signature(payload)
     valid_ids = {item["id"] for item in payload["kpis"]}

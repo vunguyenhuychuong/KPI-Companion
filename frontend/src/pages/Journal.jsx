@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, STATUS_COLORS } from '../api'
 import { useLang } from '../LangContext'
+import { useCycle } from '../CycleContext'
 import { ConfirmModal } from '../components/Modal'
 import { useToast } from '../components/Toast'
 import { UiIcon, cleanIconLabel } from '../components/UiIcon'
@@ -25,11 +26,13 @@ function Pagination({ page, pageSize, total, onPage, tr }) {
 
 function EvidenceTab() {
   const { tr, statusLabels, sourceLabels } = useLang()
+  const { activeCycleId } = useCycle()
   const toast = useToast()
   const SL = statusLabels()
   const SRC = sourceLabels()
 
   const [items, setItems] = useState([])
+  const [kpis, setKpis] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState('')
@@ -39,6 +42,20 @@ function EvidenceTab() {
   const [dateTo, setDateTo] = useState('')
   const [deletePending, setDeletePending] = useState(null)
   const [error, setError] = useState('')
+  const [savingManual, setSavingManual] = useState(false)
+  const [manual, setManual] = useState(() => ({
+    kpi_id: '',
+    title: '',
+    detail: '',
+    status: 'da_lam',
+    value_delta: '',
+    work_date: new Date().toISOString().slice(0, 10),
+  }))
+
+  const selectedKpi = kpis.find((k) => String(k.id) === String(manual.kpi_id))
+  const selectedProgress = selectedKpi
+    ? `${selectedKpi.current_value}/${selectedKpi.target_value} ${selectedKpi.unit || ''}`.trim()
+    : ''
 
   const load = () => {
     const p = new URLSearchParams({ page, page_size: PAGE_SIZE })
@@ -53,6 +70,11 @@ function EvidenceTab() {
   }
 
   useEffect(() => { load() }, [page, status, source, search, dateFrom, dateTo]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    api.listKpis(activeCycleId)
+      .then((res) => setKpis(res || []))
+      .catch((e) => setError(e.message))
+  }, [activeCycleId])
 
   const resetPage = (fn) => {
     setPage(1)
@@ -69,9 +91,112 @@ function EvidenceTab() {
     } catch (e) { setError(e.message) }
   }
 
+  const saveManual = async () => {
+    if (!manual.kpi_id) {
+      setError(tr('journal.manual_kpi_required'))
+      return
+    }
+    if (!manual.title.trim()) {
+      setError(tr('journal.manual_title_required'))
+      return
+    }
+    setSavingManual(true)
+    setError('')
+    try {
+      await api.confirmItems([{
+        title: manual.title.trim(),
+        detail: manual.detail.trim(),
+        status: manual.status,
+        kpi_id: Number(manual.kpi_id),
+        kpi_name: selectedKpi?.name || '',
+        kpi_unit: selectedKpi?.unit || '',
+        value_delta: Number(manual.value_delta) || 0,
+        source: 'manual',
+        source_ref: tr('journal.manual_title'),
+        work_date: manual.work_date || null,
+      }])
+      toast.success(tr('journal.manual_success'))
+      setManual({
+        kpi_id: '',
+        title: '',
+        detail: '',
+        status: 'da_lam',
+        value_delta: '',
+        work_date: new Date().toISOString().slice(0, 10),
+      })
+      setPage(1)
+      load()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSavingManual(false)
+    }
+  }
+
   return (
     <>
       {error && <div className="error-text"><UiIcon name="warning" /> {error}</div>}
+      <section className="card journal-manual-card">
+        <div className="journal-manual-head">
+          <div>
+            <h3 className="icon-heading"><UiIcon name="edit" /> {cleanIconLabel(tr('journal.manual_title'))}</h3>
+            <p>{tr('journal.manual_subtitle')}</p>
+          </div>
+          <span className="source-badge">{SRC.manual || tr('source.manual')}</span>
+        </div>
+        <div className="journal-manual-grid">
+          <label className="journal-field span-2">{tr('journal.manual_kpi')}
+            <select value={manual.kpi_id} onChange={(e) => setManual({ ...manual, kpi_id: e.target.value })}>
+              <option value="">{tr('journal.manual_kpi_placeholder')}</option>
+              {kpis.map((k) => (
+                <option key={k.id} value={k.id}>{k.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="journal-field span-2">{tr('journal.manual_title_label')}
+            <input
+              value={manual.title}
+              placeholder={tr('journal.manual_title_placeholder')}
+              onChange={(e) => setManual({ ...manual, title: e.target.value })}
+            />
+          </label>
+          <label className="journal-field">{tr('journal.filter_status')}
+            <select value={manual.status} onChange={(e) => setManual({ ...manual, status: e.target.value })}>
+              {Object.entries(SL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </label>
+          <label className="journal-field">{tr('journal.manual_delta')}{selectedKpi?.unit ? ` (${selectedKpi.unit})` : ''}
+            <input
+              type="number"
+              step="any"
+              value={manual.value_delta}
+              placeholder="0"
+              onChange={(e) => setManual({ ...manual, value_delta: e.target.value })}
+            />
+          </label>
+          <label className="journal-field">{tr('journal.manual_date')}
+            <input type="date" value={manual.work_date} onChange={(e) => setManual({ ...manual, work_date: e.target.value })} />
+          </label>
+          <div className="journal-manual-kpi">
+            <span>{tr('journal.manual_selected')}</span>
+            <b>{selectedKpi ? selectedProgress : tr('journal.manual_no_kpi')}</b>
+          </div>
+          <label className="journal-field full">{tr('journal.manual_detail')}
+            <textarea
+              rows={2}
+              value={manual.detail}
+              placeholder={tr('journal.manual_detail_placeholder')}
+              onChange={(e) => setManual({ ...manual, detail: e.target.value })}
+            />
+          </label>
+        </div>
+        <div className="journal-manual-footer">
+          <span>{selectedKpi ? tr('journal.manual_delta_hint', { unit: selectedKpi.unit || '' }) : tr('journal.manual_pick_hint')}</span>
+          <button className="btn primary" onClick={saveManual} disabled={savingManual}>
+            <UiIcon name="check" />{tr('journal.manual_save')}
+          </button>
+        </div>
+      </section>
       <div className="journal-filter-row evidence-filters">
         <label>{tr('journal.filter_status')}
           <select value={status} onChange={(e) => resetPage(() => setStatus(e.target.value))}>

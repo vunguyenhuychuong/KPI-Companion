@@ -143,6 +143,8 @@
 }
 [data-theme="dark"] input[type="date"] { color-scheme: dark; }
 
+html { overflow-x: hidden; }
+
 body {
   font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif,
     'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji';
@@ -1061,6 +1063,114 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 .journal-filter-row .journal-search input { min-width: 0; }
 .journal-filter-row .muted { justify-self: end; padding-bottom: 9px; white-space: nowrap; }
 .journal-page .card { overflow-x: auto; }
+.journal-page .journal-manual-card {
+  overflow: visible;
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
+}
+.journal-manual-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.journal-manual-head h3 { margin-bottom: 5px; }
+.journal-manual-head p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.journal-manual-head .source-badge {
+  justify-self: auto;
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  color: var(--primary-dark);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.journal-manual-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 12px;
+  align-items: end;
+}
+.journal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.journal-field.span-2 { grid-column: span 2; }
+.journal-field.full { grid-column: 1 / -1; }
+.journal-field input,
+.journal-field select,
+.journal-field textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 11px;
+  font: inherit;
+  font-size: 13px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  color: var(--text);
+}
+.journal-field textarea {
+  min-height: 62px;
+  resize: vertical;
+  line-height: 1.45;
+}
+.journal-field input:focus,
+.journal-field select:focus,
+.journal-field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+.journal-manual-kpi {
+  min-height: 59px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+}
+.journal-manual-kpi span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.journal-manual-kpi b {
+  color: var(--text);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.journal-manual-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.journal-manual-footer span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.journal-manual-footer .btn {
+  flex-shrink: 0;
+  justify-content: center;
+}
 
 /* KPI card: grid 2 cot â€” noi dung trai, thanh icon PHAI co dinh, khong bao gio rot dong */
 .kpi-card-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: start; }
@@ -1540,7 +1650,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 .coach-causes em { color: #6b7194; }
 .coach-actions-title { display: block; margin: 12px 0 2px; font-size: 13px; }
 
-/* ===== Category badge + View mode switch (Work/Personal/Focus) ===== */
+/* ===== Category badge + View mode switch (Work/Personal) ===== */
 .cat-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 99px; white-space: nowrap; }
 .cat-badge .ui-icon { width: 12px; height: 12px; stroke-width: 2.2; }
 .cat-badge.work { background: var(--grad-soft); color: var(--primary-dark); }
@@ -2161,7 +2271,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 @media (max-width: 1024px) {
   :root { --header-h: 50px; }
   .layout { flex-direction: column; }
-  .sidebar { width: 100%; height: auto; position: sticky; top: 0; z-index: 50; }
+  .sidebar { width: 100%; height: auto; position: sticky; top: 0; z-index: 50; overflow-x: hidden; }
   .sidebar.collapsed { width: 100%; }
   .sidebar.collapsed .logo { padding: 10px 14px; justify-content: flex-start; flex-direction: row; gap: 11px; }
   .sidebar.collapsed .logo-text,
@@ -2169,7 +2279,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   .sidebar.collapsed nav { align-items: stretch; padding: 0 8px 8px; }
   .sidebar.collapsed nav a { width: auto; height: auto; justify-content: flex-start; padding: 7px 11px; }
   .logo { padding: 10px 14px; border-bottom: none; }
-  .sidebar nav { flex-direction: row; padding: 0 8px 8px; overflow-x: auto; gap: 2px; }
+  .sidebar nav { flex-direction: row; width: 100%; min-width: 0; box-sizing: border-box; padding: 0 8px 8px; overflow-x: auto; gap: 2px; }
   .sidebar nav a { white-space: nowrap; padding: 7px 11px; animation: none; }
   .sidebar-footer { display: none; }
   .app-header { position: static; padding: 0 16px; border-top: none; }
@@ -2195,6 +2305,8 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   .journal-page .form-row,
   .journal-filter-row.evidence-filters,
   .journal-filter-row.history-filters { grid-template-columns: 1fr 1fr; }
+  .journal-manual-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .journal-manual-kpi { min-height: 58px; }
   .journal-page .form-row .muted,
   .journal-filter-row .muted { justify-self: start; padding-bottom: 0; }
 }
@@ -2237,11 +2349,25 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   .composer-attachment-name { max-width: 150px; }
   .msg-attachment { max-width: 100%; }
   .chat-input .btn { justify-content: center; }
+  .agent-inbox-panel {
+    position: fixed;
+    top: calc(var(--header-h) + 8px);
+    left: 10px;
+    right: 10px;
+    width: auto;
+    max-height: calc(100dvh - var(--header-h) - 20px);
+  }
   .proposal-controls { grid-template-columns: 1fr; }
   .source-badge { justify-self: start; }
   .journal-page .form-row,
   .journal-filter-row.evidence-filters,
   .journal-filter-row.history-filters { grid-template-columns: 1fr; }
+  .journal-manual-head,
+  .journal-manual-footer { flex-direction: column; align-items: stretch; }
+  .journal-manual-grid { grid-template-columns: 1fr; }
+  .journal-field.span-2,
+  .journal-field.full { grid-column: 1; }
+  .journal-manual-footer .btn { width: 100%; }
   .onboarding-modal { max-height: 92vh; overflow-y: auto; }
   .onboarding-progress { padding: 12px 14px; }
   .onboarding-step span { display: none; }

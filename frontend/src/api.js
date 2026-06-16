@@ -113,8 +113,8 @@ export const api = {
   updateKpi: (id, data) => request(`/kpis/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteKpi: (id, reason) => request(`/kpis/${id}?reason=${encodeURIComponent(reason || '')}`, { method: 'DELETE' }),
   decomposeKpi: (id) => request(`/kpis/${id}/decompose`, { method: 'POST' }, 120000),
-  balanceWeights: (objectiveId) =>
-      request('/kpis/balance', { method: 'POST', body: JSON.stringify({ objective_id: objectiveId }) }),
+  balanceWeights: (objectiveId, category = 'Work') =>
+      request('/kpis/balance', { method: 'POST', body: JSON.stringify({ objective_id: objectiveId, category }) }),
   confirmKpiProposal: (payload) =>
       request('/kpis/confirm-proposal', { method: 'POST', body: JSON.stringify(payload) }),
   analyzeConflicts: (cycleId) => request('/kpis/conflicts/analyze' + (cycleId ? `?cycle_id=${cycleId}` : ''), { method: 'POST' }, 120000),
@@ -187,15 +187,17 @@ export const api = {
     return data
   },
 
-  validateKpiWeights: (objectiveId, newWeight, excludeId) => {
+  validateKpiWeights: (objectiveId, newWeight, excludeId, category = 'Work') => {
     const p = new URLSearchParams({ new_weight: newWeight ?? 0 })
     if (objectiveId != null) p.set('objective_id', objectiveId)
+    if (category) p.set('category', category)
     if (excludeId != null) p.set('exclude_id', excludeId)
     return request(`/kpis/validate-weights?${p}`)
   },
-  validateObjectiveWeights: (cycleId, newWeight, excludeId) => {
+  validateObjectiveWeights: (cycleId, newWeight, excludeId, category = 'Work') => {
     const p = new URLSearchParams({ new_weight: newWeight ?? 0 })
     if (cycleId != null) p.set('cycle_id', cycleId)
+    if (category) p.set('category', category)
     if (excludeId != null) p.set('exclude_id', excludeId)
     return request(`/objectives/validate-weights?${p}`, { method: 'POST' })
   },
@@ -228,7 +230,13 @@ export const api = {
   sendWeeklySummary: () => request('/notification-settings/send-weekly-summary', { method: 'POST', body: '{}' }),
 
   // Objectives
-  listObjectives: (cycleId) => request('/objectives' + (cycleId ? `?cycle_id=${cycleId}` : '')),
+  listObjectives: (cycleId, category) => {
+    const p = new URLSearchParams()
+    if (cycleId) p.set('cycle_id', cycleId)
+    if (category) p.set('category', category)
+    const qs = p.toString()
+    return request('/objectives' + (qs ? `?${qs}` : ''))
+  },
   createObjective: (data) => request('/objectives', { method: 'POST', body: JSON.stringify(data) }),
   updateObjective: (id, data) => request(`/objectives/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteObjective: (id) => request(`/objectives/${id}`, { method: 'DELETE' }),
@@ -287,9 +295,20 @@ export const api = {
   },
 
   // Reports
-  dashboard: (cycleId) => request('/reports/dashboard' + (cycleId ? `?cycle_id=${cycleId}` : '')),
-  dashboardInsight: (cycleId) =>
-      request('/reports/dashboard-insight' + (cycleId ? `?cycle_id=${cycleId}` : ''), { method: 'POST', body: '{}' }, 90000),
+  dashboard: (cycleId, category = 'Work') => {
+    const p = new URLSearchParams()
+    if (cycleId) p.set('cycle_id', cycleId)
+    if (category) p.set('category', category)
+    const qs = p.toString()
+    return request('/reports/dashboard' + (qs ? `?${qs}` : ''))
+  },
+  dashboardInsight: (cycleId, category = 'Work') => {
+    const p = new URLSearchParams()
+    if (cycleId) p.set('cycle_id', cycleId)
+    if (category) p.set('category', category)
+    const qs = p.toString()
+    return request('/reports/dashboard-insight' + (qs ? `?${qs}` : ''), { method: 'POST', body: '{}' }, 90000)
+  },
   weeklyReport: () => request('/reports/weekly'),
   generateReport: (periodType, periodLabel = null) =>
       request('/reports/generate', {
@@ -375,4 +394,5 @@ export const SOURCE_LABELS = {
   notion: '📝 Notion',
   slack: '💬 Slack',
   outlook: '📧 Outlook',
+  manual: '✍️ Manual',
 }

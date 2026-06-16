@@ -116,8 +116,19 @@ def update_status(
     if value_delta and item.kpi_id:
         kpi = db.get(models.KPI, item.kpi_id)
         if kpi:
-            kpi.current_value = max(0.0, round(kpi.current_value + value_delta, 2))
+            old_value = kpi.current_value
+            new_value = max(0.0, round(kpi.current_value + value_delta, 2))
+            kpi.current_value = new_value
             item.progress_delta = round((item.progress_delta or 0) + value_delta, 2)
+            db.add(
+                models.KPIChangeLog(
+                    kpi_id=kpi.id,
+                    field="current_value",
+                    old_value=str(old_value),
+                    new_value=str(new_value),
+                    reason=f'Hoàn thành đầu việc "{item.title}"',
+                )
+            )
     db.commit()
     db.refresh(item)
     return item
@@ -133,6 +144,17 @@ def delete_item(item_id: int, current_user: CurrentUser, db: Session = Depends(g
     if item.kpi_id and item.progress_delta:
         kpi = db.get(models.KPI, item.kpi_id)
         if kpi and kpi.user_id == current_user.id:
-            kpi.current_value = max(0.0, round(kpi.current_value - item.progress_delta, 2))
+            old_value = kpi.current_value
+            new_value = max(0.0, round(kpi.current_value - item.progress_delta, 2))
+            kpi.current_value = new_value
+            db.add(
+                models.KPIChangeLog(
+                    kpi_id=kpi.id,
+                    field="current_value",
+                    old_value=str(old_value),
+                    new_value=str(new_value),
+                    reason=f'Xóa đầu việc "{item.title}"',
+                )
+            )
     db.delete(item)
     db.commit()

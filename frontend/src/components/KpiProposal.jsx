@@ -41,8 +41,13 @@ export default function KpiProposal({ kpis: proposedKpis, newObjectives, weightC
 
   const update = (i, field, value) =>
     setRows(rows.map((r, idx) => (idx === i ? { ...r, [field]: value } : r)))
-  const updateObj = (i, field, value) =>
+  const updateObj = (i, field, value) => {
+    const oldName = newObjs[i]?.name
     setNewObjs(newObjs.map((o, idx) => (idx === i ? { ...o, [field]: value } : o)))
+    if (field === 'category' && oldName) {
+      setRows(rows.map((r) => (r.objective_ref === oldName ? { ...r, category: value } : r)))
+    }
+  }
   const updateChange = (i, value) =>
     setChanges(changes.map((c, idx) => (idx === i ? { ...c, new_weight: normalizeWeightInput(value) } : c)))
   const removeRow = (i) => setRows(rows.filter((_, idx) => idx !== i))
@@ -59,11 +64,13 @@ export default function KpiProposal({ kpis: proposedKpis, newObjectives, weightC
   const onSelect = (i, v) => {
     if (v.startsWith('new:')) {
       const name = v.slice(4)
+      const obj = newObjs.find((o) => o.name === name)
       setRows(rows.map((r, idx) => (idx === i
-        ? { ...r, objective_ref: name, objective_name: name, objective_id: null } : r)))
+        ? { ...r, objective_ref: name, objective_name: name, objective_id: null, category: obj?.category || r.category || 'Work' } : r)))
     } else {
+      const obj = objectives.find((o) => String(o.id) === String(v))
       setRows(rows.map((r, idx) => (idx === i
-        ? { ...r, objective_ref: null, objective_id: v ? Number(v) : null } : r)))
+        ? { ...r, objective_ref: null, objective_id: v ? Number(v) : null, category: obj?.category || r.category || 'Work' } : r)))
     }
   }
 
@@ -121,6 +128,10 @@ export default function KpiProposal({ kpis: proposedKpis, newObjectives, weightC
                   onChange={(value) => updateObj(i, 'weight', normalizeWeightInput(value))} />
                 %
               </label>
+              <select value={o.category || 'Work'} onChange={(e) => updateObj(i, 'category', e.target.value)}>
+                <option value="Work">{cleanIconLabel(tr('category.work'))}</option>
+                <option value="Personal">{cleanIconLabel(tr('category.personal'))}</option>
+              </select>
               <button className="btn-icon" title={tr('kpi_proposal.remove_obj')} onClick={() => removeObj(i)}><UiIcon name="x" /></button>
             </div>
           ))}
@@ -158,6 +169,10 @@ export default function KpiProposal({ kpis: proposedKpis, newObjectives, weightC
               <input type="date" value={r.deadline || ''}
                 onChange={(e) => update(i, 'deadline', e.target.value || null)} />
             </label>
+            <select value={r.category || 'Work'} onChange={(e) => update(i, 'category', e.target.value)}>
+              <option value="Work">{cleanIconLabel(tr('category.work'))}</option>
+              <option value="Personal">{cleanIconLabel(tr('category.personal'))}</option>
+            </select>
             <button className="btn-icon" title={tr('kpi_proposal.remove_kpi')} onClick={() => removeRow(i)}><UiIcon name="x" /></button>
           </div>
         </div>

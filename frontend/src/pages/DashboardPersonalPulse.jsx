@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { useLang } from '../LangContext'
@@ -12,7 +12,6 @@ const HC = { green: '#16a34a', yellow: '#d97706', red: '#dc2626' }
 const CAT = {
   Work: '#2563eb',
   Personal: '#0f766e',
-  Focus: '#b45309',
   Other: '#64748b',
 }
 const WEEK_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
@@ -877,8 +876,6 @@ function categoryOf(kpi) {
 function labelForCategory(key, tr) {
   if (key === 'Work') return cleanIconLabel(tr('category.work'))
   if (key === 'Personal') return cleanIconLabel(tr('category.personal'))
-  if (key === 'Focus') return tr('pulse.category_focus')
-  if (key === 'All') return tr('pulse.category_all')
   return tr('pulse.category_other')
 }
 
@@ -905,12 +902,11 @@ function expectedFor(statuses) {
 function makeCategoryCards(statuses, weeklyActivity, tr) {
   const work = statuses.filter(s => categoryOf(s.kpi) === 'Work')
   const personal = statuses.filter(s => categoryOf(s.kpi) === 'Personal')
-  const focus = statuses.filter(s => s.health !== 'green')
-  return [
+  const metrics = [
     makeCategoryMetric('Work', work, weeklyActivity, tr),
     makeCategoryMetric('Personal', personal, weeklyActivity, tr),
-    makeCategoryMetric('Focus', focus, weeklyActivity, tr),
   ]
+  return metrics.filter(m => m.count > 0 || statuses.length === 0)
 }
 
 function makeCategoryMetric(key, items, weeklyActivity, tr) {
@@ -937,7 +933,7 @@ function makeCategoryMetric(key, items, weeklyActivity, tr) {
 function sparkSeries(score, weeklyActivity = [], seed = 'Work') {
   const recent = (weeklyActivity || []).slice(-6)
   const maxCount = Math.max(1, ...recent.map(w => Number(w.count) || 0))
-  const seedShift = seed === 'Personal' ? 6 : seed === 'Focus' ? -7 : 0
+  const seedShift = seed === 'Personal' ? 6 : 0
   if (!recent.length) {
     return Array.from({ length: 6 }, (_, i) => clamp(score - (5 - i) * 3 + seedShift / 4))
   }
@@ -951,7 +947,6 @@ function sparkSeries(score, weeklyActivity = [], seed = 'Work') {
 
 function buildTrendSeries(metrics, weeklyActivity) {
   return metrics
-    .filter(m => m.key !== 'Focus' || m.count > 0)
     .map(metric => ({
       ...metric,
       series: sparkSeries(metric.score, weeklyActivity, metric.key).slice(-6),
@@ -1217,7 +1212,7 @@ function OverviewView({ data, metrics, insight, activeCategory, setActiveCategor
                 >
                   <span className="pp-card-head">
                     <span>{metric.label}</span>
-                    <span className="pp-card-icon"><UiIcon name={metric.key === 'Focus' ? 'warning' : 'target'} /></span>
+                    <span className="pp-card-icon"><UiIcon name="target" /></span>
                   </span>
                   <span className="pp-card-score">{round(metric.score)}%</span>
                   <span className="pp-card-meta">
@@ -1253,7 +1248,8 @@ function OverviewView({ data, metrics, insight, activeCategory, setActiveCategor
 
 function WeeklyView({ statuses, activeCategory, setActiveCategory, setSelectedStatus, setActiveView, data, tr }) {
   const [suggestions, setSuggestions] = useState({})
-  const tabs = ['All', 'Work', 'Personal', 'Focus']
+  const tabs = ['Work', 'Personal'].filter(cat => statuses.some(s => categoryOf(s.kpi) === cat))
+  const visibleTabs = tabs.length ? tabs : [activeCategory]
   const filtered = filterStatuses(statuses, activeCategory)
   const rows = filtered.slice(0, 8)
   return (
@@ -1263,7 +1259,7 @@ function WeeklyView({ statuses, activeCategory, setActiveCategory, setSelectedSt
         title={tr('pulse.weekly_title')}
         action={
           <div className="pp-chip-row">
-            {tabs.map(tab => (
+            {visibleTabs.map(tab => (
               <button
                 key={tab}
                 type="button"
@@ -1340,8 +1336,7 @@ function WeeklyView({ statuses, activeCategory, setActiveCategory, setSelectedSt
 }
 
 function filterStatuses(statuses, category) {
-  if (!category || category === 'All') return statuses
-  if (category === 'Focus') return statuses.filter(s => s.health !== 'green')
+  if (!category) return statuses
   return statuses.filter(s => categoryOf(s.kpi) === category)
 }
 
@@ -1736,24 +1731,35 @@ function InsightCard({ icon, label, text, color }) {
 export default function DashboardPersonalPulse() {
   const { tr } = useLang()
   const { mode } = useView()
-  const { activeCycleId } = useCycle()
+  const { activeCycleId, cycles, loading: cyclesLoading } = useCycle()
   const toast = useToast()
   const navigate = useNavigate()
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [activeView, setActiveView] = useState('overview')
-  const [activeCategory, setActiveCategory] = useState('All')
+  const [activeCategory, setActiveCategory] = useState('Work')
   const [selectedStatus, setSelectedStatus] = useState(null)
 
-  useEffect(() => {
+  const dashboardCategory = mode === 'personal' ? 'Personal' : 'Work'
+  const load = useCallback(() => {
+    if (cyclesLoading) return
+    if (activeCycleId && cycles.length > 0 && !cycles.some(c => c.id === activeCycleId)) return
     setError('')
-    api.dashboard(activeCycleId)
+    return api.dashboard(activeCycleId, dashboardCategory)
       .then(res => {
         setData(res)
         setSelectedStatus(null)
       })
       .catch(e => setError(e.message))
-  }, [activeCycleId])
+  }, [activeCycleId, dashboardCategory, cycles, cyclesLoading])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  useEffect(() => {
+    setActiveCategory(dashboardCategory)
+  }, [dashboardCategory])
 
   const statuses = useMemo(() => {
     const all = data?.kpi_statuses || []

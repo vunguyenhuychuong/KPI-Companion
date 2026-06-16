@@ -7,7 +7,7 @@ const MODE_ICONS = {
   personal: 'user',
 }
 
-// Global context filter: All / Work / Personal / Focus.
+// Global context filter: Work / Personal.
 export default function ViewModeSwitch() {
   const { mode, setMode } = useView()
   const { tr } = useLang()

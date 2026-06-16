@@ -63,6 +63,7 @@ def _check_group_weight(
         db: Session,
         new_weight: float,
         objective_id: int | None,
+        category: str | None = None,
         exclude_id: int | None = None,
         user_id: int = 1,
 ):
@@ -76,6 +77,8 @@ def _check_group_weight(
         if objective_id is not None
         else models.KPI.objective_id.is_(None)
     )
+    if objective_id is None:
+        q = q.where(models.KPI.category == schemas._normalize_category(category))
     others = db.scalars(q)
     total = sum(k.weight for k in others if k.id != exclude_id) + new_weight
     if total > 100.001:
@@ -96,6 +99,7 @@ def validate_kpi_weights(
     current_user: CurrentUser,
     db: Session = Depends(get_db),
     objective_id: int | None = Query(None),
+    category: str | None = Query("Work"),
     new_weight: float = Query(0.0),
     exclude_id: int | None = Query(None),
 ):
@@ -109,6 +113,8 @@ def validate_kpi_weights(
         if objective_id is not None
         else models.KPI.objective_id.is_(None)
     )
+    if objective_id is None:
+        q = q.where(models.KPI.category == schemas._normalize_category(category))
     current_total = sum(k.weight for k in db.scalars(q) if k.id != exclude_id)
     projected_total = current_total + new_weight
     valid = projected_total <= 100.001
@@ -158,13 +164,69 @@ def list_kpis(
 @router.post("", response_model=schemas.KPIOut)
 def create_kpi(payload: schemas.KPICreate, current_user: CurrentUser, db: Session = Depends(get_db)):
     _check_objective_cycle_not_locked(db, payload.objective_id, current_user.id)
-    _check_group_weight(db, payload.weight, payload.objective_id, user_id=current_user.id)
+    _check_group_weight(db, payload.weight, payload.objective_id, category=payload.category, user_id=current_user.id)
     kpi = models.KPI(user_id=current_user.id, **payload.model_dump())
     db.add(kpi)
     db.commit()
     db.refresh(kpi)
     autonomous_agent.run_category_guard_for_kpis(db, current_user.id, [kpi])
     return kpi
+
+
+def _apply_ai_categories_to_appraisal(appraisal: dict) -> dict[str, dict]:
+    candidates: list[dict] = []
+    for oi, obj in enumerate(appraisal.get("objectives") or []):
+        child_names = ", ".join(k.get("name", "") for k in obj.get("kpis") or [])
+        candidates.append({
+            "local_id": f"obj:{oi}",
+            "type": "objective",
+            "objective_name": obj.get("name") or "",
+            "objective_description": obj.get("description") or "",
+            "child_kpis": child_names,
+            "provided_category": obj.get("category") or "Work",
+        })
+        for ki, kpi in enumerate(obj.get("kpis") or []):
+            candidates.append({
+                "local_id": f"kpi:{oi}:{ki}",
+                "type": "kpi",
+                "objective_name": obj.get("name") or "",
+                "kpi_name": kpi.get("name") or "",
+                "kpi_description": kpi.get("note") or kpi.get("description") or "",
+                "target_text": kpi.get("target") or "",
+                "provided_category": kpi.get("category") or obj.get("category") or "Work",
+            })
+    assignments = autonomous_agent.classify_category_candidates(candidates)
+    for oi, obj in enumerate(appraisal.get("objectives") or []):
+        obj_key = f"obj:{oi}"
+        obj_assignment = assignments.get(obj_key, {})
+        obj["category"] = schemas._normalize_category(obj_assignment.get("category"))
+        obj["category_confidence"] = float(obj_assignment.get("confidence") or 0.0)
+        obj["category_reason"] = str(obj_assignment.get("reason") or "")
+        for ki, kpi in enumerate(obj.get("kpis") or []):
+            kpi_key = f"kpi:{oi}:{ki}"
+            k_assignment = assignments.get(kpi_key, {})
+            kpi["category"] = schemas._normalize_category(k_assignment.get("category") or obj["category"])
+            kpi["category_confidence"] = float(k_assignment.get("confidence") or 0.0)
+            kpi["category_reason"] = str(k_assignment.get("reason") or "")
+    return assignments
+
+
+def _apply_ai_categories_to_flat(parsed: list[dict]) -> None:
+    candidates = [
+        {
+            "local_id": f"kpi:{i}",
+            "type": "kpi",
+            "kpi_name": p.get("name") or "",
+            "kpi_description": p.get("description") or p.get("target") or "",
+            "target_text": p.get("target") or "",
+            "provided_category": p.get("category") or "Work",
+        }
+        for i, p in enumerate(parsed)
+    ]
+    assignments = autonomous_agent.classify_category_candidates(candidates)
+    for i, p in enumerate(parsed):
+        assignment = assignments.get(f"kpi:{i}", {})
+        p["category"] = schemas._normalize_category(assignment.get("category") or p.get("category"))
 
 
 @router.post("/import/preview", response_model=schemas.ImportPreviewOut)
@@ -190,6 +252,8 @@ async def preview_import(
             detail={"type": "not_appraisal", "message": "File không phải định dạng Performance Appraisal."},
         )
 
+    _apply_ai_categories_to_appraisal(appraisal)
+
     if cycle_id is not None:
         _check_cycle_not_locked(db, cycle_id, current_user.id)
 
@@ -201,20 +265,25 @@ async def preview_import(
         objective_query = objective_query.where(models.Objective.cycle_id == cycle_id)
     existing_objectives = list(db.scalars(objective_query))
     existing_by_name = {o.name.lower().strip(): o for o in existing_objectives}
-    existing_obj_total = sum(o.weight or 0 for o in existing_objectives)
+    existing_obj_totals_by_category = {
+        cat: sum((o.weight or 0) for o in existing_objectives if (o.category or "Work") == cat)
+        for cat in schemas.KPI_CATEGORIES
+    }
+    existing_obj_total = existing_obj_totals_by_category.get("Work", 0.0)
 
     messages: list[schemas.ImportValidationMessage] = []
     preview_objs: list[schemas.ImportPreviewObjective] = []
-    new_obj_total = 0.0
+    new_obj_totals_by_category = {cat: 0.0 for cat in schemas.KPI_CATEGORIES}
 
     for o in appraisal["objectives"]:
         obj_key = o["name"].lower().strip()
         is_new = obj_key not in existing_by_name
         obj_weight = float(o.get("weight") or 0)
         existing_obj = existing_by_name.get(obj_key)
+        obj_category = existing_obj.category if existing_obj else schemas._normalize_category(o.get("category"))
 
         if is_new:
-            new_obj_total += obj_weight
+            new_obj_totals_by_category[obj_category] += obj_weight
             messages.append(schemas.ImportValidationMessage(
                 code="RULE-06",
                 level="info",
@@ -250,7 +319,13 @@ async def preview_import(
                     objective_name=o["name"],
                 ))
             kpis.append(schemas.ImportPreviewKpi(
-                name=k["name"], weight=w, has_weight=has_w, note=k.get("note") or ""
+                name=k["name"],
+                weight=w,
+                has_weight=has_w,
+                note=k.get("note") or "",
+                category=schemas._normalize_category(k.get("category") or obj_category),
+                category_confidence=float(k.get("category_confidence") or 0.0),
+                category_reason=str(k.get("category_reason") or ""),
             ))
 
         # RULE-02 / RULE-04: kiem tra tong KPI trong muc tieu
@@ -273,6 +348,9 @@ async def preview_import(
         preview_objs.append(schemas.ImportPreviewObjective(
             name=o["name"],
             weight=obj_weight,
+            category=obj_category,
+            category_confidence=float(o.get("category_confidence") or 0.0),
+            category_reason=str(o.get("category_reason") or ""),
             is_new=is_new,
             objective_id=existing_obj.id if existing_obj else None,
             kpis=kpis,
@@ -280,27 +358,33 @@ async def preview_import(
             existing_kpi_total=existing_kpi_total,
         ))
 
-    # RULE-01 / RULE-03: kiem tra tong trong so muc tieu (Lop 1)
-    projected_obj_total = existing_obj_total + new_obj_total
-    if projected_obj_total > 100.001:
-        messages.insert(0, schemas.ImportValidationMessage(
-            code="RULE-01",
-            level="error",
-            message=(
-                f"Tổng trọng số mục tiêu sau import = {projected_obj_total:.0f}% — vượt 100% "
-                f"(hiện có {existing_obj_total:.0f}%, file thêm {new_obj_total:.0f}%)"
-            ),
-        ))
-    elif projected_obj_total < 99.999:
-        remaining = round(100 - projected_obj_total, 1)
-        messages.append(schemas.ImportValidationMessage(
-            code="RULE-03",
-            level="warning",
-            message=(
-                f"Tổng trọng số mục tiêu sau import = {projected_obj_total:.0f}% — "
-                f"còn thiếu {remaining}%. Bạn có thể phân bổ phần còn lại sau."
-            ),
-        ))
+    # RULE-01 / RULE-03: kiem tra tong trong so muc tieu (Lop 1) rieng Work/Personal
+    for cat in ("Work", "Personal"):
+        added = new_obj_totals_by_category.get(cat, 0.0)
+        if added <= 0:
+            continue
+        existing_total = existing_obj_totals_by_category.get(cat, 0.0)
+        projected_obj_total = existing_total + added
+        label = "Công việc" if cat == "Work" else "Cá nhân"
+        if projected_obj_total > 100.001:
+            messages.insert(0, schemas.ImportValidationMessage(
+                code="RULE-01",
+                level="error",
+                message=(
+                    f"Tổng trọng số mục tiêu nhóm {label} sau import = {projected_obj_total:.0f}% — vượt 100% "
+                    f"(hiện có {existing_total:.0f}%, file thêm {added:.0f}%)"
+                ),
+            ))
+        elif projected_obj_total < 99.999:
+            remaining = round(100 - projected_obj_total, 1)
+            messages.append(schemas.ImportValidationMessage(
+                code="RULE-03",
+                level="warning",
+                message=(
+                    f"Tổng trọng số mục tiêu nhóm {label} sau import = {projected_obj_total:.0f}% — "
+                    f"còn thiếu {remaining}%. Bạn có thể phân bổ phần còn lại sau."
+                ),
+            ))
 
     has_errors = any(m.level == "error" for m in messages)
     needs_weight_input = any(
@@ -310,6 +394,7 @@ async def preview_import(
 
     return schemas.ImportPreviewOut(
         existing_obj_total=existing_obj_total,
+        existing_obj_totals_by_category=existing_obj_totals_by_category,
         objectives=preview_objs,
         messages=messages,
         can_save=not has_errors,
@@ -342,7 +427,11 @@ async def import_kpis(
             "(1) mẫu Performance Appraisal của công ty (Objective | Tỷ trọng | KPI | Tỷ trọng); "
             "(2) bảng phẳng với cột: Tên KPI, Mô tả, Chỉ tiêu, Trọng số, Deadline.",
         )
-    _check_group_weight(db, sum(p["weight"] for p in parsed), objective_id=None, user_id=current_user.id)
+    _apply_ai_categories_to_flat(parsed)
+    for cat in schemas.KPI_CATEGORIES:
+        total_weight = sum(p["weight"] for p in parsed if schemas._normalize_category(p.get("category")) == cat)
+        if total_weight > 0:
+            _check_group_weight(db, total_weight, objective_id=None, category=cat, user_id=current_user.id)
     created = []
     for p in parsed:
         kpi = models.KPI(user_id=current_user.id, **p)
@@ -351,6 +440,8 @@ async def import_kpis(
     db.commit()
     for k in created:
         db.refresh(k)
+    if created:
+        autonomous_agent.run_category_guard_for_kpis(db, current_user.id, created)
     return created
 
 
@@ -363,6 +454,7 @@ def _import_appraisal(appraisal: dict, current_user, db: Session, mode: str = "a
                        - Trung ten → gan KPI thang vao objective do, weight=0, bo qua neu da ton tai.
                        - Khong trung → de unassigned, weight=0 (frontend se goi auto-map).
     """
+    _apply_ai_categories_to_appraisal(appraisal)
     objs = appraisal["objectives"]
 
     # Fix 1: lay danh sach objective hien co, map theo ten (case-insensitive)
@@ -377,16 +469,30 @@ def _import_appraisal(appraisal: dict, current_user, db: Session, mode: str = "a
         objective_query = objective_query.where(models.Objective.cycle_id == cycle_id)
     existing_objectives = list(db.scalars(objective_query))
     existing_by_name = {o.name.lower().strip(): o for o in existing_objectives}
-    existing_total = sum(o.weight or 0 for o in existing_objectives)
+    existing_totals_by_category = {
+        cat: sum((o.weight or 0) for o in existing_objectives if (o.category or "Work") == cat)
+        for cat in schemas.KPI_CATEGORIES
+    }
 
     # Tinh tong trong so cac objective MOI (chua co trong he thong)
-    new_obj_weight = sum(
-        o["weight"] for o in objs if o["name"].lower().strip() not in existing_by_name
-    )
-    projected_total = existing_total + new_obj_weight
+    new_obj_weights_by_category = {cat: 0.0 for cat in schemas.KPI_CATEGORIES}
+    for o in objs:
+        if o["name"].lower().strip() in existing_by_name:
+            continue
+        cat = schemas._normalize_category(o.get("category"))
+        new_obj_weights_by_category[cat] += o["weight"]
 
     # Fix 2: Neu tong vuot 100%, tra 409 cho frontend xu ly (tru khi mode da duoc chon)
-    if projected_total > 100.1 and mode == "auto":
+    overflow = []
+    for cat in ("Work", "Personal"):
+        projected_total = existing_totals_by_category.get(cat, 0.0) + new_obj_weights_by_category.get(cat, 0.0)
+        if projected_total > 100.1:
+            overflow.append((cat, projected_total))
+    if overflow and mode == "auto":
+        cat, projected_total = overflow[0]
+        existing_total = existing_totals_by_category.get(cat, 0.0)
+        new_obj_weight = new_obj_weights_by_category.get(cat, 0.0)
+        label = "Cong viec" if cat == "Work" else "Ca nhan"
         raise HTTPException(
             409,
             detail={
@@ -394,7 +500,7 @@ def _import_appraisal(appraisal: dict, current_user, db: Session, mode: str = "a
                 "projected_total": round(projected_total, 1),
                 "existing_total": round(existing_total, 1),
                 "message": (
-                    f"Tổng trọng số mục tiêu sẽ là {projected_total:.1f}% (vượt 100%). "
+                    f"Tổng trọng số mục tiêu nhóm {label} sẽ là {projected_total:.1f}% (vượt 100%). "
                     f"Hiện có: {existing_total:.1f}%, file thêm: {new_obj_weight:.1f}%."
                 ),
             },
@@ -412,12 +518,15 @@ def _import_appraisal(appraisal: dict, current_user, db: Session, mode: str = "a
                     weight=0.0,
                     description=f"[{o['name']}] " + (k.get("note") or ""),
                     unit="%", target_value=100.0, current_value=0.0,
+                    category=schemas._normalize_category(k.get("category") or o.get("category")),
                 )
                 db.add(kpi)
                 created.append(kpi)
         db.commit()
         for k in created:
             db.refresh(k)
+        if created:
+            autonomous_agent.run_category_guard_for_kpis(db, current_user.id, created)
         return created
 
     # mode = agent_map: match objective theo ten, gan KPI vao objective cu neu trung ten;
@@ -453,12 +562,15 @@ def _import_appraisal(appraisal: dict, current_user, db: Session, mode: str = "a
                     weight=0.0,
                     description=(f"[{o['name']}] " if target_obj_id is None else "") + (k.get("note") or ""),
                     unit="%", target_value=100.0, current_value=0.0,
+                    category=schemas._normalize_category(k.get("category") or o.get("category")),
                 )
                 db.add(kpi)
                 created.append(kpi)
         db.commit()
         for k in created:
             db.refresh(k)
+        if created:
+            autonomous_agent.run_category_guard_for_kpis(db, current_user.id, created)
         return created
 
     # Import binh thuong: merge vao objective cu neu trung ten, tao moi neu chua co
@@ -468,7 +580,13 @@ def _import_appraisal(appraisal: dict, current_user, db: Session, mode: str = "a
         if key in existing_by_name:
             obj = existing_by_name[key]
         else:
-            obj = models.Objective(user_id=current_user.id, name=o["name"], weight=o["weight"], cycle_id=cycle_id)
+            obj = models.Objective(
+                user_id=current_user.id,
+                name=o["name"],
+                weight=o["weight"],
+                cycle_id=cycle_id,
+                category=schemas._normalize_category(o.get("category")),
+            )
             db.add(obj)
             db.flush()
         for k in o["kpis"]:
@@ -477,12 +595,15 @@ def _import_appraisal(appraisal: dict, current_user, db: Session, mode: str = "a
                 name=k["name"], weight=k["weight"],
                 description=k.get("note") or "",
                 unit="%", target_value=100.0, current_value=0.0,
+                category=schemas._normalize_category(k.get("category") or o.get("category")),
             )
             db.add(kpi)
             created.append(kpi)
     db.commit()
     for k in created:
         db.refresh(k)
+    if created:
+        autonomous_agent.run_category_guard_for_kpis(db, current_user.id, created)
     return created
 
 
@@ -511,23 +632,31 @@ def confirm_kpi_proposal(
             )
             if payload.cycle_id is not None:
                 objective_query = objective_query.where(models.Objective.cycle_id == payload.cycle_id)
-            existing_total = sum(
-                o.weight
-                for o in db.scalars(objective_query)
-            )
-            new_total = existing_total + sum(o.weight for o in payload.objectives)
-            if new_total > 100.001:
-                raise HTTPException(
-                    400,
-                    f"Tổng trọng số các mục tiêu sau khi tạo sẽ là {new_total:.0f}% (vượt 100%). "
-                    f"Hiện còn trống {max(0, 100 - existing_total):.0f}% — hãy giảm trọng số mục tiêu mới trong đề xuất.",
-                )
+            existing_objectives = list(db.scalars(objective_query))
+            existing_by_category = {
+                cat: sum((o.weight or 0) for o in existing_objectives if (o.category or "Work") == cat)
+                for cat in schemas.KPI_CATEGORIES
+            }
+            new_by_category = {cat: 0.0 for cat in schemas.KPI_CATEGORIES}
+            for po in payload.objectives:
+                new_by_category[po.category] += po.weight
+            for cat in ("Work", "Personal"):
+                existing_total = existing_by_category.get(cat, 0.0)
+                new_total = existing_total + new_by_category.get(cat, 0.0)
+                if new_total > 100.001:
+                    label = "Work" if cat == "Work" else "Personal"
+                    raise HTTPException(
+                        400,
+                        f"Total objective weight for {label} would be {new_total:.0f}% (over 100%). "
+                        f"Remaining capacity is {max(0, 100 - existing_total):.0f}%.",
+                    )
             for po in payload.objectives:
                 if not po.name.strip():
                     continue
                 obj = models.Objective(
                     user_id=current_user.id, name=po.name.strip(),
                     description=po.description, weight=po.weight,
+                    category=po.category,
                     cycle_id=payload.cycle_id,
                 )
                 db.add(obj)
@@ -580,7 +709,7 @@ def confirm_kpi_proposal(
 
         # Kiem tra tong trong so cac nhom bi tac dong sau khi ap het thay doi.
         # Khong chan giao dich moi chi vi mot nhom cu, khong lien quan, da vuot 100% tu truoc.
-        groups: dict[int | None, float] = {}
+        groups: dict[tuple[int | None, str], float] = {}
         for k in db.scalars(
             select(models.KPI).where(
                 models.KPI.user_id == current_user.id,
@@ -589,13 +718,17 @@ def confirm_kpi_proposal(
         ):
             if k.objective_id not in touched_objective_ids:
                 continue
-            groups[k.objective_id] = groups.get(k.objective_id, 0.0) + k.weight
-        for obj_id, total in groups.items():
+            group_category = schemas._normalize_category(k.category) if k.objective_id is None else ""
+            key = (k.objective_id, group_category)
+            groups[key] = groups.get(key, 0.0) + k.weight
+        for (obj_id, group_category), total in groups.items():
             if total > 100.001:
                 name = "nhóm chưa gắn mục tiêu"
                 if obj_id:
                     obj = db.get(models.Objective, obj_id)
                     name = f'mục tiêu "{obj.name}"' if obj else name
+                elif group_category:
+                    name = f"{name} ({group_category})"
                 raise HTTPException(
                     400,
                     f"Sau thay đổi, tổng trọng số KPI trong {name} là {total:.0f}% (vượt 100%). "
@@ -717,6 +850,18 @@ def auto_map_kpis(
             )
         )
         existing_kpi.objective_id = target_obj.id
+        target_category = schemas._normalize_category(target_obj.category)
+        if (existing_kpi.category or "Work") != target_category:
+            db.add(
+                models.KPIChangeLog(
+                    kpi_id=existing_kpi.id,
+                    field="category",
+                    old_value=existing_kpi.category or "Work",
+                    new_value=target_category,
+                    reason="Đồng bộ phân loại theo mục tiêu đích khi Agent phân bổ",
+                )
+            )
+            existing_kpi.category = target_category
         moved.append(existing_kpi)
 
     db.commit()
@@ -742,6 +887,8 @@ def balance_weights(
         if payload.objective_id is not None
         else models.KPI.objective_id.is_(None)
     )
+    if payload.objective_id is None:
+        q = q.where(models.KPI.category == payload.category)
     kpis = list(db.scalars(q))
     if not kpis:
         raise HTTPException(404, "Nhóm này không có KPI nào để cân bằng")
@@ -787,7 +934,15 @@ def update_kpi(kpi_id: int, payload: schemas.KPIUpdate, current_user: CurrentUse
     final_obj_id = new_obj_id if moving else kpi.objective_id
     _check_objective_cycle_not_locked(db, final_obj_id, current_user.id)
     final_weight = changes.get("weight") if changes.get("weight") is not None else kpi.weight
-    _check_group_weight(db, final_weight, final_obj_id, exclude_id=kpi_id, user_id=current_user.id)
+    final_category = changes.get("category") if changes.get("category") is not None else (kpi.category or "Work")
+    _check_group_weight(
+        db,
+        final_weight,
+        final_obj_id,
+        category=final_category,
+        exclude_id=kpi_id,
+        user_id=current_user.id,
+    )
 
     # doi muc tieu: ghi log bang TEN cho de doc; clear_objective=true -> go khoi muc tieu
     if moving:

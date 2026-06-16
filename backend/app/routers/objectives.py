@@ -16,13 +16,16 @@ def _check_objective_weight(
     db: Session,
     new_weight: float,
     cycle_id: int | None = None,
+    category: str = "Work",
     exclude_id: int | None = None,
     user_id: int = 1,
 ):
     """Tong trong so cac Objective cua user trong cung cycle khong vuot 100%."""
+    category = schemas._normalize_category(category)
     q = select(models.Objective).where(
         models.Objective.user_id == user_id,
         models.Objective.archived == False,  # noqa: E712
+        models.Objective.category == category,
     )
     if cycle_id is not None:
         q = q.where(models.Objective.cycle_id == cycle_id)
@@ -50,8 +53,10 @@ def list_objectives(
     current_user: CurrentUser,
     db: Session = Depends(get_db),
     cycle_id: Optional[int] = Query(None, description="Lọc theo chu kỳ"),
+    category: Optional[str] = Query(None, description="Work|Personal"),
 ):
-    return kpi_service.objectives_with_progress(db, user_id=current_user.id, cycle_id=cycle_id)
+    cat = schemas._normalize_category(category) if category is not None else None
+    return kpi_service.objectives_with_progress(db, user_id=current_user.id, cycle_id=cycle_id, category=cat)
 
 
 @router.post("", response_model=schemas.ObjectiveOut)
@@ -59,7 +64,13 @@ def create_objective(
     payload: schemas.ObjectiveCreate, current_user: CurrentUser, db: Session = Depends(get_db)
 ):
     _check_cycle_not_locked(db, payload.cycle_id)
-    _check_objective_weight(db, payload.weight, cycle_id=payload.cycle_id, user_id=current_user.id)
+    _check_objective_weight(
+        db,
+        payload.weight,
+        cycle_id=payload.cycle_id,
+        category=payload.category,
+        user_id=current_user.id,
+    )
     obj = models.Objective(user_id=current_user.id, **payload.model_dump())
     db.add(obj)
     db.commit()
@@ -77,8 +88,16 @@ def update_objective(
     _check_cycle_not_locked(db, obj.cycle_id)
     data = payload.model_dump(exclude_unset=True)
     new_cycle_id = data.get("cycle_id", obj.cycle_id)
-    if data.get("weight") is not None:
-        _check_objective_weight(db, data["weight"], cycle_id=new_cycle_id, exclude_id=obj_id, user_id=current_user.id)
+    new_category = schemas._normalize_category(data.get("category", obj.category or "Work"))
+    if data.get("weight") is not None or data.get("category") is not None:
+        _check_objective_weight(
+            db,
+            data.get("weight", obj.weight),
+            cycle_id=new_cycle_id,
+            category=new_category,
+            exclude_id=obj_id,
+            user_id=current_user.id,
+        )
     for field, value in data.items():
         setattr(obj, field, value)
     db.commit()
@@ -132,13 +151,16 @@ def validate_objective_weights(
     current_user: CurrentUser,
     db: Session = Depends(get_db),
     cycle_id: Optional[int] = Query(None),
+    category: Optional[str] = Query("Work"),
     new_weight: float = Query(..., description="Trọng số cần kiểm tra"),
     exclude_id: Optional[int] = Query(None, description="Bỏ qua objective này (khi sửa)"),
 ):
     """Kiểm tra trọng số Layer 1 — không thực sự lưu."""
+    category = schemas._normalize_category(category)
     q = select(models.Objective).where(
         models.Objective.user_id == current_user.id,
         models.Objective.archived == False,  # noqa: E712
+        models.Objective.category == category,
     )
     if cycle_id is not None:
         q = q.where(models.Objective.cycle_id == cycle_id)

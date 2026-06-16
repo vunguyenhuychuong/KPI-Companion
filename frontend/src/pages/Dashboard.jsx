@@ -903,7 +903,6 @@ function ddbCategoryOf(kpi) {
 function ddbCategoryLabel(category, tr) {
     if (category === 'Work') return cleanIconLabel(tr('category.work'))
     if (category === 'Personal') return cleanIconLabel(tr('category.personal'))
-    if (category === 'Focus') return tr('pulse.category_focus')
     return tr('pulse.category_other')
 }
 
@@ -926,7 +925,7 @@ function weightedStatuses(statuses, field = 'progress') {
 function sparkSeries(score, weeklyActivity = [], seed = 'Work') {
     const recent = (weeklyActivity || []).slice(-6)
     const maxCount = Math.max(1, ...recent.map(w => Number(w.count) || 0))
-    const seedShift = seed === 'Personal' ? 6 : seed === 'Focus' ? -8 : 0
+    const seedShift = seed === 'Personal' ? 6 : 0
     if (!recent.length) {
         return Array.from({ length: 6 }, (_, i) => clampPct(score - (5 - i) * 3 + seedShift / 4))
     }
@@ -960,7 +959,6 @@ function buildLensMetrics(visible, data, tr) {
     return [
         lensMetric('Work', visible.filter(s => ddbCategoryOf(s.kpi) === 'Work'), data.weekly_activity, tr),
         lensMetric('Personal', visible.filter(s => ddbCategoryOf(s.kpi) === 'Personal'), data.weekly_activity, tr),
-        lensMetric('Focus', visible.filter(s => s.health !== 'green'), data.weekly_activity, tr),
     ]
 }
 
@@ -1074,7 +1072,46 @@ function topLensConcerns(visible, tr) {
         .map(s => tr('pulse.concern_item', { name: s.kpi.name, value: Math.abs(roundNum(s.gap)) }))
 }
 
-function DashboardInsightLens({ data, visible, tr, onSelectKpi, onFilterObj, cycleId }) {
+function buildInstantDashboardInsight(visible, metrics, tr) {
+    const strength = [...metrics].filter(m => m.count > 0).sort((a, b) => b.score - a.score)[0]
+    const risk = [...visible].filter(s => s.gap < 0).sort((a, b) => a.gap - b.gap)[0]
+    const priority = risk || [...visible].sort((a, b) => (a.kpi.progress || 0) - (b.kpi.progress || 0))[0]
+    const riskCount = visible.filter(s => s.health === 'red').length
+    const yellowCount = visible.filter(s => s.health === 'yellow').length
+    return {
+        generated_at: null,
+        data_signature: 'instant',
+        top_strength: strength
+            ? tr('pulse.insight_strength_text', { category: strength.label, value: roundNum(strength.score) })
+            : tr('pulse.insight_no_strength'),
+        top_risk: risk
+            ? tr('pulse.insight_risk_text', { name: risk.kpi.name, value: Math.abs(roundNum(risk.gap)) })
+            : tr('pulse.insight_no_risk'),
+        top_priority: priority
+            ? tr('pulse.insight_priority_text', { name: priority.kpi.name })
+            : tr('pulse.insight_no_priority'),
+        correlation_insight: tr('pulse.correlation_text', { risk: riskCount, attention: yellowCount }),
+        forecast_next_period: tr('pulse.forecast_text', {
+            work: roundNum(metrics.find(m => m.key === 'Work')?.score || 0),
+            personal: roundNum(metrics.find(m => m.key === 'Personal')?.score || 0),
+        }),
+        kpi_adjustment: risk
+            ? tr('pulse.adjustment_text', { name: risk.kpi.name })
+            : tr('pulse.adjustment_ok'),
+        suggested_actions: priority
+            ? [
+                tr('pulse.action_log', { name: priority.kpi.name }),
+                tr('pulse.action_split', { name: priority.kpi.name }),
+                tr('pulse.action_review'),
+            ]
+            : [tr('pulse.action_start')],
+        risk_kpi_id: risk?.kpi?.id ?? null,
+        priority_kpi_id: priority?.kpi?.id ?? null,
+        strength_category: strength?.key ?? 'None',
+    }
+}
+
+function DashboardInsightLens({ data, visible, tr, lang, onSelectKpi, onFilterObj, cycleId, category }) {
     const [lens, setLens] = useState('insight')
     const [open, setOpen] = useState('correlation')
     const [checked, setChecked] = useState({})
@@ -1082,25 +1119,27 @@ function DashboardInsightLens({ data, visible, tr, onSelectKpi, onFilterObj, cyc
     const [loadingInsight, setLoadingInsight] = useState(false)
     const [insightError, setInsightError] = useState('')
     const metrics = useMemo(() => buildLensMetrics(visible, data, tr), [visible, data, tr])
+    const instantInsight = useMemo(() => buildInstantDashboardInsight(visible, metrics, tr), [visible, metrics, tr])
+    const displayInsight = aiInsight || instantInsight
     const signature = useMemo(() => dashboardInsightSignature(data), [data])
     const cacheKey = useMemo(
-        () => `kpi.dashboardInsight.v1:${cycleId ?? 'all'}:${signature}`,
-        [cycleId, signature],
+        () => `kpi.dashboardInsight.v1:${cycleId ?? 'all'}:${category}:${signature}`,
+        [cycleId, category, signature],
     )
     const rows = useMemo(() => objectiveLensRows(data, visible), [data, visible])
     const weeks = useMemo(() => buildWeeklyLensBars(data), [data])
     const wins = useMemo(() => topLensWins(visible, tr), [visible, tr])
     const concerns = useMemo(() => topLensConcerns(visible, tr), [visible, tr])
-    const riskStatus = aiInsight?.risk_kpi_id
-        ? visible.find(s => s.kpi.id === aiInsight.risk_kpi_id)
+    const riskStatus = displayInsight?.risk_kpi_id
+        ? visible.find(s => s.kpi.id === displayInsight.risk_kpi_id)
         : null
-    const priorityStatus = aiInsight?.priority_kpi_id
-        ? visible.find(s => s.kpi.id === aiInsight.priority_kpi_id)
+    const priorityStatus = displayInsight?.priority_kpi_id
+        ? visible.find(s => s.kpi.id === displayInsight.priority_kpi_id)
         : null
     const sections = [
-        ['correlation', tr('pulse.acc_correlation'), aiInsight?.correlation_insight || ''],
-        ['forecast', tr('pulse.acc_forecast'), aiInsight?.forecast_next_period || ''],
-        ['adjustment', tr('pulse.acc_adjustment'), aiInsight?.kpi_adjustment || ''],
+        ['correlation', tr('pulse.acc_correlation'), displayInsight?.correlation_insight || ''],
+        ['forecast', tr('pulse.acc_forecast'), displayInsight?.forecast_next_period || ''],
+        ['adjustment', tr('pulse.acc_adjustment'), displayInsight?.kpi_adjustment || ''],
     ]
 
     const loadAiInsight = useCallback(async (force = false) => {
@@ -1118,7 +1157,7 @@ function DashboardInsightLens({ data, visible, tr, onSelectKpi, onFilterObj, cyc
         }
         setLoadingInsight(true)
         try {
-            const result = await api.dashboardInsight(cycleId)
+            const result = await api.dashboardInsight(cycleId, category)
             setAiInsight(result)
             localStorage.setItem(cacheKey, JSON.stringify(result))
         } catch (e) {
@@ -1127,13 +1166,17 @@ function DashboardInsightLens({ data, visible, tr, onSelectKpi, onFilterObj, cyc
         } finally {
             setLoadingInsight(false)
         }
-    }, [cacheKey, cycleId])
+    }, [cacheKey, cycleId, category])
 
     useEffect(() => {
-        setAiInsight(null)
         setChecked({})
-        loadAiInsight(false)
-    }, [loadAiInsight])
+        try {
+            const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null')
+            setAiInsight(cached?.data_signature ? cached : null)
+        } catch {
+            setAiInsight(null)
+        }
+    }, [cacheKey])
 
     const openKpi = (status) => {
         if (!status) return
@@ -1161,6 +1204,9 @@ function DashboardInsightLens({ data, visible, tr, onSelectKpi, onFilterObj, cyc
                         <button className={`ddb-lens-tab${lens === 'monthly' ? ' active' : ''}`} onClick={() => setLens('monthly')}>
                             <UiIcon name="target" />{tr('pulse.tab_monthly')}
                         </button>
+                        <button className={`ddb-lens-tab${lens === 'trend' ? ' active' : ''}`} onClick={() => setLens('trend')}>
+                            <UiIcon name="chartDown" />{tr('pulse.tab_trend')}
+                        </button>
                     </div>
                 </div>
             </div>
@@ -1168,8 +1214,10 @@ function DashboardInsightLens({ data, visible, tr, onSelectKpi, onFilterObj, cyc
                 {lens === 'insight'
                     ? (loadingInsight
                         ? tr('pulse.ai_loading')
-                        : aiInsight?.top_priority || tr('pulse.ai_waiting'))
-                    : (concerns.length
+                        : displayInsight?.top_priority || tr('pulse.ai_waiting'))
+                    : lens === 'trend'
+                        ? tr('dashboard.trend_estimate')
+                        : (concerns.length
                         ? tr('pulse.month_analysis_risk', { win: wins[0] || tr('pulse.no_win'), concern: concerns[0] })
                         : tr('pulse.month_analysis_ok', { win: wins[0] || tr('pulse.no_win') }))}
             </div>
@@ -1189,29 +1237,23 @@ function DashboardInsightLens({ data, visible, tr, onSelectKpi, onFilterObj, cyc
                             <span>{tr('pulse.ai_error', { message: insightError })}</span>
                         </div>
                     )}
-                    {aiInsight && (
+                    {displayInsight && (
                         <div className="ddb-ai-grid">
                             <button className="ddb-ai-card" style={{ '--ai-color': HC.green }} onClick={() => setLens('monthly')}>
                                 <span className="ddb-ai-card-label"><UiIcon name="sparkles" />{tr('pulse.strength')}</span>
-                                <span className="ddb-ai-card-text">{aiInsight.top_strength}</span>
+                                <span className="ddb-ai-card-text">{displayInsight.top_strength}</span>
                                 <span className="ddb-ai-card-note">{tr('pulse.open_weekly')}</span>
                             </button>
                             <button className="ddb-ai-card" style={{ '--ai-color': HC.red }} onClick={() => openKpi(riskStatus)}>
                                 <span className="ddb-ai-card-label"><UiIcon name="warning" />{tr('pulse.risk')}</span>
-                                <span className="ddb-ai-card-text">{aiInsight.top_risk}</span>
+                                <span className="ddb-ai-card-text">{displayInsight.top_risk}</span>
                                 <span className="ddb-ai-card-note">{riskStatus ? tr('pulse.detail') : tr('pulse.no_data')}</span>
                             </button>
                             <button className="ddb-ai-card" style={{ '--ai-color': HC.yellow }} onClick={() => openKpi(priorityStatus)}>
                                 <span className="ddb-ai-card-label"><UiIcon name="compass" />{tr('pulse.priority')}</span>
-                                <span className="ddb-ai-card-text">{aiInsight.top_priority}</span>
+                                <span className="ddb-ai-card-text">{displayInsight.top_priority}</span>
                                 <span className="ddb-ai-card-note">{priorityStatus ? tr('pulse.ai_suggestion') : tr('pulse.no_data')}</span>
                             </button>
-                        </div>
-                    )}
-                    {!loadingInsight && !insightError && !aiInsight && (
-                        <div className="ddb-ai-callout">
-                            <UiIcon name="bot" />
-                            <span>{tr('pulse.ai_waiting')}</span>
                         </div>
                     )}
                     <div className="ddb-lens-grid">
@@ -1232,11 +1274,10 @@ function DashboardInsightLens({ data, visible, tr, onSelectKpi, onFilterObj, cyc
                         <div className="ddb-lens-subpanel">
                             <div className="ddb-lens-subtitle"><UiIcon name="checkCircle" />{tr('pulse.suggested_actions')}</div>
                             <div className="ddb-action-list">
-                                {(aiInsight?.suggested_actions?.length ? aiInsight.suggested_actions : [tr('pulse.ai_waiting')]).map((action, i) => (
+                                {(displayInsight?.suggested_actions?.length ? displayInsight.suggested_actions : [tr('pulse.ai_waiting')]).map((action, i) => (
                                     <label key={`${action}-${i}`} className="ddb-action-item">
                                         <input
                                             type="checkbox"
-                                            disabled={!aiInsight}
                                             checked={!!checked[i]}
                                             onChange={e => setChecked(prev => ({ ...prev, [i]: e.target.checked }))}
                                         />
@@ -1247,6 +1288,10 @@ function DashboardInsightLens({ data, visible, tr, onSelectKpi, onFilterObj, cyc
                         </div>
                     </div>
                 </>
+            ) : lens === 'trend' ? (
+                <div className="ddb-lens-subpanel">
+                    <KpiTrendChart data={data} visible={visible} tr={tr} lang={lang} />
+                </div>
             ) : (
                 <>
                     <div className="ddb-month-grid">
@@ -2069,7 +2114,7 @@ function CompactKpiGrid({ statuses, filterHealth, filterObj, onSelect, tr }) {
 export default function Dashboard() {
     const { tr, lang, statusLabels, sourceLabels } = useLang()
     const { mode } = useView()
-    const { activeCycleId, currentYear } = useCycle()
+    const { activeCycleId, currentYear, cycles, loading: cyclesLoading } = useCycle()
     const toast = useToast()
     const SL = statusLabels()
     const SRC = sourceLabels()
@@ -2084,13 +2129,21 @@ export default function Dashboard() {
     const [filterObj, setFilterObj] = useState(null)
     const [completing, setCompleting] = useState(null)
 
-    const load = () => api.dashboard(activeCycleId).then(setData).catch(e => setError(e.message))
+    const dashboardCategory = mode === 'personal' ? 'Personal' : 'Work'
+    const load = useCallback(() => {
+        if (cyclesLoading) return
+        if (activeCycleId && cycles.length > 0 && !cycles.some(c => c.id === activeCycleId)) return
+        setError('')
+        return api.dashboard(activeCycleId, dashboardCategory)
+            .then(setData)
+            .catch(e => setError(e.message))
+    }, [activeCycleId, dashboardCategory, cycles, cyclesLoading])
+
     useEffect(() => {
         setFilterHealth(null)
         setFilterObj(null)
         load()
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activeCycleId])
+    }, [load])
 
     const genWeekly = async () => {
         setLoadingWeekly(true); setWeekly('')
@@ -2131,9 +2184,11 @@ export default function Dashboard() {
                 data={data}
                 visible={visible}
                 tr={tr}
+                lang={lang}
                 onSelectKpi={setSelectedKpi}
                 onFilterObj={setFilterObj}
                 cycleId={activeCycleId}
+                category={dashboardCategory}
             />
 
             {/* Row: Status donut + Trend */}
