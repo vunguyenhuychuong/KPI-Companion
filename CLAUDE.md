@@ -17,7 +17,7 @@
 
 ## Kiến trúc Agent — KHÔNG được đảo ngược
 - KHÔNG dùng native function-calling → dùng intent router + structured JSON
-- 8 intents: `update_progress` / `sync_request` / `create_kpi` / `question` / `other` / `delete_kpi` / `coaching` / `weekly_summary`
+- 9 intents: `update_progress` / `sync_request` / `create_kpi` / `question` / `other` / `delete_kpi` / `coaching` / `weekly_summary` / `create_meeting`
 - Bắt buộc gửi `chat_template_kwargs: {enable_thinking: false}` (thiếu → chậm ~24x)
 - Human-in-the-loop tuyệt đối: agent KHÔNG tự ghi DB. Mọi thay đổi → proposal card → user xác nhận → endpoint confirm → ghi DB
 
@@ -97,6 +97,7 @@
 - [x] **SMART Goal Validation** — `POST /api/kpis/{id}/validate-smart`; nút 🎯 trên KpiCard; panel hiển thị scores S/M/A/R/T + issues + suggestions; gọi LLM via `SMART_VALIDATE_SYSTEM`
 - [x] **Self-review PDF + Excel** — `POST /api/reports/self-review` sinh bản tự đánh giá (upsert theo năm); `GET /api/reports/saved/{id}/export?format=xlsx|pdf` xuất file; tab "📝 Tự đánh giá" trong Reports với nút ⬇ Excel / ⬇ PDF khi đang xem; `SELF_REVIEW_SYSTEM` prompt; `export_self_review_excel()` + `export_report_pdf()` trong `report_service.py`
 - [x] **AI Help Panel** — nút `?` nổi chụp vùng nội dung bằng `html2canvas`, gửi qua backend `/api/help/vision` tới Vision OpenAI-compatible nếu cấu hình `VISION_*`; chưa cấu hình thì hiển thị hướng dẫn fallback theo route; drawer desktop + bottom sheet mobile.
+- [x] **Tạo cuộc họp qua chat** — intent `create_meeting` (9th intent); trích xuất tiêu đề/thời gian/người tham dự từ chat → proposal card → `POST /api/calendar/events/confirm` → tạo sự kiện Google Calendar; scope `calendar.events` (write); từ khóa: "tạo meeting", "đặt lịch họp", "book meeting".
 
 ## Known Issues & TODO
 <!-- Cập nhật liên tục — KHÔNG xóa mục đã fix, đổi sang [x] -->

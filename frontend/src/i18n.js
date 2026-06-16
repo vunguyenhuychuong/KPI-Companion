@@ -718,6 +718,16 @@ export const translations = {
     'delete_proposal.confirm': 'Xác nhận gỡ bỏ',
     'delete_proposal.cancel': 'Hủy',
 
+    // Meeting proposal
+    'meeting_proposal.heading': '📅 Tạo cuộc họp trong Google Calendar',
+    'meeting_proposal.confirm': 'Tạo ngay',
+    'meeting_proposal.cancel': 'Hủy',
+    'meeting_proposal.created': 'Đã tạo thành công.',
+    'meeting_proposal.open_link': 'Mở trong Google Calendar',
+    'meeting_proposal.email_attendees': '✉️ Sẽ nhận lời mời:',
+    'meeting_proposal.name_only_warn': '⚠️ Không tìm thấy email của {names} — sẽ không nhận lời mời lịch.',
+    'meeting_proposal.no_attendees': '(Không có người tham dự)',
+
     // SMART Validation
     'kpis.tip_smart': 'Kiểm tra tiêu chí SMART',
     'kpis.smart_loading': 'Đang đánh giá SMART…',
@@ -1436,6 +1446,16 @@ export const translations = {
     'delete_proposal.archive_note': 'This will be archived — you can restore it from the History tab.',
     'delete_proposal.confirm': 'Confirm removal',
     'delete_proposal.cancel': 'Cancel',
+
+    // Meeting proposal
+    'meeting_proposal.heading': '📅 Create meeting in Google Calendar',
+    'meeting_proposal.confirm': 'Create now',
+    'meeting_proposal.cancel': 'Cancel',
+    'meeting_proposal.created': 'Successfully created.',
+    'meeting_proposal.open_link': 'Open in Google Calendar',
+    'meeting_proposal.email_attendees': '✉️ Will receive invite:',
+    'meeting_proposal.name_only_warn': '⚠️ No email found for {names} — they won\'t receive a calendar invite.',
+    'meeting_proposal.no_attendees': '(No attendees)',
 
     // SMART Validation
     'kpis.tip_smart': 'SMART criteria check',

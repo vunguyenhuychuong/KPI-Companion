@@ -8,7 +8,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=BASE_DIR / ".env", env_file_encoding="utf-8", extra="ignore"
+        env_file=[BASE_DIR / ".env", BASE_DIR / ".env.local"],
+        env_file_encoding="utf-8",
+        extra="ignore",
     )
 
     # LLM — Qwen qua endpoint OpenAI-compatible

@@ -10,11 +10,12 @@ Phân loại tin nhắn của người dùng vào MỘT trong các ý định sa
 - "delete_kpi": người dùng muốn XÓA/GỠ một KPI hoặc Objective đã có. Ví dụ: "Xóa KPI báo cáo ITGC đi", "Gỡ KPI học khóa này", "Xoá mục tiêu Phát triển năng lực".
 - "coaching": người dùng hỏi VÌ SAO một KPI bị chậm/trễ, hoặc xin TƯ VẤN/CÁCH CẢI THIỆN/GỠ RỐI cho một KPI cụ thể. Ví dụ: "Tại sao KPI báo cáo bị chậm vậy?", "Làm sao để cải thiện KPI doanh thu?", "Giúp tôi gỡ rối KPI đang đỏ", "KPI này trễ quá, tôi nên làm gì?". (Khác với "question": question chỉ HỎI trạng thái/con số; coaching xin PHÂN TÍCH nguyên nhân và HƯỚNG khắc phục.)
 - "weekly_summary": người dùng yêu cầu viết bản tổng kết/báo cáo tuần đầy đủ (có lưu lại). Ví dụ: "Tổng kết tuần này cho tôi", "Viết báo cáo tuần", "Weekly summary", "Làm bản tổng kết tuần". Khác "question": weekly_summary sinh báo cáo cấu trúc đầy đủ + tự động lưu vào Báo cáo; question chỉ hỏi về con số/trạng thái KPI cụ thể.
+- "create_meeting": người dùng muốn TẠO cuộc họp/sự kiện MỚI trong Google Calendar. Ví dụ: "tạo meeting với Tùng thứ 4 lúc 3h chiều", "đặt lịch họp review Q2 tuần sau", "book meeting sáng mai với team", "thêm cuộc họp vào lịch hôm nay". Khác "question": question chỉ HỎI về lịch đã có; create_meeting yêu cầu TẠO sự kiện mới.
 - "other": chào hỏi, trò chuyện chung, hoặc không thuộc các loại trên.
 
 LƯU Ý NGỮ CẢNH: nếu tin nhắn là lời ĐỒNG Ý ngắn ("đồng ý", "ok", "dạ, lưu giúp tôi", "xác nhận đi") thì phân loại theo NỘI DUNG ĐANG ĐƯỢC ĐỀ XUẤT trong lịch sử hội thoại ngay trước đó: trợ lý vừa đề xuất công việc/đầu việc (kể cả việc khắc phục từ coaching) -> "update_progress"; vừa đề xuất tạo KPI -> "create_kpi"; vừa đề xuất xóa KPI/Objective -> "delete_kpi".
 
-Chỉ trả lời JSON: {"intent": "<một trong 8 giá trị trên>"}"""
+Chỉ trả lời JSON: {"intent": "<một trong 9 giá trị trên>"}"""
 
 KPI_CREATE_SYSTEM = """Bạn là AI Agent quản lý KPI. Người dùng muốn TẠO KPI MỚI (và có thể kèm tạo MỤC TIÊU mới hoặc điều chỉnh trọng số KPI hiện có). Nhiệm vụ của bạn là trích xuất thành đề xuất có cấu trúc — đề xuất này sẽ được hiển thị cho người dùng XÁC NHẬN trước khi lưu.
 
@@ -336,6 +337,35 @@ QUY TẮC:
 
 Chỉ trả lời JSON:
 {{"valid": <true nếu TẤT CẢ điểm >= 1>, "scores": {{"S": 0, "M": 0, "A": 0, "R": 0, "T": 0}}, "issues": ["..."], "suggestions": ["..."]}}"""
+
+CREATE_MEETING_SYSTEM = """Bạn là AI Agent hỗ trợ quản lý lịch. Người dùng muốn TẠO CUỘC HỌP trong Google Calendar.
+
+Hôm nay là {today}. Múi giờ: Asia/Ho_Chi_Minh (UTC+7). Tuần bắt đầu từ thứ Hai.
+
+Trích xuất thông tin cuộc họp thành JSON:
+- "title": tiêu đề/chủ đề cuộc họp (bắt buộc, rõ ràng, không được để trống)
+- "start_datetime": thời điểm bắt đầu định dạng "YYYY-MM-DDTHH:MM:SS". Quy đổi: "thứ 4" = thứ Tư trong tương lai gần nhất, "sáng" = 09:00, "chiều" = 14:00, "tối" = 19:00. Không nêu giờ → mặc định 09:00. Thời gian PHẢI ở tương lai (sau {today}).
+- "end_datetime": thời điểm kết thúc định dạng "YYYY-MM-DDTHH:MM:SS". Nếu người dùng không nêu thời lượng → mặc định +1 giờ từ start.
+- "attendees": danh sách người tham dự (email hoặc tên). Mảng chuỗi, [] nếu không nêu.
+- "description": mô tả hoặc agenda nếu có, "" nếu không có.
+- "location": địa điểm hoặc link họp trực tuyến nếu có, "" nếu không.
+- "timezone": luôn là "Asia/Ho_Chi_Minh".
+
+QUY TẮC: KHÔNG bịa thông tin không có trong tin nhắn. Chỉ trả JSON thuần.
+
+Chỉ trả lời JSON: {{"title":"...","start_datetime":"...","end_datetime":"...","attendees":[...],"description":"...","location":"...","timezone":"Asia/Ho_Chi_Minh"}}"""
+
+CREATE_MEETING_REPLY_SYSTEM = """You are KPI Companion. Write a short, natural reply in {language} summarizing the meeting proposal below. Tell the user to review the details and click Confirm to create the event in Google Calendar.
+
+MEETING PROPOSAL:
+{meeting_block}
+
+Rules:
+- Mention the title, date/time, and attendees naturally in 2-3 sentences.
+- State clearly that nothing has been created yet — the user must click Confirm on the proposal card.
+- If attendees are listed by name only (no @ symbol), note that only email addresses will receive calendar invitations.
+- If no Google connection, say they need to connect Google first in Data Sources.
+- Keep it concise. Markdown is fine."""
 
 MEMORY_EXTRACT_SYSTEM = """Bạn là bộ nhớ dài hạn của trợ lý KPI. Đọc lượt hội thoại dưới đây và trích các thông tin BỀN VỮNG đáng ghi nhớ về người dùng để phục vụ những lần trò chuyện sau:
 - Vai trò, phòng ban, lĩnh vực công việc (category: "profile")

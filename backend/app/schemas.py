@@ -1,7 +1,7 @@
 import re
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Email: cho phep local-part ASCII + domain + TLD it nhat 2 ky tu
 _EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
@@ -353,6 +353,37 @@ class ChatRequest(BaseModel):
     lang: str = "vi"  # "vi" | "en" — ngon ngu tra loi cua Agent
 
 
+class MeetingProposal(BaseModel):
+    """De xuat tao cuoc hop trong Google Calendar."""
+    title: str
+    start_datetime: str  # ISO "2026-06-20T15:00:00"
+    end_datetime: str    # ISO "2026-06-20T16:00:00"
+    attendees: list[str] = []
+    unresolved_names: list[str] = []  # ten khong tim duoc email -> khong gui invite
+    description: str = ""
+    location: str = ""
+    timezone: str = "Asia/Ho_Chi_Minh"
+
+    @field_validator("start_datetime", "end_datetime")
+    @classmethod
+    def _validate_iso(cls, v: str) -> str:
+        v = v.strip().replace(" ", "T")
+        try:
+            datetime.fromisoformat(v[:19])
+        except ValueError:
+            raise ValueError(f"Thời gian không đúng định dạng ISO: {v}")
+        return v[:19]
+
+    @model_validator(mode="after")
+    def _validate_end_after_start(self) -> "MeetingProposal":
+        try:
+            if datetime.fromisoformat(self.end_datetime) <= datetime.fromisoformat(self.start_datetime):
+                raise ValueError("Thời gian kết thúc phải sau thời gian bắt đầu")
+        except ValueError:
+            raise
+        return self
+
+
 class ChatResponse(BaseModel):
     reply: str
     intent: str = "chat"
@@ -362,6 +393,7 @@ class ChatResponse(BaseModel):
     weight_changes: list[WeightChange] = []
     conflicts: list[KPIConflict] = []  # xung dot phat hien giua KPI de xuat va KPI hien co
     delete_proposal: DeleteProposal | None = None  # the xac nhan xoa KPI/Objective
+    meeting_proposal: MeetingProposal | None = None  # the de xuat tao cuoc hop Google Calendar
     session_id: int | None = None
     # id tin nhan assistant trong DB — frontend dung de luu trang thai xac nhan de xuat
     message_id: int | None = None

@@ -125,7 +125,7 @@ def _date_range_for_query(text: str) -> tuple[date, date]:
     return today - timedelta(days=7), today + timedelta(days=14)
 
 
-VALID_INTENTS = {"update_progress", "sync_request", "create_kpi", "delete_kpi", "coaching", "question", "weekly_summary", "other"}
+VALID_INTENTS = {"update_progress", "sync_request", "create_kpi", "delete_kpi", "coaching", "question", "weekly_summary", "create_meeting", "other"}
 
 
 def _lang_suffix(lang: str) -> str:
@@ -319,6 +319,14 @@ def _classify_intent_fast(text: str, history: list[dict] | None = None) -> str |
         return "question"
     if _has_any(low, ["đã ", "da ", "đang ", "dang ", "sẽ ", "se ", "hoàn thành", "hoan thanh", "xong", "tuần này", "tuan nay", "hôm nay", "hom nay"]) and not low.endswith("?"):
         return "update_progress"
+    if _has_any(low, [
+        "tạo meeting", "tao meeting", "đặt lịch họp", "dat lich hop",
+        "tạo cuộc họp", "tao cuoc hop", "book meeting", "schedule meeting",
+        "mời họp", "moi hop", "lên lịch họp", "len lich hop",
+        "tạo event", "tao event", "đặt meeting", "dat meeting",
+        "thêm cuộc họp", "them cuoc hop", "tạo lịch họp", "tao lich hop",
+    ]):
+        return "create_meeting"
     if len(low) <= 20 and _has_any(low, ["xin chào", "xin chao", "hello", "hi", "chào", "chao"]):
         return "other"
     return None
@@ -550,6 +558,75 @@ def coach_kpi(
             )
         )
     return analysis, root_causes, proposed
+
+
+def _resolve_attendees(proposal: schemas.MeetingProposal, db: Session) -> schemas.MeetingProposal:
+    """Tra ten (khong co @) ve email bang cach tra cuu bang users noi bo.
+
+    Email da co giu nguyen. Ten tim duoc -> thay bang email. Ten khong tim duoc ->
+    chuyen sang unresolved_names (hien thi canh bao tren frontend, khong gui invite).
+    """
+    resolved: list[str] = []
+    unresolved: list[str] = []
+    for a in proposal.attendees:
+        if "@" in a:
+            resolved.append(a)
+        else:
+            user = db.scalars(
+                select(models.User).where(models.User.name.ilike(f"%{a}%"))
+            ).first()
+            if user and user.email:
+                resolved.append(user.email)
+            else:
+                unresolved.append(a)
+    return schemas.MeetingProposal(
+        title=proposal.title,
+        start_datetime=proposal.start_datetime,
+        end_datetime=proposal.end_datetime,
+        attendees=resolved,
+        unresolved_names=unresolved,
+        description=proposal.description,
+        location=proposal.location,
+        timezone=proposal.timezone,
+    )
+
+
+def extract_meeting_proposal(text: str, history: list[dict] | None = None) -> schemas.MeetingProposal | None:
+    """Trich xuat thong tin cuoc hop tu tin nhan nguoi dung."""
+    system = prompts.CREATE_MEETING_SYSTEM.format(today=_today())
+    data = call_json(system, _history_block(history) + text, temperature=0.0)
+
+    title = str(data.get("title") or "").strip()
+    if not title:
+        return None
+
+    start_raw = str(data.get("start_datetime") or "").strip().replace(" ", "T")
+    end_raw = str(data.get("end_datetime") or "").strip().replace(" ", "T")
+
+    try:
+        datetime.fromisoformat(start_raw[:19])
+        start_dt = start_raw[:19]
+    except ValueError:
+        tomorrow = date.today() + timedelta(days=1)
+        start_dt = f"{tomorrow.isoformat()}T09:00:00"
+
+    try:
+        datetime.fromisoformat(end_raw[:19])
+        end_dt = end_raw[:19]
+    except ValueError:
+        end_dt = (datetime.fromisoformat(start_dt) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+
+    attendees = [str(a).strip() for a in (data.get("attendees") or []) if str(a).strip()]
+
+    return schemas.MeetingProposal(
+        title=title[:200],
+        start_datetime=start_dt,
+        end_datetime=end_dt,
+        attendees=attendees[:10],
+        description=str(data.get("description") or "")[:500],
+        location=str(data.get("location") or "")[:200],
+        timezone=str(data.get("timezone") or "Asia/Ho_Chi_Minh"),
+    )
 
 
 def _match_kpi(text: str, kpis: list[models.KPI]) -> models.KPI | None:
@@ -1017,6 +1094,35 @@ def handle_message(
         )
         saved_note = _status_reply(text, facts, "weekly_summary_saved", lang, history)
         return schemas.ChatResponse(reply=content + "\n\n---\n" + saved_note, intent="weekly_summary")
+
+    if intent == "create_meeting":
+        proposal = extract_meeting_proposal(text, history)
+        if proposal is None:
+            facts = "Could not extract a meeting from the user's message (title was empty or unclear)."
+            msg = _status_reply(text, facts, intent, lang, history)
+            return schemas.ChatResponse(reply=msg, intent=intent)
+
+        proposal = _resolve_attendees(proposal, db)
+
+        invite_list = proposal.attendees  # da la email sau khi resolve
+        unresolved = proposal.unresolved_names
+        meeting_block = (
+            f"Title: {proposal.title}\n"
+            f"Start: {proposal.start_datetime} ({proposal.timezone})\n"
+            f"End: {proposal.end_datetime}\n"
+            f"Attendees with email (will receive invite): {', '.join(invite_list) or '(none)'}\n"
+            f"Description: {proposal.description or '(none)'}\n"
+            f"Location: {proposal.location or '(none)'}\n"
+            + (f"Note: {len(unresolved)} name(s) could not be resolved to an email "
+               f"({', '.join(unresolved)}) → they will NOT receive a calendar invitation." if unresolved else "")
+        )
+        reply = call_text(
+            prompts.CREATE_MEETING_REPLY_SYSTEM.format(
+                language=_language_name(lang), meeting_block=meeting_block
+            ) + _lang_suffix(lang),
+            text, history=history, max_tokens=400,
+        )
+        return schemas.ChatResponse(reply=reply, intent=intent, meeting_proposal=proposal)
 
     if intent == "question":
         context = kpi_service.full_context_text(db, user_id) + user_context

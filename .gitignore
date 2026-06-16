@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 backend/.env
+backend/.env.local
 backend/*.db
 backend/credentials.json
 backend/token.json

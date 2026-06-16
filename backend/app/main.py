@@ -12,6 +12,7 @@ from .config import settings
 from .database import Base, SessionLocal, engine
 from .routers import auth as auth_router
 from .routers import burnout, chat, cycles, help, kpis, notification_settings, notifications, objectives, oauth, reports, settings as settings_router
+from .routers import calendar as calendar_router
 from .routers import share_links, sources, work_items
 
 
@@ -479,6 +480,7 @@ app.include_router(notification_settings.router)
 app.include_router(share_links.router)
 app.include_router(help.router)
 app.include_router(share_links.public_router)
+app.include_router(calendar_router.router)
 
 
 @app.get("/health")
