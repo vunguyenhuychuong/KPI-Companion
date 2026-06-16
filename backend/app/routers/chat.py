@@ -187,7 +187,8 @@ def chat(
     # da tra loi — khong them do tre; loi trong buoc nay khong anh huong chat)
     if response.intent != "error" and not response.proposed_items:
         background_tasks.add_task(
-            agent_memory.learn_from_exchange, current_user.id, text, response.reply
+            agent_memory.learn_from_exchange, current_user.id, text, response.reply,
+            str(session.id),
         )
     return response
 

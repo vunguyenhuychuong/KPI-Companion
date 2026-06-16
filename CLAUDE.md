@@ -81,6 +81,8 @@
 | `VISION_API_KEY` | Không | API key Vision; để trống thì dùng hướng dẫn fallback |
 | `DATABASE_URL` | Không | Mặc định `backend/kpi_companion.db` |
 | `SWAGGER_ENABLED` | Không | Mặc định `true`; set `false` khi deploy public để ẩn `/docs` |
+| `AGENTBASE_MEMORY_ID` | Không | ID Memory trên AgentBase; để trống → dùng SQLite fallback |
+| `AGENTBASE_MEMORY_STRATEGY_ID` | Không | ID Strategy LTMS; bắt buộc kèm `AGENTBASE_MEMORY_ID` |
 
 > Khi thêm biến mới: cập nhật bảng này **và** `.env.example` cùng lúc.
 
