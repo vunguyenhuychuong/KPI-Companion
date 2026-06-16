@@ -1,0 +1,27 @@
+KPI là gì?
+KPI (Key Performance Indicator) là chỉ số đo lường hiệu suất chính. KPI giúp tổ chức đánh giá mức độ đạt được mục tiêu đề ra theo thời gian.
+
+Phân loại KPI:
+- KPI Công việc (Work KPI): đo lường kết quả công việc chuyên môn, dự án, doanh thu, số lượng khách hàng.
+- KPI Cá nhân (Personal KPI): đo lường phát triển bản thân, sức khỏe, học tập, kỹ năng mềm.
+
+Tiêu chí SMART cho KPI tốt:
+- Specific (Cụ thể): KPI phải rõ ràng, không mơ hồ.
+- Measurable (Đo lường được): phải có con số định lượng rõ ràng.
+- Achievable (Khả thi): mục tiêu có thể đạt được trong điều kiện thực tế.
+- Relevant (Liên quan): phải gắn với mục tiêu chiến lược của tổ chức.
+- Time-bound (Có thời hạn): phải có deadline cụ thể.
+
+Ví dụ KPI tốt:
+- "Tăng doanh thu lên 20% trong Q2/2026" — đủ SMART.
+- "Hoàn thành 3 khóa học kỹ năng lãnh đạo trước 30/06/2026" — đủ SMART.
+
+Ví dụ KPI kém:
+- "Làm tốt hơn" — không đo lường được.
+- "Tăng doanh thu" — không có con số, không có thời hạn.
+
+Chu kỳ đánh giá KPI:
+- Hàng tuần: review tiến độ, cập nhật công việc đã làm.
+- Hàng tháng: tổng kết, điều chỉnh kế hoạch nếu lệch.
+- Hàng quý: đánh giá toàn diện, xem xét thay đổi mục tiêu nếu cần.
+- Cuối năm: tự đánh giá (self-review) và đánh giá hiệu suất chính thức.

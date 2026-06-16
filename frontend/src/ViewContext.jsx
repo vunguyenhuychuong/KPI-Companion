@@ -31,5 +31,6 @@ export function useView() {
 export function matchView(mode, category, health) {
   if (mode === 'work') return (category || 'Work') === 'Work'
   if (mode === 'personal') return (category || 'Work') === 'Personal'
+  if (mode === 'focus') return health !== 'green'
   return true
 }

@@ -42,6 +42,15 @@ class Settings(BaseSettings):
             return f"{prefix}{p.as_posix()}"
         return v
 
+    # Swagger UI — tat khi deploy public (SWAGGER_ENABLED=false trong .env)
+    swagger_enabled: bool = True
+
+    # AgentBase Memory Service — long-term memory cho Agent
+    # De trong -> dung SQLite fallback (hien tai). Dat sau khi tao Memory tren AgentBase.
+    # GREENNODE_CLIENT_ID / GREENNODE_CLIENT_SECRET: SDK tu doc tu .greennode.json hoac env vars.
+    agentbase_memory_id: str = ""
+    agentbase_memory_strategy_id: str = ""
+
     # JWT Auth — đặt JWT_SECRET_KEY dài, ngẫu nhiên trong .env khi deploy thật
     jwt_secret_key: str = "change-me-in-production-with-a-long-random-string"
     jwt_algorithm: str = "HS256"
