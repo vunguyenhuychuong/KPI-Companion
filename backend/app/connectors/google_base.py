@@ -17,11 +17,13 @@ SCOPES = [
 
 
 def google_available(db: Session | None = None, user_id: int | None = None) -> bool:
-    """True khi: KHONG bat mock mode VA nguoi dung da ket noi Google."""
-    if settings.google_mock_mode or db is None or user_id is None:
-        return False
+    """True khi nguoi dung da ket noi OAuth Google that (uu tien hon google_mock_mode)."""
+    if db is None or user_id is None:
+        # Khong co user context -> dung global mock_mode
+        return not settings.google_mock_mode
     from ..services import oauth_service
 
+    # User da ket noi OAuth -> dung real API bat ke mock_mode
     return oauth_service.is_connected(db, user_id, "google")
 
 

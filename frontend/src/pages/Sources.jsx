@@ -20,12 +20,12 @@ export default function Sources() {
   )
 
   const SOURCES = [
-    { key: 'gmail', label: 'Gmail', icon: 'mail', descKey: 'sources.source_gmail_desc' },
-    { key: 'calendar', label: 'Google Calendar', icon: 'calendar', descKey: 'sources.source_calendar_desc' },
-    { key: 'sheets', label: 'Google Sheets', icon: 'table', descKey: 'sources.source_sheets_desc' },
-    { key: 'notion', label: 'Notion', icon: 'note', descKey: 'sources.source_notion_desc' },
-    { key: 'slack', label: 'Slack', icon: 'message', descKey: 'sources.source_slack_desc' },
-    { key: 'outlook', label: 'Outlook', icon: 'mail', descKey: 'sources.source_outlook_desc' },
+    { key: 'gmail',    label: 'Gmail',icon: 'mail',           descKey: 'sources.source_gmail_desc',    provider: 'google'  },
+    { key: 'calendar', label: 'Google Calendar',icon: 'calendar', descKey: 'sources.source_calendar_desc', provider: 'google'  },
+    { key: 'sheets',   label: 'Google Sheets',icon: 'table',   descKey: 'sources.source_sheets_desc',   provider: 'google'  },
+    { key: 'notion',   label: 'Notion',icon: 'note',          descKey: 'sources.source_notion_desc',   provider: 'notion'  },
+    { key: 'slack',    label: 'Slack',icon: 'message',           descKey: 'sources.source_slack_desc',    provider: 'slack'   },
+    { key: 'outlook',  label: 'Outlook',icon: 'mail',         descKey: 'sources.source_outlook_desc',  provider: 'outlook' },
   ]
 
   const [status, setStatus] = useState(null)
@@ -34,7 +34,7 @@ export default function Sources() {
   const [connecting, setConnecting] = useState('')
   const [oauthMsg, setOauthMsg] = useState('')
   const [switching, setSwitching] = useState(false)
-  const [selected, setSelected] = useState(['gmail', 'calendar', 'sheets'])
+  const [selected, setSelected] = useState([])
   const [start, setStart] = useState(lastMonday())
   const [end, setEnd] = useState(new Date().toISOString().slice(0, 10))
   const [busy, setBusy] = useState(false)
@@ -48,29 +48,72 @@ export default function Sources() {
     api.listIntegrations().then(setIntegrations).catch(() => {})
   }
 
+  // Xoa khoi selected neu provider bi ngat ket noi
+  useEffect(() => {
+    const connected = new Set(integrations.filter(i => i.connected).map(i => i.provider))
+    if (conn?.google_mock_mode) connected.add('google')
+    const availableKeys = new Set(SOURCES.filter(s => connected.has(s.provider)).map(s => s.key))
+    setSelected(s => s.filter(k => availableKeys.has(k)))
+  }, [integrations, conn])  // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     loadAll()
-    // Doc ket qua tra ve sau khi OAuth redirect (?connected=google | ?oauth_error=...)
+
+    // Xu ly ket qua OAuth redirect (?connected=google | ?oauth_error=...)
     const params = new URLSearchParams(window.location.search)
     const connected = params.get('connected')
     const oauthError = params.get('oauth_error')
-    if (connected) setOauthMsg(tr('integrations.success', { provider: connected }))
-    else if (oauthError) setOauthMsg(tr('integrations.error', { error: oauthError }))
+
     if (connected || oauthError) {
-      // don sach query string khoi URL
       window.history.replaceState({}, '', window.location.pathname)
+      if (window.opener) {
+        // Dang chay trong popup OAuth — bao ket qua ve cua so cha roi dong lai
+        window.opener.postMessage(
+          { type: 'oauth-callback', connected, oauthError },
+          window.location.origin
+        )
+        window.close()
+        return
+      }
+      // Fallback khi popup bi chan: xu ly truc tiep
+      if (connected) setOauthMsg(tr('integrations.success', { provider: connected }))
+      else if (oauthError) setOauthMsg(tr('integrations.error', { error: oauthError }))
     }
+
+    // Lang nghe ket qua tu popup OAuth
+    const handler = (event) => {
+      if (event.origin !== window.location.origin || event.data?.type !== 'oauth-callback') return
+      const { connected: prov, oauthError: err } = event.data
+      if (prov) {
+        setOauthMsg(tr('integrations.success', { provider: prov }))
+        loadAll()
+      } else if (err) {
+        setOauthMsg(tr('integrations.error', { error: err }))
+      }
+    }
+    window.addEventListener('message', handler)
+    return () => window.removeEventListener('message', handler)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const connect = async (provider) => {
     setConnecting(provider)
     setError('')
+    // Mo popup NGAY khi click (truoc await) de tranh bi trinh duyet chan
+    const popup = window.open('', 'oauth-popup', 'width=520,height=660,left=200,top=100')
     try {
       const { auth_url } = await api.startOAuth(provider)
-      window.location.href = auth_url  // chuyen den trang dang nhap cua provider
+      if (popup && !popup.closed) {
+        popup.location.href = auth_url
+      } else {
+        // Popup bi chan → fallback redirect toan trang
+        window.location.href = auth_url
+      }
     } catch (e) {
-      setError(e.message)
+      if (popup) popup.close()
+      console.error('startOAuth error:', e)
+      setError(e.message || e.toString() || 'Lỗi kết nối không xác định')
+    } finally {
       setConnecting('')
     }
   }
@@ -122,10 +165,15 @@ export default function Sources() {
     }
   }
 
+  // Sources kha dung = provider da ket noi, hoac Google trong che do mock
+  const connectedProviders = new Set(integrations.filter(i => i.connected).map(i => i.provider))
+  if (conn?.google_mock_mode) connectedProviders.add('google')
+  const availableSources = SOURCES.filter(s => connectedProviders.has(s.provider))
+
   return (
     <div className="page">
       <header className="page-header">
-        <h1 className="page-title-with-icon"><UiIcon name="link" /> {cleanIconLabel(tr('sources.title'))}</h1>
+        <h1>{tr('sources.title')}</h1>
         <p>{tr('sources.subtitle')}</p>
       </header>
 
@@ -204,31 +252,35 @@ export default function Sources() {
           </div>
         )}
 
-        <div className="source-list">
-          {SOURCES.map((s) => (
-            <label key={s.key} className={`source-item ${selected.includes(s.key) ? 'on' : ''}`}>
-              <input type="checkbox" checked={selected.includes(s.key)} onChange={() => toggle(s.key)} />
-              <span className="source-icon" aria-hidden="true"><UiIcon name={s.icon} /></span>
-              <div>
-                <div className="source-name">{s.label}</div>
-                <div className="muted">{tr(s.descKey)}</div>
-              </div>
-              {status && (
-                <span className={`badge ${status[s.key]}`}>
-                  {sourceBadgeLabel(status[s.key])}
-                </span>
-              )}
-            </label>
-          ))}
-        </div>
-        <div className="form-row">
-          <label>{tr('sources.from_date')} <input type="date" value={start} onChange={(e) => setStart(e.target.value)} /></label>
-          <label>{tr('sources.to_date')} <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} /></label>
-          <button className="btn primary" onClick={sync} disabled={busy || selected.length === 0}>
-            <UiIcon name="scan" />
-            {busy ? tr('sources.scanning') : cleanIconLabel(tr('sources.scan_btn'))}
-          </button>
-        </div>
+        {availableSources.length === 0 ? (
+          <p className="muted" style={{ padding: '12px 0' }}>{tr('sources.no_sources')}</p>
+        ) : (
+          <>
+            <div className="source-list">
+              {availableSources.map((s) => (
+                <label key={s.key} className={`source-item ${selected.includes(s.key) ? 'on' : ''}`}>
+                  <input type="checkbox" checked={selected.includes(s.key)} onChange={() => toggle(s.key)} />
+                  <div>
+                    <div className="source-name">{s.label}</div>
+                    <div className="muted">{tr(s.descKey)}</div>
+                  </div>
+                  {status && status[s.key] && (
+                    <span className={`badge ${status[s.key]}`}>
+                      {status[s.key] === 'mock' ? tr('sources.demo_badge') : tr('sources.real_badge')}
+                    </span>
+                  )}
+                </label>
+              ))}
+            </div>
+            <div className="form-row">
+              <label>{tr('sources.from_date')} <input type="date" value={start} onChange={(e) => setStart(e.target.value)} /></label>
+              <label>{tr('sources.to_date')} <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} /></label>
+              <button className="btn primary" onClick={sync} disabled={busy || selected.length === 0}>
+                {busy ? tr('sources.scanning') : tr('sources.scan_btn')}
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="card">

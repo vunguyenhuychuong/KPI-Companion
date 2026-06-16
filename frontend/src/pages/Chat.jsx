@@ -56,9 +56,14 @@ function AttachmentList({ attachments = [], tr }) {
     )
 }
 
-function Message({ msg, onConfirmed, onEdit, onResend, tr }) {
+function Message({ msg, onConfirmed, onConfirmMeeting, onEdit, onResend, tr }) {
     const [expanded, setExpanded] = useState(false)
     const html = { __html: marked.parse(msg.content || '') }
+    const mp = msg.meeting_proposal
+    const mpEmailAttendees = mp ? (mp.attendees || []).filter(a => a.includes('@')) : []
+    const mpNameOnly = mp
+        ? (mp.unresolved_names?.length ? mp.unresolved_names : (mp.attendees || []).filter(a => !a.includes('@')))
+        : []
     const avatarIcon = msg.role === 'user' ? 'userCircle' : 'assistant'
     const isLongAssistant = msg.role === 'assistant' && (msg.content || '').length > 1400
     return (
@@ -120,8 +125,44 @@ function Message({ msg, onConfirmed, onEdit, onResend, tr }) {
                         onDismiss={() => onConfirmed(msg, true)}
                     />
                 )}
-                {msg.confirmed === 'saved' && (
+                {msg.meeting_proposal && !msg.confirmed && (
+                    <div className="delete-proposal">
+                        <div className="proposal-card">
+                            <div className="proposal-header">
+                                <span className="proposal-icon">📅</span>
+                                <span>{tr('meeting_proposal.heading')}</span>
+                            </div>
+                            <div className="proposal-body">
+                                <p><strong>{msg.meeting_proposal.title}</strong></p>
+                                <p>🕐 {msg.meeting_proposal.start_datetime.slice(0, 16).replace('T', ' ')} → {msg.meeting_proposal.end_datetime.slice(11, 16)}</p>
+                                {mpEmailAttendees.length > 0 && (
+                                    <p>{tr('meeting_proposal.email_attendees')} {mpEmailAttendees.join(', ')}</p>
+                                )}
+                                {mpNameOnly.length > 0 && (
+                                    <p className="reason">{tr('meeting_proposal.name_only_warn', { names: mpNameOnly.join(', ') })}</p>
+                                )}
+                                {msg.meeting_proposal.description && (
+                                    <p className="reason">{msg.meeting_proposal.description}</p>
+                                )}
+                                {msg.meeting_proposal.location && (
+                                    <p>📍 {msg.meeting_proposal.location}</p>
+                                )}
+                            </div>
+                            <div className="proposal-actions">
+                                <button className="btn-confirm" onClick={() => onConfirmMeeting(msg)}>{tr('meeting_proposal.confirm')}</button>
+                                <button className="btn-cancel" onClick={() => onConfirmed(msg, true)}>{tr('meeting_proposal.cancel')}</button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+                {msg.confirmed === 'saved' && !msg.meeting_link && (
                     <div className="confirmed-note">{tr('chat.saved')}</div>
+                )}
+                {msg.confirmed === 'saved' && msg.meeting_link && (
+                    <div className="confirmed-note">
+                        ✅ {tr('meeting_proposal.created')}{' '}
+                        <a href={msg.meeting_link} target="_blank" rel="noreferrer">{tr('meeting_proposal.open_link')}</a>
+                    </div>
                 )}
                 {msg.confirmed === 'dismissed' && <div className="confirmed-note muted">{tr('chat.dismissed')}</div>}
             </div>
@@ -192,6 +233,7 @@ export default function Chat() {
                     proposed_objectives: m.meta?.proposed_objectives || [],
                     weight_changes: m.meta?.weight_changes || [],
                     delete_proposal: m.meta?.delete_proposal,
+                    meeting_proposal: null,
                     attachments: m.meta?.attachments || [],
                     confirmed: status === 'pending' ? undefined : (status || 'history'),
                 }
@@ -303,6 +345,7 @@ export default function Chat() {
                     proposed_objectives: res.proposed_objectives || [],
                     weight_changes: res.weight_changes || [],
                     delete_proposal: res.delete_proposal,
+                    meeting_proposal: res.meeting_proposal || null,
                     duration,
                 },
             ])
@@ -326,6 +369,21 @@ export default function Chat() {
     const editMessage = (content) => {
         setInput(content)
         inputRef.current?.focus()
+    }
+
+    const handleConfirmMeeting = async (msg) => {
+        try {
+            const result = await api.confirmMeeting(msg.meeting_proposal)
+            setMessages((all) =>
+                all.map((m) => (m === msg ? { ...m, confirmed: 'saved', meeting_link: result.html_link } : m)),
+            )
+            if (msg.id) api.setProposalStatus(msg.id, 'saved').catch(() => {})
+        } catch (e) {
+            setMessages((all) => [
+                ...all,
+                { role: 'assistant', content: tr('chat.error_prefix', { message: e.message }) },
+            ])
+        }
     }
 
     const markConfirmed = async (msg, dismissed = false) => {
@@ -400,7 +458,7 @@ export default function Chat() {
                         </div>
                     )}
                     {messages.map((m, i) => (
-                        <Message key={i} msg={m} onConfirmed={markConfirmed} onEdit={editMessage} onResend={send} tr={tr} />
+                        <Message key={i} msg={m} onConfirmed={markConfirmed} onConfirmMeeting={handleConfirmMeeting} onEdit={editMessage} onResend={send} tr={tr} />
                     ))}
                     {busy && <Thinking tr={tr} />}
                     <div ref={bottomRef} />

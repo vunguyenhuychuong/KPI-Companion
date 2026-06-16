@@ -255,6 +255,7 @@ export const api = {
   deleteWorkItem: (id) => request(`/work-items/${id}`, { method: 'DELETE' }),
   confirmItems: (items) => request('/work-items/confirm', { method: 'POST', body: JSON.stringify({ items }) }),
   confirmDeleteKpi: (payload) => request('/kpis/confirm-delete', { method: 'POST', body: JSON.stringify(payload) }),
+  confirmMeeting: (proposal) => request('/calendar/events/confirm', { method: 'POST', body: JSON.stringify(proposal) }),
   updateWorkItemStatus: (id, status, valueDelta = 0) =>
       request(`/work-items/${id}/status?status=${status}&value_delta=${valueDelta}`, { method: 'PUT' }),
 

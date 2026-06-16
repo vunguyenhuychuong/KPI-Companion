@@ -17,7 +17,7 @@
 
 ## Kiến trúc Agent — KHÔNG được đảo ngược
 - KHÔNG dùng native function-calling → dùng intent router + structured JSON
-- 8 intents: `update_progress` / `sync_request` / `create_kpi` / `question` / `other` / `delete_kpi` / `coaching` / `weekly_summary`
+- 9 intents: `update_progress` / `sync_request` / `create_kpi` / `question` / `other` / `delete_kpi` / `coaching` / `weekly_summary` / `create_meeting`
 - Bắt buộc gửi `chat_template_kwargs: {enable_thinking: false}` (thiếu → chậm ~24x)
 - Human-in-the-loop tuyệt đối: agent KHÔNG tự ghi DB. Mọi thay đổi → proposal card → user xác nhận → endpoint confirm → ghi DB
 
@@ -79,10 +79,7 @@
 | `VISION_BASE_URL` | Không | Endpoint Vision OpenAI-compatible cho Help Panel |
 | `VISION_MODEL` | Không | Tên model vision, ví dụ `qwen-vl-max` |
 | `VISION_API_KEY` | Không | API key Vision; để trống thì dùng hướng dẫn fallback |
-| `TESSERACT_CMD` | Không | Đường dẫn Tesseract binary cho OCR local khi đọc ảnh/PDF scan trong Chat attachments; để trống nếu `tesseract` đã có trong PATH |
 | `DATABASE_URL` | Không | Mặc định `backend/kpi_companion.db` |
-| `AGENT_AUTONOMOUS_ENABLED` | Không | Bật/tắt vòng lặp Agent tự chủ nền; mặc định `true`; chỉ tạo insight/proposal, không tự ghi KPI |
-| `AGENT_AUTONOMOUS_INTERVAL_SECONDS` | Không | Chu kỳ chạy nền của Agent tự chủ; mặc định `900`, tối thiểu thực thi 60 giây |
 
 > Khi thêm biến mới: cập nhật bảng này **và** `.env.example` cùng lúc.
 
@@ -105,6 +102,7 @@
 - [x] **Autonomous Agent Loop** — service nền `services/autonomous_agent.py` chạy Perceive → Reason → Act → Remember theo chu kỳ; ghi `AgentCycleLog`, tạo chat session "Agent tự chủ" với insight/proposal cần xác nhận; không tự confirm hay ghi KPI/Objectives/Work items.
 - [x] **Autonomous Agent Inbox** — nút Agent tự chủ trên header gọi `/api/agent/autonomous/refresh` khi mở app, hiển thị các proposal tạm đang pending ngoài Chat để user xác nhận/ẩn ngay.
 - [x] **AI Category Guard** — Agent tự chủ gọi Qwen qua `call_json` để đọc ngữ cảnh Objective/KPI và phát hiện KPI có vẻ nằm sai nhóm Work/Personal; chạy khi mở app/quét nền và sau khi user tạo/sửa/xác nhận KPI; hiển thị thẻ gợi ý chuyển phân loại trong Autonomous Inbox, chỉ ghi `category` sau khi user xác nhận.
+- [x] **Tạo cuộc họp qua chat** — intent `create_meeting` (9th intent); trích xuất tiêu đề/thời gian/người tham dự từ chat → proposal card → `POST /api/calendar/events/confirm` → tạo sự kiện Google Calendar; scope `calendar.events` (write); từ khóa: "tạo meeting", "đặt lịch họp", "book meeting".
 
 ## Known Issues & TODO
 <!-- Cập nhật liên tục — KHÔNG xóa mục đã fix, đổi sang [x] -->

@@ -4,6 +4,7 @@ Dung LangChain (ChatOpenAI + LCEL) voi Qwen qua endpoint OpenAI-compatible.
 Khong dua vao native function-calling de tuong thich moi endpoint Qwen
 (DashScope / OpenRouter / vLLM noi bo) — thay vao do dung structured JSON output.
 """
+import re
 import logging
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -13,9 +14,14 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..connectors import fetch_activities
+from ..connectors.sheets_conn import read_sheet_raw
 from ..services import kpi_service, oauth_service
 from . import memory, prompts
 from .llm import call_json, call_text
+
+# Trích sheet ID và gid từ Google Sheets URL
+_SHEET_ID_RE = re.compile(r"docs\.google\.com/spreadsheets/d/([A-Za-z0-9_-]+)")
+_SHEET_GID_RE = re.compile(r"[?&#]gid=(\d+)")
 
 logger = logging.getLogger(__name__)
 ATTACHMENT_CONTEXT_MARKER = "ATTACHMENT CONTEXT FROM USER-UPLOADED FILES"
@@ -25,7 +31,106 @@ def _today() -> str:
     return date.today().isoformat()
 
 
-VALID_INTENTS = {"update_progress", "sync_request", "create_kpi", "delete_kpi", "coaching", "question", "weekly_summary", "other"}
+_GOOGLE_SOURCE_KEYWORDS: dict[str, list[str]] = {
+    "calendar": [
+        "lịch", "lich", "calendar", "cuộc họp", "cuoc hop", "meeting",
+        "sự kiện", "su kien", "event", "lịch họp", "họp hôm", "họp tuần",
+        "hôm nay có", "hôm qua có", "schedule",
+    ],
+    "gmail": [
+        "email", "gmail", "thư", "mail", "inbox", "hộp thư", "hop thu",
+        "tin nhắn email", "nhận được", "nhan duoc", "gửi cho tôi",
+        "gửi mail", "có mail", "đọc mail", "unread",
+    ],
+    "sheets": [
+        "timesheet", "google sheets", "google sheet", "spreadsheet",
+        "sheets", "sheet của", "xem sheet", "đọc sheet", "doc sheet",
+        "bảng tính", "bang tinh", "log công việc", "ghi công",
+        "công việc đã log", "log giờ", "lịch làm việc", "lich lam viec",
+    ],
+}
+
+
+def _google_sources_for_query(text: str) -> list[str]:
+    """Trả về list Google sources phù hợp dựa trên keywords trong câu hỏi."""
+    text_lower = text.lower()
+    sources = [src for src, kws in _GOOGLE_SOURCE_KEYWORDS.items() if any(kw in text_lower for kw in kws)]
+    # URL Google Sheets trong tin nhắn -> thêm "sheets" nếu chưa có
+    if _SHEET_ID_RE.search(text) and "sheets" not in sources:
+        sources.append("sheets")
+    return sources
+
+
+def _extract_gsheets_from_text(text: str) -> list[tuple[str, str | None]]:
+    """Trích (sheet_id, gid?) từ Google Sheets URLs trong text. Giữ thứ tự, loại trùng.
+
+    Dùng finditer theo vị trí để match đúng gid với từng sheet ID.
+    """
+    seen: set[str] = set()
+    result: list[tuple[str, str | None]] = []
+    for m in _SHEET_ID_RE.finditer(text):
+        sid = m.group(1)
+        if sid in seen:
+            continue
+        seen.add(sid)
+        # Tìm gid trong ~200 ký tự ngay sau sheet ID (trước URL tiếp theo)
+        segment = text[m.end(): m.end() + 200]
+        gid_m = _SHEET_GID_RE.search(segment)
+        gid = gid_m.group(1) if gid_m else None
+        result.append((sid, gid))
+    return result
+
+
+def _date_range_for_query(text: str) -> tuple[date, date]:
+    """Suy ra date range từ câu hỏi. Default: tuần trước + 2 tuần tới (phù hợp lịch họp)."""
+    today = date.today()
+    t = text.lower()
+
+    # "tháng này" / "this month" / "tháng <số>"
+    month_names = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 4, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+    }
+    if "tháng này" in t or "this month" in t or f"tháng {today.month}" in t:
+        y, m = today.year, today.month
+        end_month = date(y, m + 1, 1) - timedelta(days=1) if m < 12 else date(y, 12, 31)
+        return date(y, m, 1), end_month
+
+    # "tháng trước" / "last month"
+    if "tháng trước" in t or "last month" in t:
+        first_this = today.replace(day=1)
+        end_prev = first_this - timedelta(days=1)
+        return end_prev.replace(day=1), end_prev
+
+    # "tuần này" / "this week"
+    if "tuần này" in t or "this week" in t or "tuần hiện tại" in t:
+        start = today - timedelta(days=today.weekday())  # Monday
+        return start, start + timedelta(days=6)
+
+    # "tuần tới" / "next week"
+    if "tuần tới" in t or "tuần sau" in t or "next week" in t:
+        start = today - timedelta(days=today.weekday()) + timedelta(days=7)
+        return start, start + timedelta(days=6)
+
+    # "tuần trước" / "last week"
+    if "tuần trước" in t or "last week" in t:
+        start = today - timedelta(days=today.weekday() + 7)
+        return start, start + timedelta(days=6)
+
+    # "hôm nay" / "today"
+    if "hôm nay" in t or "today" in t or "ngày hôm nay" in t:
+        return today, today + timedelta(days=1)
+
+    # "ngày mai" / "tomorrow"
+    if "ngày mai" in t or "tomorrow" in t:
+        return today + timedelta(days=1), today + timedelta(days=1)
+
+    # default: 7 ngày trước + 14 ngày tới (bao phủ lịch họp sắp tới)
+    return today - timedelta(days=7), today + timedelta(days=14)
+
+
+VALID_INTENTS = {"update_progress", "sync_request", "create_kpi", "delete_kpi", "coaching", "question", "weekly_summary", "create_meeting", "other"}
 
 
 def _lang_suffix(lang: str) -> str:
@@ -308,6 +413,14 @@ def _classify_intent_fast(text: str, history: list[dict] | None = None) -> str |
         return "question"
     if _has_any(low, ["đã ", "da ", "đang ", "dang ", "sẽ ", "se ", "hoàn thành", "hoan thanh", "xong", "tuần này", "tuan nay", "hôm nay", "hom nay"]) and not low.endswith("?"):
         return "update_progress"
+    if _has_any(low, [
+        "tạo meeting", "tao meeting", "đặt lịch họp", "dat lich hop",
+        "tạo cuộc họp", "tao cuoc hop", "book meeting", "schedule meeting",
+        "mời họp", "moi hop", "lên lịch họp", "len lich hop",
+        "tạo event", "tao event", "đặt meeting", "dat meeting",
+        "thêm cuộc họp", "them cuoc hop", "tạo lịch họp", "tao lich hop",
+    ]):
+        return "create_meeting"
     if len(low) <= 20 and _has_any(low, ["xin chào", "xin chao", "hello", "hi", "chào", "chao"]):
         return "other"
     return None
@@ -437,11 +550,11 @@ def extract_delete_request(
 ) -> dict:
     """Trich xuat yeu cau xoa KPI/Objective tu tin nhan nguoi dung."""
     obj_text = "\n".join(
-        f"- internal_objective_id={o.id} | display_name=\"{o.name}\" | trọng số {o.weight:.0f}%"
+        f"- id={o.id} | {o.name} | trọng số {o.weight:.0f}%"
         for o in objectives
     ) or "(Chưa có mục tiêu nào)"
     kpi_text = "\n".join(
-        f"- internal_kpi_id={k.id} | display_name=\"{k.name}\" | {k.unit}"
+        f"- id={k.id} | {k.name} | {k.unit}"
         for k in kpis
     ) or "(Chưa có KPI nào)"
 
@@ -541,6 +654,75 @@ def coach_kpi(
     return analysis, root_causes, proposed
 
 
+def _resolve_attendees(proposal: schemas.MeetingProposal, db: Session) -> schemas.MeetingProposal:
+    """Tra ten (khong co @) ve email bang cach tra cuu bang users noi bo.
+
+    Email da co giu nguyen. Ten tim duoc -> thay bang email. Ten khong tim duoc ->
+    chuyen sang unresolved_names (hien thi canh bao tren frontend, khong gui invite).
+    """
+    resolved: list[str] = []
+    unresolved: list[str] = []
+    for a in proposal.attendees:
+        if "@" in a:
+            resolved.append(a)
+        else:
+            user = db.scalars(
+                select(models.User).where(models.User.name.ilike(f"%{a}%"))
+            ).first()
+            if user and user.email:
+                resolved.append(user.email)
+            else:
+                unresolved.append(a)
+    return schemas.MeetingProposal(
+        title=proposal.title,
+        start_datetime=proposal.start_datetime,
+        end_datetime=proposal.end_datetime,
+        attendees=resolved,
+        unresolved_names=unresolved,
+        description=proposal.description,
+        location=proposal.location,
+        timezone=proposal.timezone,
+    )
+
+
+def extract_meeting_proposal(text: str, history: list[dict] | None = None) -> schemas.MeetingProposal | None:
+    """Trich xuat thong tin cuoc hop tu tin nhan nguoi dung."""
+    system = prompts.CREATE_MEETING_SYSTEM.format(today=_today())
+    data = call_json(system, _history_block(history) + text, temperature=0.0)
+
+    title = str(data.get("title") or "").strip()
+    if not title:
+        return None
+
+    start_raw = str(data.get("start_datetime") or "").strip().replace(" ", "T")
+    end_raw = str(data.get("end_datetime") or "").strip().replace(" ", "T")
+
+    try:
+        datetime.fromisoformat(start_raw[:19])
+        start_dt = start_raw[:19]
+    except ValueError:
+        tomorrow = date.today() + timedelta(days=1)
+        start_dt = f"{tomorrow.isoformat()}T09:00:00"
+
+    try:
+        datetime.fromisoformat(end_raw[:19])
+        end_dt = end_raw[:19]
+    except ValueError:
+        end_dt = (datetime.fromisoformat(start_dt) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+
+    attendees = [str(a).strip() for a in (data.get("attendees") or []) if str(a).strip()]
+
+    return schemas.MeetingProposal(
+        title=title[:200],
+        start_datetime=start_dt,
+        end_datetime=end_dt,
+        attendees=attendees[:10],
+        description=str(data.get("description") or "")[:500],
+        location=str(data.get("location") or "")[:200],
+        timezone=str(data.get("timezone") or "Asia/Ho_Chi_Minh"),
+    )
+
+
 def _match_kpi(text: str, kpis: list[models.KPI]) -> models.KPI | None:
     """Tim KPI nguoi dung nhac toi trong text (khop ten dai nhat)."""
     low = text.lower()
@@ -587,39 +769,12 @@ def detect_conflicts(
     )
     data = call_json(system, "Hãy rà soát và chỉ ra các xung đột giữa các KPI trên.", temperature=0.0)
     valid_ids = {k.id for k in kpis}
-    kpi_by_id = {k.id: k for k in kpis}
-    kpi_by_name_lower = {k.name.strip().lower(): k for k in kpis}
-    proposed_name_canonical = {p.name.strip().lower(): p.name for p in (proposed or [])}
     out: list[schemas.KPIConflict] = []
     for r in data.get("conflicts", []) if isinstance(data, dict) else []:
         if not isinstance(r, dict) or not r.get("explanation"):
             continue
-
-        # Validate existing KPI IDs strictly
-        ids_from_ids = [i for i in r.get("kpi_ids", []) if isinstance(i, int) and i in valid_ids]
-        ids_set = set(ids_from_ids)
-
-        # Recover additional KPIs mentioned by name in kpi_names:
-        # - existing KPIs matched by name (fixes wrong/hallucinated ID)
-        # - proposed KPIs matched by canonical name (no ID exists yet)
-        extra_ids: list[int] = []
-        proposed_conflict_names: list[str] = []
-        for raw_name in r.get("kpi_names", []):
-            if not raw_name:
-                continue
-            n_lower = str(raw_name).strip().lower()
-            matched = kpi_by_name_lower.get(n_lower)
-            if matched and matched.id not in ids_set:
-                extra_ids.append(matched.id)
-                ids_set.add(matched.id)
-            elif n_lower in proposed_name_canonical:
-                proposed_conflict_names.append(proposed_name_canonical[n_lower])
-
-        ids = ids_from_ids + extra_ids
-        # Reconstruct names from DB (authoritative for existing) + canonical proposed names.
-        # This keeps kpi_ids and kpi_names aligned even when the LLM returns wrong IDs.
-        names = [kpi_by_id[i].name for i in ids] + proposed_conflict_names
-
+        ids = [i for i in r.get("kpi_ids", []) if isinstance(i, int) and i in valid_ids]
+        names = [str(n) for n in r.get("kpi_names", []) if n]
         if not ids and not names:
             continue
         sev = r.get("severity")
@@ -709,27 +864,6 @@ def extract_work_items(
                 delta = round(max(0.0, float(set_val)) - kpi_by_id[kpi_id].current_value, 2)
             except (TypeError, ValueError):
                 pass
-        candidates: list[schemas.KpiCandidate] = []
-        raw_candidates = r.get("alternative_kpis") or r.get("candidate_kpis") or []
-        if isinstance(raw_candidates, list):
-            for c in raw_candidates[:2]:
-                if not isinstance(c, dict):
-                    continue
-                cid = c.get("kpi_id")
-                if isinstance(cid, int) and cid in kpi_by_id and cid != kpi_id:
-                    candidates.append(
-                        schemas.KpiCandidate(
-                            kpi_id=cid,
-                            kpi_name=kpi_by_id[cid].name,
-                            reason=str(c.get("reason") or "")[:300],
-                        )
-                    )
-        try:
-            confidence = float(r.get("confidence")) if r.get("confidence") is not None else None
-        except (TypeError, ValueError):
-            confidence = None
-        if confidence is not None:
-            confidence = max(0.0, min(1.0, confidence))
         out.append(
             schemas.ProposedWorkItem(
                 title=str(r["title"])[:500],
@@ -742,11 +876,6 @@ def extract_work_items(
                 source=src,
                 source_ref=src_ref,
                 work_date=wd,
-                mapping_reason=str(r.get("mapping_reason") or r.get("reason") or "")[:500],
-                confidence=confidence,
-                alternative_kpis=candidates,
-                original_kpi_id=kpi_id,
-                original_status=status,
             )
         )
     return out
@@ -876,11 +1005,7 @@ def handle_message(
 ) -> schemas.ChatResponse:
     """Diem vao chinh cua Agent cho moi tin nhan chat. history giup hieu cau hoi noi tiep."""
     kpis = kpi_service.get_active_kpis(db, user_id)
-    visible_text = _strip_attachment_context(text).strip() or text
-    has_attachment_context = _has_attachment_context(text)
-    intent = classify_intent(visible_text, history)
-    if has_attachment_context and intent == "other":
-        intent = "question"
+    intent = classify_intent(text, history)
     profile_context = _user_profile_context(db, user_id, lang)
 
     # khoi ghi nho Agent da tu hoc — giup hieu cach goi tat, vai tro, thoi quen nguoi dung
@@ -894,13 +1019,11 @@ def handle_message(
     if intent == "update_progress":
         items = extract_work_items(text, kpis, source="chat", history=history, memories=mem)
         return schemas.ChatResponse(
-            reply=_proposal_reply(items, lang=lang, history=history, user_text=text, kpis=kpis),
-            intent=intent,
-            proposed_items=items,
+            reply=_proposal_reply(items, lang=lang, history=history, user_text=text), intent=intent, proposed_items=items
         )
 
     if intent == "sync_request":
-        sources, start, end = parse_sync_command(visible_text, history)
+        sources, start, end = parse_sync_command(text, history)
         disconnected = _disconnected_sources(db, user_id, sources)
         if disconnected and len(disconnected) == len(sources):
             facts = (
@@ -909,7 +1032,7 @@ def handle_message(
                 "No scan was performed because every requested source is currently in mock/not-connected mode. "
                 "User can connect real sources in Data Sources or upload Excel/CSV work logs."
             )
-            msg = _status_reply(visible_text, facts, intent, lang, history, kpis=kpis)
+            msg = _status_reply(text, facts, intent, lang, history)
             return schemas.ChatResponse(reply=msg, intent=intent)
         activities = fetch_activities(sources, start, end, db=db, user_id=user_id)
         if not activities:
@@ -918,13 +1041,13 @@ def handle_message(
                 f"Date range: {start} -> {end}\n"
                 "Activities found: 0"
             )
-            no_act = _status_reply(visible_text, facts, intent, lang, history, kpis=kpis)
+            no_act = _status_reply(text, facts, intent, lang, history)
             return schemas.ChatResponse(reply=no_act, intent=intent)
         items = extract_work_items("", kpis, activities=activities)
         reply = _proposal_reply(items, from_sync=True, lang=lang, history=history, user_text=(
             f"Scanned sources: {', '.join(sources)}; date range: {start} -> {end}; "
-            f"raw activities found: {len(activities)}. User request: {visible_text}"
-        ), kpis=kpis)
+            f"raw activities found: {len(activities)}. User request: {text}"
+        ))
         return schemas.ChatResponse(reply=reply, intent=intent, proposed_items=items)
 
     if intent == "create_kpi":
@@ -935,12 +1058,12 @@ def handle_message(
         if proposed:
             try:
                 conflicts = detect_conflicts(kpis, proposed)
-            except Exception as e:
-                logger.warning("conflict detection failed: %s", e)  # tinh nang phu, khong chan luong tao KPI
+            except Exception:
+                pass  # canh bao xung dot la tinh nang phu — khong duoc chan luong tao KPI
         return schemas.ChatResponse(
             reply=_kpi_proposal_reply(
                 proposed, changes, lang=lang, new_objectives=new_objs,
-                conflicts=conflicts, history=history, user_text=text, kpis=kpis,
+                conflicts=conflicts, history=history, user_text=text,
             ),
             intent=intent,
             proposed_objectives=new_objs,
@@ -952,7 +1075,7 @@ def handle_message(
     if intent == "delete_kpi":
         objectives = kpi_service.objectives_with_progress(db, user_id)
         delete_req = extract_delete_request(
-            _history_block(history) + visible_text, objectives, kpis
+            _history_block(history) + text, objectives, kpis
         )
 
         target_type = delete_req["target_type"]
@@ -1005,10 +1128,10 @@ def handle_message(
             prompts.DELETE_REPLY_SYSTEM.format(
                 target_block=target_block, today=_today(), memories=mem_block
             ) + _lang_suffix(lang),
-            visible_text, history=history,
+            text, history=history,
         )
         return schemas.ChatResponse(
-            reply=_safe_reply(reply, kpis),
+            reply=reply,
             intent=intent,
             delete_proposal=schemas.DeleteProposal(
                 target_type=target_type,
@@ -1020,16 +1143,16 @@ def handle_message(
 
     if intent == "coaching":
         # tim KPI nguoi dung nhac toi; khong ro -> chon KPI tut ky vong nhat
-        target = _match_kpi(visible_text, kpis)
+        target = _match_kpi(text, kpis)
         if target is None and kpis:
             target = min(kpis, key=lambda k: kpi_service.health_of(k)[1])
         if target is None:
             facts = "The user has no active KPIs, so coaching/RCA cannot be performed yet."
-            no_kpi = _status_reply(visible_text, facts, intent, lang, history, kpis=kpis)
+            no_kpi = _status_reply(text, facts, intent, lang, history)
             return schemas.ChatResponse(reply=no_kpi, intent=intent)
         analysis, causes, proposed = coach_kpi(db, target, user_id, lang)
         return schemas.ChatResponse(
-            reply=_coaching_reply(analysis, causes, proposed, visible_text, lang, history, kpis=kpis),
+            reply=_coaching_reply(analysis, causes, proposed, text, lang, history),
             intent=intent,
             proposed_items=proposed,
         )
@@ -1066,11 +1189,105 @@ def handle_message(
         saved_note = _status_reply(visible_text, facts, "weekly_summary_saved", lang, history, kpis=kpis)
         return schemas.ChatResponse(reply=content + "\n\n---\n" + saved_note, intent="weekly_summary")
 
+    if intent == "create_meeting":
+        proposal = extract_meeting_proposal(text, history)
+        if proposal is None:
+            facts = "Could not extract a meeting from the user's message (title was empty or unclear)."
+            msg = _status_reply(text, facts, intent, lang, history)
+            return schemas.ChatResponse(reply=msg, intent=intent)
+
+        proposal = _resolve_attendees(proposal, db)
+
+        invite_list = proposal.attendees  # da la email sau khi resolve
+        unresolved = proposal.unresolved_names
+        meeting_block = (
+            f"Title: {proposal.title}\n"
+            f"Start: {proposal.start_datetime} ({proposal.timezone})\n"
+            f"End: {proposal.end_datetime}\n"
+            f"Attendees with email (will receive invite): {', '.join(invite_list) or '(none)'}\n"
+            f"Description: {proposal.description or '(none)'}\n"
+            f"Location: {proposal.location or '(none)'}\n"
+            + (f"Note: {len(unresolved)} name(s) could not be resolved to an email "
+               f"({', '.join(unresolved)}) → they will NOT receive a calendar invitation." if unresolved else "")
+        )
+        reply = call_text(
+            prompts.CREATE_MEETING_REPLY_SYSTEM.format(
+                language=_language_name(lang), meeting_block=meeting_block
+            ) + _lang_suffix(lang),
+            text, history=history, max_tokens=400,
+        )
+        return schemas.ChatResponse(reply=reply, intent=intent, meeting_proposal=proposal)
+
     if intent == "question":
         context = kpi_service.full_context_text(db, user_id) + user_context
+
+        # Neu user hoi ve Google data (lich/email/sheets) -> fetch va inject vao context
+        google_sources = _google_sources_for_query(text)
+        if google_sources:
+            g_start, g_end = _date_range_for_query(text)
+            try:
+                activities = fetch_activities(
+                    google_sources,
+                    g_start,
+                    g_end,
+                    db=db,
+                    user_id=user_id,
+                )
+                real = [a for a in activities if a.get("ref") != "error"]
+                errors = [a for a in activities if a.get("ref") == "error"]
+                if real:
+                    lines = [
+                        f"[{a['source'].upper()} | {a['date']}] {a['text']}"
+                        for a in real[:40]
+                    ]
+                    context += (
+                        f"\n\n--- DỮ LIỆU TỪ TÀI KHOẢN GOOGLE ({g_start} → {g_end}) ---\n"
+                        + "\n".join(lines)
+                    )
+                elif errors:
+                    context += (
+                        f"\n\n(Lỗi khi tải dữ liệu Google: {errors[0]['text']})"
+                    )
+                else:
+                    context += (
+                        f"\n\n(Đã truy vấn {', '.join(google_sources)} từ {g_start} đến {g_end}"
+                        " nhưng không có sự kiện nào trong khoảng thời gian này.)"
+                    )
+            except Exception as exc:
+                context += (
+                    f"\n\n(Không thể tải dữ liệu Google [{', '.join(google_sources)}]: {exc})"
+                )
+
+        # Đọc trực tiếp các Google Sheet URL người dùng đề cập trong tin nhắn
+        gsheet_refs = _extract_gsheets_from_text(text)
+        if gsheet_refs:
+            if oauth_service.is_connected(db, user_id, "google"):
+                for sid, gid in gsheet_refs[:2]:  # giới hạn 2 sheet
+                    try:
+                        rows = read_sheet_raw(sid, db, user_id, gid=gid)
+                        if rows:
+                            preview = "\n".join(
+                                " | ".join(cell for cell in row[:12])
+                                for row in rows[:60]
+                            )
+                            context += (
+                                f"\n\n--- NỘI DUNG GOOGLE SHEET (ID: ...{sid[-6:]}) ---\n"
+                                + preview
+                            )
+                        else:
+                            context += f"\n\n(Sheet {sid[-6:]}... trống hoặc không có dữ liệu.)"
+                    except Exception as exc:
+                        context += f"\n\n(Không thể đọc sheet {sid[-6:]}...: {exc})"
+            else:
+                context += (
+                    "\n\n(Bạn đề cập đến Google Sheet nhưng chưa kết nối Google. "
+                    "Vào Nguồn dữ liệu → Kết nối Google để đọc sheet.)"
+                )
+
+        has_google_data = bool(google_sources or gsheet_refs)
         reply = call_text(
             prompts.ANSWER_SYSTEM.format(context=context, today=_today()) + _lang_suffix(lang),
-            text, history=history, max_tokens=900,
+            text, history=history, max_tokens=1500 if has_google_data else 900,
         )
         return schemas.ChatResponse(reply=_safe_reply(reply, kpis), intent=intent)
 

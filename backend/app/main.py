@@ -13,6 +13,7 @@ from .database import Base, SessionLocal, engine
 from .routers import auth as auth_router
 from .routers import autonomous_agent as autonomous_agent_router
 from .routers import burnout, chat, cycles, help, kpis, notification_settings, notifications, objectives, oauth, reports, settings as settings_router
+from .routers import calendar as calendar_router
 from .routers import share_links, sources, work_items
 from .services import autonomous_agent as autonomous_agent_service
 
@@ -61,8 +62,8 @@ def migrate():
                 cycle_id = existing
             else:
                 conn.execute(text(
-                    "INSERT INTO kpi_cycles (user_id, name, cycle_type, start_date, end_date, is_active, is_locked, created_at) "
-                    "VALUES (:uid, :name, 'yearly', :sd, :ed, 1, 0, CURRENT_TIMESTAMP)"
+                    "INSERT INTO kpi_cycles (user_id, name, cycle_type, start_date, end_date, is_active, is_locked, lock_reason, created_at) "
+                    "VALUES (:uid, :name, 'yearly', :sd, :ed, 1, 0, '', CURRENT_TIMESTAMP)"
                 ), {"uid": user_id, "name": f"Năm {y}", "sd": f"{y}-01-01", "ed": f"{y}-12-31"})
                 cycle_id = conn.execute(text("SELECT MAX(id) FROM kpi_cycles")).scalar()
             conn.execute(text(
@@ -514,8 +515,33 @@ app.include_router(notification_settings.router)
 app.include_router(share_links.router)
 app.include_router(help.router)
 app.include_router(share_links.public_router)
+app.include_router(calendar_router.router)
+
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
 
 
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+import os  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from fastapi.responses import FileResponse  # noqa: E402
+
+_static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
+if os.path.isdir(_static_dir):
+    _assets_dir = os.path.join(_static_dir, "assets")
+    if os.path.isdir(_assets_dir):
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        if full_path:
+            safe = os.path.normpath(os.path.join(_static_dir, full_path))
+            if safe.startswith(os.path.normpath(_static_dir)) and os.path.isfile(safe):
+                return FileResponse(safe)
+        return FileResponse(os.path.join(_static_dir, "index.html"))

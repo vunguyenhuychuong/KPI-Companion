@@ -1241,6 +1241,7 @@ export const translations = {
     'sources.upload_desc': 'Timesheet, log công việc — cần cột: Ngày, Công việc, Trạng thái, Ghi chú (tên cột linh hoạt, Agent tự nhận diện).',
     'sources.upload_btn': '📤 Chọn file',
     'sources.success': '✅ Đã lưu và cập nhật tiến độ KPI. Xem Dashboard để thấy thay đổi.',
+    'sources.no_sources': 'Kết nối ít nhất một tài khoản bên trên để quét dữ liệu thật.',
 
     // Integrations (ket noi OAuth)
     'integrations.section': 'Kết nối tài khoản',
@@ -1290,6 +1291,16 @@ export const translations = {
     'delete_proposal.archive_note': 'Mục này sẽ được lưu trữ — bạn có thể khôi phục từ tab Lịch sử.',
     'delete_proposal.confirm': 'Xác nhận gỡ bỏ',
     'delete_proposal.cancel': 'Hủy',
+
+    // Meeting proposal
+    'meeting_proposal.heading': '📅 Tạo cuộc họp trong Google Calendar',
+    'meeting_proposal.confirm': 'Tạo ngay',
+    'meeting_proposal.cancel': 'Hủy',
+    'meeting_proposal.created': 'Đã tạo thành công.',
+    'meeting_proposal.open_link': 'Mở trong Google Calendar',
+    'meeting_proposal.email_attendees': '✉️ Sẽ nhận lời mời:',
+    'meeting_proposal.name_only_warn': '⚠️ Không tìm thấy email của {names} — sẽ không nhận lời mời lịch.',
+    'meeting_proposal.no_attendees': '(Không có người tham dự)',
 
     // SMART Validation
     'kpis.tip_smart': 'Kiểm tra tiêu chí SMART',
@@ -2533,6 +2544,7 @@ export const translations = {
     'sources.upload_desc': 'Timesheet, work log — needs columns: Date, Task, Status, Note (flexible names, Agent auto-detects).',
     'sources.upload_btn': '📤 Choose file',
     'sources.success': '✅ Saved and KPI progress updated. Check Dashboard to see changes.',
+    'sources.no_sources': 'Connect at least one account above to scan real data.',
 
     // Integrations (OAuth connections)
     'integrations.section': 'Connect accounts',
@@ -2582,6 +2594,16 @@ export const translations = {
     'delete_proposal.archive_note': 'This will be archived — you can restore it from the History tab.',
     'delete_proposal.confirm': 'Confirm removal',
     'delete_proposal.cancel': 'Cancel',
+
+    // Meeting proposal
+    'meeting_proposal.heading': '📅 Create meeting in Google Calendar',
+    'meeting_proposal.confirm': 'Create now',
+    'meeting_proposal.cancel': 'Cancel',
+    'meeting_proposal.created': 'Successfully created.',
+    'meeting_proposal.open_link': 'Open in Google Calendar',
+    'meeting_proposal.email_attendees': '✉️ Will receive invite:',
+    'meeting_proposal.name_only_warn': '⚠️ No email found for {names} — they won\'t receive a calendar invite.',
+    'meeting_proposal.no_attendees': '(No attendees)',
 
     // SMART Validation
     'kpis.tip_smart': 'SMART criteria check',

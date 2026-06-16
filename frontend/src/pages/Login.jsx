@@ -91,7 +91,7 @@ export default function Login({ onLogin }) {
     }
     const e = email.trim()
     if (!e) return tr('login.err_email_empty')
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e)) return tr('login.err_email_format')
+    if (mode === 'register' && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e)) return tr('login.err_email_format')
     if (!password) return tr('login.err_password_empty')
     if (mode === 'register' && password.length < 6) return tr('login.err_password_short')
     if (mode === 'register' && /[<>"'/\\&{}]/.test(name)) return tr('login.err_name_invalid')

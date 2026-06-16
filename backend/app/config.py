@@ -8,7 +8,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=BASE_DIR / ".env", env_file_encoding="utf-8", extra="ignore"
+        env_file=[BASE_DIR / ".env", BASE_DIR / ".env.local"],
+        env_file_encoding="utf-8",
+        extra="ignore",
     )
 
     # LLM — Qwen qua endpoint OpenAI-compatible
@@ -54,6 +56,8 @@ class Settings(BaseSettings):
 
     # Google: mock mode khi chua co OAuth credentials
     google_mock_mode: bool = True
+    google_sheet_id: str = ""
+    google_sheet_range: str = "A2:D200"
     google_credentials_file: str = "credentials.json"
     google_token_file: str = "token.json"
 

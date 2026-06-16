@@ -58,7 +58,7 @@ class KPICycle(Base):
     is_locked: Mapped[bool] = mapped_column(Boolean, default=False)  # chot so — khong sua duoc
     locked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     locked_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
-    lock_reason: Mapped[str] = mapped_column(String(500), default="")
+    lock_reason: Mapped[str] = mapped_column(String(500), default="", server_default="")
     cloned_from_cycle_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

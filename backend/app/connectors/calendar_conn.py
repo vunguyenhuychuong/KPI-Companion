@@ -52,3 +52,45 @@ def fetch_calendar(start: date, end: date, db=None, user_id=None) -> list[dict]:
             }
         )
     return out
+
+
+def create_calendar_event(proposal, db, user_id: int) -> dict:
+    """Tao su kien moi trong Google Calendar tu MeetingProposal.
+
+    Tra ve {"event_id": ..., "html_link": ...} khi thanh cong.
+    attendees da duoc resolve thanh email boi _resolve_attendees() truoc khi den day;
+    filter "@" giu lai de bao ve khi goi truc tiep (vd: test / curl).
+    """
+    service = get_service("calendar", "v3", db, user_id)
+
+    event_body: dict = {
+        "summary": proposal.title,
+        "start": {"dateTime": proposal.start_datetime, "timeZone": proposal.timezone},
+        "end": {"dateTime": proposal.end_datetime, "timeZone": proposal.timezone},
+    }
+    if proposal.description:
+        event_body["description"] = proposal.description
+    if proposal.location:
+        event_body["location"] = proposal.location
+
+    # Bao ve cuoi: chi truyen attendee hop le (co @)
+    email_attendees = [{"email": a} for a in proposal.attendees if "@" in a]
+    if email_attendees:
+        event_body["attendees"] = email_attendees
+
+    # Ghi chu ten khong tim duoc email vao description de chu hop biet
+    if getattr(proposal, "unresolved_names", None):
+        note = f"\n\n⚠️ Chưa tìm được email: {', '.join(proposal.unresolved_names)} — hãy chuyển tiếp lời mời thủ công."
+        event_body["description"] = (event_body.get("description") or "") + note
+
+    result = service.events().insert(
+        calendarId="primary",
+        body=event_body,
+        sendUpdates="all" if email_attendees else "none",
+    ).execute()
+
+    return {
+        "event_id": result.get("id", ""),
+        "html_link": result.get("htmlLink", ""),
+        "status": result.get("status", "confirmed"),
+    }
