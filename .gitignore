@@ -10,3 +10,8 @@ node_modules/
 dist/
 .DS_Store
 .agentbase/
+.greennode.json
+.env.deploy
+.agents/
+.idea/
+backend/_startup*.log
