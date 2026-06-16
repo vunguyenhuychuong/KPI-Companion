@@ -63,7 +63,7 @@ def learn_from_exchange(user_id: int, user_msg: str, assistant_reply: str) -> No
             if len(content) < 8:
                 continue
             category = str(it.get("category") or "other")[:30]
-            if category not in {"profile", "alias", "workflow", "preference", "other"}:
+            if category not in {"profile", "alias", "workflow", "preference", "correction", "other"}:
                 category = "other"
             key = (category, _norm(content))
             if key in seen:
@@ -92,3 +92,29 @@ def learn_from_exchange(user_id: int, user_msg: str, assistant_reply: str) -> No
         db.rollback()  # tu hoc la tinh nang nen — nuot loi de khong anh huong gi
     finally:
         db.close()
+
+
+def remember_correction(db: Session, user_id: int, content: str) -> None:
+    """Luu correction ro rang cua user (vd doi KPI/status truoc confirm) lam precedent."""
+    content = re.sub(r"\s+", " ", content.strip())
+    if len(content) < 8:
+        return
+    existing_mems = get_memories(db, user_id)
+    seen = {(m.category, _norm(m.content)) for m in existing_mems}
+    key = ("correction", _norm(content))
+    if key in seen:
+        return
+    db.add(models.AgentMemory(user_id=user_id, content=content[:500], category="correction"))
+    db.flush()
+    all_ids = [
+        m.id
+        for m in db.scalars(
+            select(models.AgentMemory)
+            .where(models.AgentMemory.user_id == user_id)
+            .order_by(models.AgentMemory.created_at.desc())
+        )
+    ]
+    for old_id in all_ids[MAX_MEMORIES:]:
+        mem = db.get(models.AgentMemory, old_id)
+        if mem:
+            db.delete(mem)

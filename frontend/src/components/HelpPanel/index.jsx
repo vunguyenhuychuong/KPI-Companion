@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useLang } from '../../LangContext'
+import { UiIcon } from '../UiIcon'
 import { captureScreen } from './captureScreen'
 import { callVisionAPI, getVisionConfig } from './callVisionAPI'
 
@@ -8,42 +9,42 @@ const COOLDOWN_MS = 5000
 
 const fallbackByPath = {
   '/dashboard': {
-    screen: 'Dashboard',
-    steps: ['Xem tổng tiến độ và các cảnh báo ở đầu trang.', 'Mở phần việc cần làm để cập nhật các đầu việc đến hạn.', 'Chọn một KPI rủi ro để xem dự báo và gợi ý coach.'],
+    screenKey: 'help.screen.dashboard',
+    stepKeys: ['help.step.dashboard.1', 'help.step.dashboard.2', 'help.step.dashboard.3', 'help.step.dashboard.4'],
   },
   '/kpis': {
-    screen: 'KPI của tôi',
-    steps: ['Kiểm tra tổng trọng số Objective và KPI trong từng nhóm.', 'Dùng nút thêm KPI trong đúng Objective để giữ cấu trúc rõ ràng.', 'Mở lịch sử thay đổi trước khi chỉnh các KPI quan trọng.'],
+    screenKey: 'help.screen.kpis',
+    stepKeys: ['help.step.kpis.1', 'help.step.kpis.2', 'help.step.kpis.3', 'help.step.kpis.4'],
   },
   '/chat': {
-    screen: 'Trợ lý AI',
-    steps: ['Nhập cập nhật công việc bằng ngôn ngữ tự nhiên.', 'Rà soát thẻ đề xuất trước khi xác nhận lưu vào hệ thống.', 'Dùng câu hỏi như “KPI nào đang chậm?” để nhận phân tích nhanh.'],
+    screenKey: 'help.screen.chat',
+    stepKeys: ['help.step.chat.1', 'help.step.chat.2', 'help.step.chat.3', 'help.step.chat.4'],
   },
   '/reports': {
-    screen: 'Báo cáo',
-    steps: ['Chọn kỳ báo cáo cần tạo hoặc mở báo cáo đã lưu.', 'Xem trước nội dung trước khi gửi cho quản lý.', 'Xuất PDF hoặc Excel khi cần nộp bản chính thức.'],
+    screenKey: 'help.screen.reports',
+    stepKeys: ['help.step.reports.1', 'help.step.reports.2', 'help.step.reports.3', 'help.step.reports.4'],
   },
   '/journal': {
-    screen: 'Nhật ký',
-    steps: ['Dùng bộ lọc để tìm bằng chứng công việc hoặc lịch sử thay đổi.', 'Kiểm tra cột KPI để biết đầu việc đã đóng góp vào chỉ tiêu nào.', 'Khôi phục KPI đã archive nếu cần dùng lại.'],
+    screenKey: 'help.screen.journal',
+    stepKeys: ['help.step.journal.1', 'help.step.journal.2', 'help.step.journal.3', 'help.step.journal.4'],
   },
   '/sources': {
-    screen: 'Nguồn dữ liệu',
-    steps: ['Chọn nguồn dữ liệu muốn quét.', 'Giữ mock mode khi demo hoặc chưa có credentials thật.', 'Sau khi quét, xác nhận các thẻ đề xuất trước khi ghi tiến độ.'],
+    screenKey: 'help.screen.sources',
+    stepKeys: ['help.step.sources.1', 'help.step.sources.2', 'help.step.sources.3', 'help.step.sources.4'],
   },
   '/settings': {
-    screen: 'Cài đặt',
-    steps: ['Cập nhật hồ sơ và giao diện theo cách bạn làm việc.', 'Bật hoặc tắt AI Coach tự động tùy mức cần hỗ trợ.', 'Kiểm tra cấu hình kết nối trước khi dùng dữ liệu thật.'],
+    screenKey: 'help.screen.settings',
+    stepKeys: ['help.step.settings.1', 'help.step.settings.2', 'help.step.settings.3', 'help.step.settings.4'],
   },
 }
 
 function fallbackGuide(path, tr) {
   const base = fallbackByPath[path] || fallbackByPath['/dashboard']
   return {
-    screen: base.screen,
+    screen: tr(base.screenKey),
     summary: tr('help.fallback_summary'),
     issue: '',
-    steps: base.steps,
+    steps: base.stepKeys.map(k => tr(k)),
     tip: tr('help.fallback_tip'),
     source: 'fallback',
   }
@@ -54,19 +55,6 @@ const btnStyle = {
   right: 20,
   bottom: 22,
   zIndex: 900,
-  width: 46,
-  height: 46,
-  borderRadius: 999,
-  border: '1px solid rgba(255,255,255,.2)',
-  background: 'linear-gradient(135deg, #2563eb, #14b8a6)',
-  color: '#fff',
-  boxShadow: '0 14px 34px rgba(37,99,235,.28)',
-  display: 'grid',
-  placeItems: 'center',
-  cursor: 'pointer',
-  fontSize: 20,
-  fontWeight: 800,
-  transition: 'transform .15s ease, box-shadow .15s ease',
 }
 
 export default function HelpPanel({ targetRef, position = 'right', screenName }) {
@@ -85,6 +73,11 @@ export default function HelpPanel({ targetRef, position = 'right', screenName })
     getVisionConfig().then(cfg => setConfigured(Boolean(cfg.configured))).catch(() => setConfigured(false))
   }, [])
 
+  const triggerStyle = useMemo(() => ({
+    ...btnStyle,
+    bottom: location.pathname === '/chat' ? 138 : btnStyle.bottom,
+  }), [location.pathname])
+
   const panelStyle = useMemo(() => {
     const side = position === 'left' ? { left: 16 } : { right: 16 }
     return {
@@ -95,11 +88,12 @@ export default function HelpPanel({ targetRef, position = 'right', screenName })
       width: 'min(380px, calc(100vw - 32px))',
       maxHeight: 'calc(100vh - 100px)',
       overflow: 'auto',
-      background: 'var(--card)',
+      background: 'var(--grad-panel), var(--card)',
       color: 'var(--text)',
       border: '1px solid var(--border)',
-      borderRadius: 12,
-      boxShadow: '0 24px 70px rgba(15,23,42,.28)',
+      borderRadius: 14,
+      boxShadow: '0 24px 70px rgba(15,23,42,.28), 0 0 0 1px rgba(20,184,166,.05)',
+      backdropFilter: 'blur(14px) saturate(140%)',
     }
   }, [position])
 
@@ -132,7 +126,9 @@ export default function HelpPanel({ targetRef, position = 'right', screenName })
       })
       setGuide(result)
     } catch (err) {
-      setError(err.message || tr('help.error_generic'))
+      const message = err.message || ''
+      const isStyleCaptureIssue = /unsupported color function|html2canvas/i.test(message)
+      setError(isStyleCaptureIssue ? null : (message.startsWith('help.') ? tr(message) : message || tr('help.error_generic')))
       setGuide(fallbackGuide(location.pathname, tr))
     } finally {
       setLoading(false)
@@ -151,25 +147,24 @@ export default function HelpPanel({ targetRef, position = 'right', screenName })
       <button
         type="button"
         className="help-panel-trigger"
-        style={btnStyle}
+        style={triggerStyle}
         onClick={isOpen ? closePanel : handleOpen}
         title={tr('help.open')}
         aria-label={tr('help.open')}
-        onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px) scale(1.05)' }}
-        onMouseLeave={e => { e.currentTarget.style.transform = 'none' }}
       >
-        {isOpen ? '×' : '?'}
+        <span className="help-trigger-icon" aria-hidden="true"><UiIcon name={isOpen ? 'x' : 'helpCircle'} /></span>
+        <span className="help-trigger-label">{tr('help.short_label')}</span>
       </button>
 
       {isOpen && (
         <section className="help-panel-drawer" style={panelStyle} aria-live="polite">
           <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ width: 32, height: 32, borderRadius: 10, display: 'grid', placeItems: 'center', background: 'var(--grad-soft)', color: 'var(--primary)', fontWeight: 900 }}>?</div>
+            <div style={{ width: 32, height: 32, borderRadius: 10, display: 'grid', placeItems: 'center', background: 'var(--grad)', color: '#fff', fontWeight: 900 }}><UiIcon name="helpCircle" /></div>
             <div style={{ minWidth: 0, flex: 1 }}>
               <strong style={{ display: 'block', fontSize: 14 }}>{tr('help.title')}</strong>
               <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)' }}>{tr('help.subtitle')}</span>
             </div>
-            <button type="button" className="msg-tool" onClick={closePanel} aria-label={tr('common.cancel')}>×</button>
+            <button type="button" className="msg-tool" onClick={closePanel} aria-label={tr('common.cancel')}><UiIcon name="x" /></button>
           </div>
 
           <div style={{ padding: 16 }}>
@@ -221,14 +216,14 @@ export default function HelpPanel({ targetRef, position = 'right', screenName })
 
                 {preview && (
                   <button type="button" className="btn small" onClick={() => setShowPreview(v => !v)}>
-                    {showPreview ? tr('help.hide_preview') : tr('help.show_preview')}
+                    <UiIcon name={showPreview ? 'eyeOff' : 'eye'} />{showPreview ? tr('help.hide_preview') : tr('help.show_preview')}
                   </button>
                 )}
                 {showPreview && preview && (
                   <img src={preview} alt={tr('help.preview_alt')} style={{ width: '100%', borderRadius: 10, border: '1px solid var(--border)' }} />
                 )}
                 <button type="button" className="btn primary small" onClick={handleOpen} disabled={loading}>
-                  {tr('help.retry')}
+                  <UiIcon name="refresh" />{tr('help.retry')}
                 </button>
               </div>
             )}

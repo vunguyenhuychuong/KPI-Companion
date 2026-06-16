@@ -1,5 +1,13 @@
 import { useView, VIEW_MODES } from '../ViewContext'
 import { useLang } from '../LangContext'
+import { UiIcon } from './UiIcon'
+
+const MODE_ICONS = {
+  all: 'table',
+  work: 'fileText',
+  personal: 'user',
+  focus: 'target',
+}
 
 // Global context filter: All / Work / Personal / Focus.
 export default function ViewModeSwitch() {
@@ -15,7 +23,7 @@ export default function ViewModeSwitch() {
           onClick={() => setMode(m)}
           title={tr(`view.${m}_tip`)}
         >
-          {tr(`view.${m}`)}
+          <UiIcon name={MODE_ICONS[m] || 'target'} />{tr(`view.${m}`)}
         </button>
       ))}
     </div>

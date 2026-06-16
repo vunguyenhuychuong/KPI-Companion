@@ -89,7 +89,7 @@ def _changelog_rows(db: Session, user_id: int) -> list[dict]:
     ))
     return [{
         "Thời gian": lg.changed_at.isoformat(sep=" ")[:19],
-        "KPI": lg.kpi_name or f"#{lg.kpi_id}",
+        "KPI": lg.kpi_name or "KPI đã bị xóa hoặc không còn truy cập được",
         "Trường": lg.field,
         "Giá trị cũ": lg.old_value,
         "Giá trị mới": lg.new_value,

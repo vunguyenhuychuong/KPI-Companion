@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { useLang } from '../LangContext'
 import ProposalList from '../components/ProposalList'
+import { UiIcon, cleanIconLabel } from '../components/UiIcon'
 
 function lastMonday() {
   const d = new Date()
@@ -19,12 +20,12 @@ export default function Sources() {
   )
 
   const SOURCES = [
-    { key: 'gmail', label: '✉️ Gmail', descKey: 'sources.source_gmail_desc' },
-    { key: 'calendar', label: '📅 Google Calendar', descKey: 'sources.source_calendar_desc' },
-    { key: 'sheets', label: '📊 Google Sheets', descKey: 'sources.source_sheets_desc' },
-    { key: 'notion', label: '📝 Notion', descKey: 'sources.source_notion_desc' },
-    { key: 'slack', label: '💬 Slack', descKey: 'sources.source_slack_desc' },
-    { key: 'outlook', label: '📧 Outlook', descKey: 'sources.source_outlook_desc' },
+    { key: 'gmail', label: 'Gmail', icon: 'mail', descKey: 'sources.source_gmail_desc' },
+    { key: 'calendar', label: 'Google Calendar', icon: 'calendar', descKey: 'sources.source_calendar_desc' },
+    { key: 'sheets', label: 'Google Sheets', icon: 'table', descKey: 'sources.source_sheets_desc' },
+    { key: 'notion', label: 'Notion', icon: 'note', descKey: 'sources.source_notion_desc' },
+    { key: 'slack', label: 'Slack', icon: 'message', descKey: 'sources.source_slack_desc' },
+    { key: 'outlook', label: 'Outlook', icon: 'mail', descKey: 'sources.source_outlook_desc' },
   ]
 
   const [status, setStatus] = useState(null)
@@ -124,7 +125,7 @@ export default function Sources() {
   return (
     <div className="page">
       <header className="page-header">
-        <h1>{tr('sources.title')}</h1>
+        <h1 className="page-title-with-icon"><UiIcon name="link" /> {cleanIconLabel(tr('sources.title'))}</h1>
         <p>{tr('sources.subtitle')}</p>
       </header>
 
@@ -132,9 +133,10 @@ export default function Sources() {
 
       {status && (
         <div className={`mode-banner ${Object.values(status).includes('real') ? 'real' : 'mock'}`}>
+          <span className="inline-ui-icon"><UiIcon name={Object.values(status).includes('real') ? 'checkCircle' : 'warning'} /></span>
           {Object.values(status).includes('real')
-            ? tr('sources.real_banner')
-            : tr('sources.disconnected_banner', { note: status.note })}
+            ? cleanIconLabel(tr('sources.real_banner'))
+            : cleanIconLabel(tr('sources.disconnected_banner', { note: status.note }))}
         </div>
       )}
 
@@ -145,7 +147,7 @@ export default function Sources() {
         <div className="source-list">
           {integrations.map((it) => (
             <div key={it.provider} className={`source-item ${it.connected ? 'on' : ''}`}>
-              <div style={{ fontSize: '1.4rem' }}>{it.icon}</div>
+              <span className="source-icon" aria-hidden="true"><UiIcon name={it.provider === 'slack' ? 'message' : it.provider === 'notion' ? 'note' : it.provider === 'calendar' ? 'calendar' : it.provider === 'sheets' ? 'table' : 'mail'} /></span>
               <div style={{ flex: 1 }}>
                 <div className="source-name">{it.label}</div>
                 <div className="muted">
@@ -160,7 +162,7 @@ export default function Sources() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span className="badge real">{tr('integrations.connected')}</span>
                   <button className="btn" onClick={() => disconnect(it.provider)}>
-                    {tr('integrations.disconnect')}
+                    <UiIcon name="x" />{tr('integrations.disconnect')}
                   </button>
                 </div>
               ) : (
@@ -169,7 +171,7 @@ export default function Sources() {
                   onClick={() => connect(it.provider)}
                   disabled={connecting === it.provider}
                 >
-                  {connecting === it.provider ? tr('integrations.connecting') : tr('integrations.connect')}
+                  <UiIcon name="link" />{connecting === it.provider ? tr('integrations.connecting') : cleanIconLabel(tr('integrations.connect'))}
                 </button>
               )}
             </div>
@@ -187,11 +189,11 @@ export default function Sources() {
               <div className="seg">
                 <button className={`seg-btn ${conn.google_mock_mode ? 'active' : ''}`}
                   onClick={() => !conn.google_mock_mode && switchMode(true)} disabled={switching}>
-                  {tr('sources.mode_mock')}
+                  <UiIcon name="bot" />{tr('sources.mode_mock')}
                 </button>
                 <button className={`seg-btn ${!conn.google_mock_mode ? 'active' : ''}`}
                   onClick={() => conn.google_mock_mode && switchMode(false)} disabled={switching}>
-                  {tr('sources.mode_real')}
+                  <UiIcon name="link" />{tr('sources.mode_real')}
                 </button>
               </div>
               <span className={`badge ${conn.effective_mode}`}>
@@ -206,6 +208,7 @@ export default function Sources() {
           {SOURCES.map((s) => (
             <label key={s.key} className={`source-item ${selected.includes(s.key) ? 'on' : ''}`}>
               <input type="checkbox" checked={selected.includes(s.key)} onChange={() => toggle(s.key)} />
+              <span className="source-icon" aria-hidden="true"><UiIcon name={s.icon} /></span>
               <div>
                 <div className="source-name">{s.label}</div>
                 <div className="muted">{tr(s.descKey)}</div>
@@ -222,19 +225,23 @@ export default function Sources() {
           <label>{tr('sources.from_date')} <input type="date" value={start} onChange={(e) => setStart(e.target.value)} /></label>
           <label>{tr('sources.to_date')} <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} /></label>
           <button className="btn primary" onClick={sync} disabled={busy || selected.length === 0}>
-            {busy ? tr('sources.scanning') : tr('sources.scan_btn')}
+            <UiIcon name="scan" />
+            {busy ? tr('sources.scanning') : cleanIconLabel(tr('sources.scan_btn'))}
           </button>
         </div>
       </div>
 
       <div className="card">
-        <h3>{tr('sources.upload_section')}</h3>
+        <h3 className="icon-heading"><UiIcon name="upload" /> {tr('sources.upload_section')}</h3>
         <p className="muted">{tr('sources.upload_desc')}</p>
-        <button className="btn" onClick={() => fileRef.current?.click()} disabled={busy}>{tr('sources.upload_btn')}</button>
+        <button className="btn import-cta" onClick={() => fileRef.current?.click()} disabled={busy}>
+          <UiIcon name="upload" />
+          {cleanIconLabel(tr('sources.upload_btn'))}
+        </button>
         <input ref={fileRef} type="file" accept=".xlsx,.csv" hidden onChange={upload} />
       </div>
 
-      {error && <div className="error-text">⚠️ {error}</div>}
+      {error && <div className="error-text"><UiIcon name="warning" /> {error}</div>}
 
       {result && (
         <div className="card">

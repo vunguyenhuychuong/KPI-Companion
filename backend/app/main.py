@@ -11,8 +11,10 @@ from .auth import hash_password
 from .config import settings
 from .database import Base, SessionLocal, engine
 from .routers import auth as auth_router
+from .routers import autonomous_agent as autonomous_agent_router
 from .routers import burnout, chat, cycles, help, kpis, notification_settings, notifications, objectives, oauth, reports, settings as settings_router
 from .routers import share_links, sources, work_items
+from .services import autonomous_agent as autonomous_agent_service
 
 
 def migrate():
@@ -21,6 +23,23 @@ def migrate():
         kpi_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(kpis)"))]
         obj_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(objectives)"))]
         user_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(users)"))]
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_cycle_logs (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER,
+                cycle_key VARCHAR(80),
+                phase VARCHAR(30) DEFAULT 'complete',
+                status VARCHAR(20) DEFAULT 'ok',
+                event_fingerprint VARCHAR(160) DEFAULT '',
+                summary TEXT DEFAULT '',
+                meta JSON,
+                created_at DATETIME,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_cycle_logs_user_id ON agent_cycle_logs(user_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_cycle_logs_cycle_key ON agent_cycle_logs(cycle_key)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_cycle_logs_event_fingerprint ON agent_cycle_logs(event_fingerprint)"))
 
         # KPI Cycles: tao default cycles cho objectives chua duoc gan cycle_id
         # (chay cho ca DB moi lan DB cu, su dung obj_cols de phat hien DB cu chua co cycle_id)
@@ -85,6 +104,15 @@ def migrate():
         rep_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(saved_reports)"))]
         if rep_cols and "period_key" not in rep_cols:
             conn.execute(text("ALTER TABLE saved_reports ADD COLUMN period_key VARCHAR(20) DEFAULT ''"))
+
+        # Explainable task mapping: luu ly do/ung vien KPI de Agent hoc tu lan confirm sau
+        work_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(work_items)"))]
+        if work_cols and "mapping_reason" not in work_cols:
+            conn.execute(text("ALTER TABLE work_items ADD COLUMN mapping_reason TEXT DEFAULT ''"))
+        if work_cols and "confidence" not in work_cols:
+            conn.execute(text("ALTER TABLE work_items ADD COLUMN confidence FLOAT"))
+        if work_cols and "alternative_kpis" not in work_cols:
+            conn.execute(text("ALTER TABLE work_items ADD COLUMN alternative_kpis JSON"))
 
         # Trong so 2 tang: objective.weight = tong trong so KPI con cu,
         # trong so KPI quy ve ty le % TRONG objective -> diem tong khong doi.
@@ -167,6 +195,8 @@ def cleanup_draft_data():
         )
         for msg in messages:
             meta = msg.meta or {}
+            if meta.get("intent") == "autonomous_agent":
+                continue
             if not any(key in meta for key in draft_meta_keys):
                 continue
             cleaned = {k: v for k, v in meta.items() if k not in draft_meta_keys}
@@ -448,7 +478,11 @@ async def lifespan(app: FastAPI):
     seed_demo_data()
     seed_objectives()
     seed_compare_demo()
-    yield
+    await autonomous_agent_service.runner.start()
+    try:
+        yield
+    finally:
+        await autonomous_agent_service.runner.stop()
 
 
 app = FastAPI(title="KPI Companion API", version="0.1.0", lifespan=lifespan)
@@ -473,6 +507,7 @@ app.include_router(sources.router)
 app.include_router(reports.router)
 app.include_router(settings_router.router)
 app.include_router(oauth.router)
+app.include_router(autonomous_agent_router.router)
 app.include_router(notifications.router)
 app.include_router(burnout.router)
 app.include_router(notification_settings.router)

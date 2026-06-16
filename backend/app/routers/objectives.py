@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..auth import CurrentUser
 from ..database import get_db
-from ..services import kpi_service
+from ..services import autonomous_agent, kpi_service
 
 router = APIRouter(prefix="/api/objectives", tags=["objectives"])
 
@@ -83,18 +83,45 @@ def update_objective(
         setattr(obj, field, value)
     db.commit()
     db.refresh(obj)
+    child_kpis = list(
+        db.scalars(
+            select(models.KPI).where(
+                models.KPI.user_id == current_user.id,
+                models.KPI.objective_id == obj.id,
+                models.KPI.archived == False,  # noqa: E712
+            )
+        )
+    )
+    if child_kpis:
+        autonomous_agent.run_category_guard_for_kpis(db, current_user.id, child_kpis)
     return schemas.ObjectiveOut.model_validate(obj)
 
 
 @router.delete("/{obj_id}")
 def archive_objective(obj_id: int, current_user: CurrentUser, db: Session = Depends(get_db)):
-    """Go bo muc tieu: cac KPI con duoc giu lai, chuyen ve 'chua gan muc tieu'."""
+    """Archive objective and its active child KPIs."""
     obj = db.get(models.Objective, obj_id)
     if not obj or obj.user_id != current_user.id:
         raise HTTPException(404, "Không tìm thấy mục tiêu")
     _check_cycle_not_locked(db, obj.cycle_id)
-    for kpi in db.scalars(select(models.KPI).where(models.KPI.objective_id == obj_id)):
-        kpi.objective_id = None
+    child_kpis = db.scalars(
+        select(models.KPI).where(
+            models.KPI.objective_id == obj_id,
+            models.KPI.user_id == current_user.id,
+            models.KPI.archived == False,  # noqa: E712
+        )
+    )
+    for kpi in child_kpis:
+        kpi.archived = True
+        db.add(
+            models.KPIChangeLog(
+                kpi_id=kpi.id,
+                field="archived",
+                old_value="False",
+                new_value="True",
+                reason=f"Luu tru theo muc tieu da xoa: {obj.name}",
+            )
+        )
     obj.archived = True
     db.commit()
     return {"ok": True}

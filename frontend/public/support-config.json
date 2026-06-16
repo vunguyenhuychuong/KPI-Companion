@@ -1,0 +1,29 @@
+{
+  "subject": "[KPI Companion] Yêu cầu hỗ trợ kỹ thuật",
+  "supportEmail": "tinhht@vng.com.vn,chuongvnh@vng.com.vn,namnh15@vng.com.vn",
+  "slackChannel": "#kpi-support",
+  "slackEnabled": false,
+  "admins": [
+    {
+      "name": "Hồ Tính Tính",
+      "domain": "TinhHT",
+      "phone": "0901 234 567",
+      "email": "tinhht@vng.com.vn",
+      "hours": "Thứ 2 - Thứ 6, 8:30 - 17:30"
+    },
+    {
+      "name": "Vũ Nguyễn Huy Chương",
+      "domain": "ChuongVNH",
+      "phone": "0901 234 567",
+      "email": "chuongvnh@vng.com.vn",
+      "hours": "Thứ 2 - Thứ 6, 8:30 - 17:30"
+    },
+    {
+      "name": "Nguyễn Hoài Nam",
+      "domain": "NamNH15",
+      "phone": "0901 234 567",
+      "email": "namnh15@vng.com.vn",
+      "hours": "Thứ 2 - Thứ 6, 8:30 - 17:30"
+    }
+  ]
+}

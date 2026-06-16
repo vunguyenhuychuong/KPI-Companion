@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google'
 import { api } from '../api'
 import { useLang } from '../LangContext'
+import { UiIcon } from '../components/UiIcon'
 
 function PasswordField({ id, label, value, onChange, visible, onToggle, placeholder = '', showLabel, hideLabel }) {
   return (
@@ -23,7 +24,7 @@ function PasswordField({ id, label, value, onChange, visible, onToggle, placehol
           title={visible ? hideLabel : showLabel}
           aria-label={visible ? hideLabel : showLabel}
         >
-          {visible ? '🙈' : '👁'}
+          <UiIcon name={visible ? 'eyeOff' : 'eye'} />
         </button>
       </div>
     </div>
@@ -31,7 +32,7 @@ function PasswordField({ id, label, value, onChange, visible, onToggle, placehol
 }
 
 export default function Login({ onLogin }) {
-  const { tr } = useLang()
+  const { tr, lang } = useLang()
   const [mode, setMode] = useState('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -58,11 +59,12 @@ export default function Login({ onLogin }) {
     }
   }, [])
 
-  function saveAndLogin(data) {
+  function saveAndLogin(data, authProvider = 'password') {
     const user = {
       id: data.user_id,
       name: data.name,
       email: data.email || '',
+      auth_provider: authProvider,
       role: data.role || '',
       picture: data.picture || '',
       onboarding_completed: data.onboarding_completed,
@@ -123,7 +125,7 @@ export default function Login({ onLogin }) {
         const data = mode === 'login'
           ? await api.login(email.trim(), password)
           : await api.register(email.trim(), password, name.trim())
-        saveAndLogin(data)
+        saveAndLogin(data, 'password')
       }
     } catch (err) {
       setError(err.message)
@@ -136,7 +138,7 @@ export default function Login({ onLogin }) {
     setError('')
     try {
       const data = await api.googleLogin(response.credential)
-      saveAndLogin(data)
+      saveAndLogin(data, 'google')
     } catch (err) {
       setError(err.message)
     }
@@ -161,7 +163,7 @@ export default function Login({ onLogin }) {
           title={visible ? tr('password.hide') : tr('password.show')}
           aria-label={visible ? tr('password.hide') : tr('password.show')}
         >
-          {visible ? '🙈' : '👁'}
+          <UiIcon name={visible ? 'eyeOff' : 'eye'} />
         </button>
       </div>
     </div>
@@ -170,14 +172,17 @@ export default function Login({ onLogin }) {
   return (
     <div style={{
       minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: 'linear-gradient(135deg, #1e40af 0%, #1d4ed8 50%, #2563eb 100%)',
+      background: 'radial-gradient(720px 420px at 28% -8%, rgba(124,92,255,.22), transparent 64%), radial-gradient(820px 480px at 92% 0%, rgba(20,184,166,.18), transparent 66%), linear-gradient(180deg, #070b18 0%, #0a1021 100%)',
+      padding: 16,
     }}>
       <div style={{
-        background: 'var(--card)', borderRadius: 16, padding: '40px 36px', width: 380,
-        boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+        background: 'var(--grad-panel), var(--card)', borderRadius: 16, padding: '40px 36px', width: 380,
+        border: '1px solid var(--border)',
+        boxShadow: '0 24px 70px rgba(0,0,0,0.28), 0 0 0 1px rgba(20,184,166,.08)',
+        backdropFilter: 'blur(16px) saturate(140%)',
       }}>
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
-          <div style={{ fontSize: 40, marginBottom: 8 }}>🎯</div>
+          <div className="login-brand-mark"><UiIcon name="target" /></div>
           <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--primary)' }}>{tr('app.title')}</div>
           <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4 }}>{tr('login.subtitle')}</div>
         </div>
@@ -190,7 +195,7 @@ export default function Login({ onLogin }) {
                 onError={() => setError(tr('login.google_error'))}
                 text="signin_with"
                 shape="rectangular"
-                locale="vi"
+                locale={lang === 'vi' ? 'vi' : 'en'}
                 width="308"
               />
             </div>
@@ -211,7 +216,7 @@ export default function Login({ onLogin }) {
               style={{
                 flex: 1, padding: '10px 0', border: 'none', cursor: 'pointer',
                 fontWeight: 600, fontSize: 14,
-                background: mode === m ? '#2563eb' : 'var(--surface-2)',
+                background: mode === m ? 'var(--grad)' : 'var(--surface-2)',
                 color: mode === m ? '#fff' : 'var(--text)',
                 transition: 'all 0.15s',
               }}
@@ -301,9 +306,10 @@ export default function Login({ onLogin }) {
 
           <button type="submit" disabled={loading} style={{
             marginTop: 4, padding: '12px 0', borderRadius: 8, border: 'none',
-            background: loading ? '#93c5fd' : '#2563eb', color: '#fff',
+            background: loading ? 'rgba(20,184,166,.45)' : 'var(--grad)', color: '#fff',
             fontWeight: 700, fontSize: 15, cursor: loading ? 'not-allowed' : 'pointer',
             transition: 'background 0.15s',
+            boxShadow: loading ? 'none' : '0 8px 22px rgba(20,184,166,.26)',
           }}>
             {loading ? tr('login.loading')
               : mode === 'login' ? tr('login.submit_login')
@@ -314,7 +320,7 @@ export default function Login({ onLogin }) {
           <button
             type="button"
             onClick={() => { setMode(mode === 'login' ? 'forgot' : 'login'); setError(''); setResetInfo('') }}
-            style={{ border: 'none', background: 'transparent', color: '#2563eb', fontWeight: 600, cursor: 'pointer', fontSize: 13 }}
+            style={{ border: 'none', background: 'transparent', color: 'var(--accent)', fontWeight: 600, cursor: 'pointer', fontSize: 13 }}
           >
             {mode === 'login' ? tr('login.forgot_link') : tr('login.back_to_login')}
           </button>
@@ -322,7 +328,7 @@ export default function Login({ onLogin }) {
 
         {mode === 'login' && (
           <div style={{ marginTop: 16, padding: 12, background: 'var(--surface-2)', borderRadius: 8, fontSize: 12, color: 'var(--muted)' }}>
-            Demo: <strong>demo@demo.com</strong> / <strong>demo1234</strong>
+            {tr('login.demo_label')}: <strong>demo@demo.com</strong> / <strong>demo1234</strong>
           </div>
         )}
       </div>
@@ -338,5 +344,5 @@ const inputStyle = {
   width: '100%', padding: '10px 12px', borderRadius: 8,
   border: '1px solid var(--border)', fontSize: 14, outline: 'none',
   boxSizing: 'border-box', transition: 'border-color 0.15s',
-  background: 'var(--surface)', color: 'var(--text)',
+  background: 'color-mix(in srgb, var(--surface) 92%, transparent)', color: 'var(--text)',
 }

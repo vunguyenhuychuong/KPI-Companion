@@ -51,7 +51,10 @@ def sync(payload: schemas.SyncRequest, current_user: CurrentUser, db: Session = 
     try:
         items = kpi_agent.extract_work_items("", kpis, activities=activities)
     except Exception as e:
-        raise HTTPException(502, f"Lỗi khi gọi AI model để phân loại: {e}. Kiểm tra cấu hình LLM trong .env.")
+        raise HTTPException(
+            502,
+            f"Lỗi khi xử lý AI để phân loại: {e}. Nếu lỗi lặp lại với mọi thao tác, kiểm tra cấu hình LLM trong .env; nếu chỉ xảy ra ở thao tác này, có thể là lỗi prompt/parser.",
+        )
     return schemas.ChatResponse(
         reply=f"Đã quét {len(activities)} hoạt động từ {', '.join(payload.sources)}.",
         intent="sync_request",
@@ -70,7 +73,10 @@ async def upload_worklog(file: UploadFile, current_user: CurrentUser, db: Sessio
     try:
         items = kpi_agent.extract_work_items("", kpis, activities=activities)
     except Exception as e:
-        raise HTTPException(502, f"Lỗi khi gọi AI model để phân loại: {e}. Kiểm tra cấu hình LLM trong .env.")
+        raise HTTPException(
+            502,
+            f"Lỗi khi xử lý AI để phân loại: {e}. Nếu lỗi lặp lại với mọi thao tác, kiểm tra cấu hình LLM trong .env; nếu chỉ xảy ra ở thao tác này, có thể là lỗi prompt/parser.",
+        )
     return schemas.ChatResponse(
         reply=f"Đã đọc {len(activities)} dòng từ file {file.filename}.",
         intent="upload",

@@ -4,6 +4,8 @@ Dung LangChain (ChatOpenAI + LCEL) voi Qwen qua endpoint OpenAI-compatible.
 Khong dua vao native function-calling de tuong thich moi endpoint Qwen
 (DashScope / OpenRouter / vLLM noi bo) — thay vao do dung structured JSON output.
 """
+import logging
+import re
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -14,6 +16,9 @@ from ..connectors import fetch_activities
 from ..services import kpi_service, oauth_service
 from . import memory, prompts
 from .llm import call_json, call_text
+
+logger = logging.getLogger(__name__)
+ATTACHMENT_CONTEXT_MARKER = "ATTACHMENT CONTEXT FROM USER-UPLOADED FILES"
 
 
 def _today() -> str:
@@ -32,6 +37,82 @@ def _lang_suffix(lang: str) -> str:
 
 def _language_name(lang: str) -> str:
     return "English" if lang == "en" else "Vietnamese"
+
+
+def _strip_attachment_context(text: str) -> str:
+    if ATTACHMENT_CONTEXT_MARKER not in text:
+        return text
+    return text.split(ATTACHMENT_CONTEXT_MARKER, 1)[0].rstrip("- \n")
+
+
+def _has_attachment_context(text: str) -> bool:
+    return ATTACHMENT_CONTEXT_MARKER in text
+
+
+def _collapse_repeated_reply(text: str) -> str:
+    stripped = (text or "").strip()
+    if len(stripped) < 40:
+        return text
+
+    n = len(stripped)
+    for mid in range(max(1, n // 2 - 5), min(n - 1, n // 2 + 6)):
+        first = stripped[:mid].strip()
+        second = stripped[mid:].strip()
+        if first and first == second:
+            return first
+
+    paragraphs = re.split(r"\n{2,}", stripped)
+    if len(paragraphs) >= 2 and len(paragraphs) % 2 == 0:
+        mid = len(paragraphs) // 2
+        first_block = "\n\n".join(paragraphs[:mid]).strip()
+        second_block = "\n\n".join(paragraphs[mid:]).strip()
+        if first_block and first_block == second_block:
+            return first_block
+    return text
+
+
+def sanitize_kpi_references(text: str, kpis: list[models.KPI]) -> str:
+    """Remove internal KPI id labels from user-facing LLM text."""
+    if not text:
+        return text
+    names = {int(k.id): k.name for k in kpis if getattr(k, "id", None) is not None}
+    def label(kpi_id: int) -> str:
+        name = names.get(kpi_id)
+        return f'KPI "{name}"' if name else "KPI không còn tồn tại"
+
+    def replace_hash_or_bracket(match: re.Match) -> str:
+        return label(int(match.group(1)))
+
+    def replace_bare(match: re.Match) -> str:
+        raw = match.group(1)
+        kpi_id = int(raw)
+        if kpi_id in names:
+            return label(kpi_id)
+        if len(raw) >= 2 and not (1900 <= kpi_id <= 2100):
+            return label(kpi_id)
+        return match.group(0)
+
+    def replace_line_marker(match: re.Match) -> str:
+        prefix, raw_id, rest = match.group(1), match.group(2), match.group(3).strip()
+        kpi_id = int(raw_id)
+        name = names.get(kpi_id, "")
+        rest_low = rest.lower()
+        looks_like_kpi_ref = bool(name and rest_low.startswith(name.lower())) or rest_low.startswith("kpi") or "kpi" in rest_low[:40]
+        if not looks_like_kpi_ref:
+            return match.group(0)
+        base = label(kpi_id)
+        if name and rest.lower().startswith(name.lower()):
+            rest = rest[len(name):].lstrip(" :-–—")
+        return f"{prefix}{base}" + (f": {rest}" if rest else "")
+
+    text = re.sub(r"\bKPI\s*(?:#\s*|\[\s*)(\d+)(?:\s*\])?(?=\W|$)", replace_hash_or_bracket, text, flags=re.IGNORECASE)
+    text = re.sub(r"\bKPI\s+(\d{1,6})(?!\s*%)\b", replace_bare, text, flags=re.IGNORECASE)
+    text = re.sub(r"(?m)^(\s*[-*]?\s*)\[(\d+)\]\s*(.*)$", replace_line_marker, text)
+    return text
+
+
+def _safe_reply(reply: str, kpis: list[models.KPI] | None = None) -> str:
+    return sanitize_kpi_references(_collapse_repeated_reply(reply), kpis or [])
 
 
 def _render_work_items_for_llm(items: list[schemas.ProposedWorkItem]) -> str:
@@ -78,8 +159,9 @@ def _render_conflicts_for_llm(conflicts: list[schemas.KPIConflict]) -> str:
         return "(none)"
     lines = []
     for i, c in enumerate(conflicts, 1):
+        sev_label = SEVERITY_LABELS.get(c.severity, c.severity)
         lines.append(
-            f"{i}. severity={c.severity}; type={c.type}; kpis={', '.join(c.kpi_names)}; "
+            f"{i}. severity={sev_label}; type={c.type}; kpis={', '.join(c.kpi_names)}; "
             f"explanation={c.explanation}; suggestion={c.suggestion}"
         )
     return "\n".join(lines)
@@ -91,8 +173,9 @@ def _proposal_reply(
     lang: str = "vi",
     history: list[dict] | None = None,
     user_text: str = "",
+    kpis: list[models.KPI] | None = None,
 ) -> str:
-    return call_text(
+    reply = call_text(
         prompts.PROPOSAL_REPLY_SYSTEM.format(
             language=_language_name(lang),
             source="external data sync" if from_sync else "user message",
@@ -103,6 +186,7 @@ def _proposal_reply(
         history=history,
         max_tokens=700,
     )
+    return _safe_reply(reply, kpis)
 
 
 def _kpi_proposal_reply(
@@ -113,8 +197,9 @@ def _kpi_proposal_reply(
     conflicts: list[schemas.KPIConflict] | None = None,
     history: list[dict] | None = None,
     user_text: str = "",
+    kpis: list[models.KPI] | None = None,
 ) -> str:
-    return call_text(
+    reply = call_text(
         prompts.KPI_PROPOSAL_REPLY_SYSTEM.format(
             language=_language_name(lang),
             proposal_count=len(proposed) + len(new_objectives or []),
@@ -125,6 +210,7 @@ def _kpi_proposal_reply(
         history=history,
         max_tokens=900,
     )
+    return _safe_reply(reply, kpis)
 
 
 def _status_reply(
@@ -133,8 +219,9 @@ def _status_reply(
     intent: str,
     lang: str = "vi",
     history: list[dict] | None = None,
+    kpis: list[models.KPI] | None = None,
 ) -> str:
-    return call_text(
+    reply = call_text(
         prompts.STATUS_REPLY_SYSTEM.format(
             language=_language_name(lang), facts=facts, intent=intent, today=_today()
         ) + _lang_suffix(lang),
@@ -142,6 +229,7 @@ def _status_reply(
         history=history,
         max_tokens=500,
     )
+    return _safe_reply(reply, kpis)
 
 
 def _coaching_reply(
@@ -151,6 +239,7 @@ def _coaching_reply(
     text: str,
     lang: str = "vi",
     history: list[dict] | None = None,
+    kpis: list[models.KPI] | None = None,
 ) -> str:
     causes_text = "\n".join(
         f"- cause={c.cause}; question={c.question}" for c in causes
@@ -162,7 +251,7 @@ def _coaching_reply(
         f"{_render_work_items_for_llm(proposed)}\n"
         "Nothing has been saved yet; remediation work items require the user to click Confirm."
     )
-    return call_text(
+    reply = call_text(
         prompts.COACH_REPLY_SYSTEM.format(
             language=_language_name(lang), facts=facts, today=_today()
         ) + _lang_suffix(lang),
@@ -170,6 +259,7 @@ def _coaching_reply(
         history=history,
         max_tokens=900,
     )
+    return _safe_reply(reply, kpis)
 
 
 def _history_block(history: list[dict] | None, max_msgs: int = 4) -> str:
@@ -202,6 +292,10 @@ def _classify_intent_fast(text: str, history: list[dict] | None = None) -> str |
         return "question"
     if _has_any(low, ["weekly summary", "báo cáo tuần", "bao cao tuan", "tổng kết tuần", "tong ket tuan"]):
         return "weekly_summary"
+    if _has_any(low, ["file", "tệp", "tep", "đính kèm", "dinh kem", "upload", "excel", "csv", "pdf"]) and _has_any(low, ["cập nhật", "cap nhat", "ghi nhận", "ghi nhan", "tiến độ", "tien do"]) and _has_any(low, ["kpi", "công việc", "cong viec"]):
+        return "update_progress"
+    if _has_any(low, ["file", "tệp", "tep", "đính kèm", "dinh kem", "upload", "excel", "csv", "pdf"]) and _has_any(low, ["đọc", "doc", "xem", "phân tích", "phan tich", "tóm tắt", "tom tat"]):
+        return "question"
     if _has_any(low, ["gmail", "calendar", "sheets", "email", "lịch", "lich", "timesheet"]) and _has_any(low, ["quét", "quet", "kéo", "keo", "đồng bộ", "dong bo", "cập nhật", "cap nhat", "sync"]):
         return "sync_request"
     if _has_any(low, ["xóa", "xoá", "xoa", "gỡ", "go ", "bỏ ", "bo "]) and _has_any(low, ["kpi", "objective", "mục tiêu", "muc tieu"]):
@@ -240,7 +334,7 @@ def extract_kpi_proposal(
     total_obj_w = sum(o.weight for o in objectives)
     obj_text = (
         "\n".join(
-            f"- id={o.id} | {o.name} | trọng số mục tiêu {o.weight:.0f}% | {o.kpi_count} KPI"
+            f"- internal_objective_id={o.id} | display_name=\"{o.name}\" | trọng số mục tiêu {o.weight:.0f}% | {o.kpi_count} KPI"
             for o in objectives
         )
         or "(Chưa có mục tiêu nào)"
@@ -343,11 +437,11 @@ def extract_delete_request(
 ) -> dict:
     """Trich xuat yeu cau xoa KPI/Objective tu tin nhan nguoi dung."""
     obj_text = "\n".join(
-        f"- id={o.id} | {o.name} | trọng số {o.weight:.0f}%"
+        f"- internal_objective_id={o.id} | display_name=\"{o.name}\" | trọng số {o.weight:.0f}%"
         for o in objectives
     ) or "(Chưa có mục tiêu nào)"
     kpi_text = "\n".join(
-        f"- id={k.id} | {k.name} | {k.unit}"
+        f"- internal_kpi_id={k.id} | display_name=\"{k.name}\" | {k.unit}"
         for k in kpis
     ) or "(Chưa có KPI nào)"
 
@@ -493,12 +587,39 @@ def detect_conflicts(
     )
     data = call_json(system, "Hãy rà soát và chỉ ra các xung đột giữa các KPI trên.", temperature=0.0)
     valid_ids = {k.id for k in kpis}
+    kpi_by_id = {k.id: k for k in kpis}
+    kpi_by_name_lower = {k.name.strip().lower(): k for k in kpis}
+    proposed_name_canonical = {p.name.strip().lower(): p.name for p in (proposed or [])}
     out: list[schemas.KPIConflict] = []
     for r in data.get("conflicts", []) if isinstance(data, dict) else []:
         if not isinstance(r, dict) or not r.get("explanation"):
             continue
-        ids = [i for i in r.get("kpi_ids", []) if isinstance(i, int) and i in valid_ids]
-        names = [str(n) for n in r.get("kpi_names", []) if n]
+
+        # Validate existing KPI IDs strictly
+        ids_from_ids = [i for i in r.get("kpi_ids", []) if isinstance(i, int) and i in valid_ids]
+        ids_set = set(ids_from_ids)
+
+        # Recover additional KPIs mentioned by name in kpi_names:
+        # - existing KPIs matched by name (fixes wrong/hallucinated ID)
+        # - proposed KPIs matched by canonical name (no ID exists yet)
+        extra_ids: list[int] = []
+        proposed_conflict_names: list[str] = []
+        for raw_name in r.get("kpi_names", []):
+            if not raw_name:
+                continue
+            n_lower = str(raw_name).strip().lower()
+            matched = kpi_by_name_lower.get(n_lower)
+            if matched and matched.id not in ids_set:
+                extra_ids.append(matched.id)
+                ids_set.add(matched.id)
+            elif n_lower in proposed_name_canonical:
+                proposed_conflict_names.append(proposed_name_canonical[n_lower])
+
+        ids = ids_from_ids + extra_ids
+        # Reconstruct names from DB (authoritative for existing) + canonical proposed names.
+        # This keeps kpi_ids and kpi_names aligned even when the LLM returns wrong IDs.
+        names = [kpi_by_id[i].name for i in ids] + proposed_conflict_names
+
         if not ids and not names:
             continue
         sev = r.get("severity")
@@ -588,6 +709,27 @@ def extract_work_items(
                 delta = round(max(0.0, float(set_val)) - kpi_by_id[kpi_id].current_value, 2)
             except (TypeError, ValueError):
                 pass
+        candidates: list[schemas.KpiCandidate] = []
+        raw_candidates = r.get("alternative_kpis") or r.get("candidate_kpis") or []
+        if isinstance(raw_candidates, list):
+            for c in raw_candidates[:2]:
+                if not isinstance(c, dict):
+                    continue
+                cid = c.get("kpi_id")
+                if isinstance(cid, int) and cid in kpi_by_id and cid != kpi_id:
+                    candidates.append(
+                        schemas.KpiCandidate(
+                            kpi_id=cid,
+                            kpi_name=kpi_by_id[cid].name,
+                            reason=str(c.get("reason") or "")[:300],
+                        )
+                    )
+        try:
+            confidence = float(r.get("confidence")) if r.get("confidence") is not None else None
+        except (TypeError, ValueError):
+            confidence = None
+        if confidence is not None:
+            confidence = max(0.0, min(1.0, confidence))
         out.append(
             schemas.ProposedWorkItem(
                 title=str(r["title"])[:500],
@@ -600,6 +742,11 @@ def extract_work_items(
                 source=src,
                 source_ref=src_ref,
                 work_date=wd,
+                mapping_reason=str(r.get("mapping_reason") or r.get("reason") or "")[:500],
+                confidence=confidence,
+                alternative_kpis=candidates,
+                original_kpi_id=kpi_id,
+                original_status=status,
             )
         )
     return out
@@ -729,7 +876,11 @@ def handle_message(
 ) -> schemas.ChatResponse:
     """Diem vao chinh cua Agent cho moi tin nhan chat. history giup hieu cau hoi noi tiep."""
     kpis = kpi_service.get_active_kpis(db, user_id)
-    intent = classify_intent(text, history)
+    visible_text = _strip_attachment_context(text).strip() or text
+    has_attachment_context = _has_attachment_context(text)
+    intent = classify_intent(visible_text, history)
+    if has_attachment_context and intent == "other":
+        intent = "question"
     profile_context = _user_profile_context(db, user_id, lang)
 
     # khoi ghi nho Agent da tu hoc — giup hieu cach goi tat, vai tro, thoi quen nguoi dung
@@ -743,11 +894,13 @@ def handle_message(
     if intent == "update_progress":
         items = extract_work_items(text, kpis, source="chat", history=history, memories=mem)
         return schemas.ChatResponse(
-            reply=_proposal_reply(items, lang=lang, history=history, user_text=text), intent=intent, proposed_items=items
+            reply=_proposal_reply(items, lang=lang, history=history, user_text=text, kpis=kpis),
+            intent=intent,
+            proposed_items=items,
         )
 
     if intent == "sync_request":
-        sources, start, end = parse_sync_command(text, history)
+        sources, start, end = parse_sync_command(visible_text, history)
         disconnected = _disconnected_sources(db, user_id, sources)
         if disconnected and len(disconnected) == len(sources):
             facts = (
@@ -756,7 +909,7 @@ def handle_message(
                 "No scan was performed because every requested source is currently in mock/not-connected mode. "
                 "User can connect real sources in Data Sources or upload Excel/CSV work logs."
             )
-            msg = _status_reply(text, facts, intent, lang, history)
+            msg = _status_reply(visible_text, facts, intent, lang, history, kpis=kpis)
             return schemas.ChatResponse(reply=msg, intent=intent)
         activities = fetch_activities(sources, start, end, db=db, user_id=user_id)
         if not activities:
@@ -765,13 +918,13 @@ def handle_message(
                 f"Date range: {start} -> {end}\n"
                 "Activities found: 0"
             )
-            no_act = _status_reply(text, facts, intent, lang, history)
+            no_act = _status_reply(visible_text, facts, intent, lang, history, kpis=kpis)
             return schemas.ChatResponse(reply=no_act, intent=intent)
         items = extract_work_items("", kpis, activities=activities)
         reply = _proposal_reply(items, from_sync=True, lang=lang, history=history, user_text=(
             f"Scanned sources: {', '.join(sources)}; date range: {start} -> {end}; "
-            f"raw activities found: {len(activities)}. User request: {text}"
-        ))
+            f"raw activities found: {len(activities)}. User request: {visible_text}"
+        ), kpis=kpis)
         return schemas.ChatResponse(reply=reply, intent=intent, proposed_items=items)
 
     if intent == "create_kpi":
@@ -782,12 +935,12 @@ def handle_message(
         if proposed:
             try:
                 conflicts = detect_conflicts(kpis, proposed)
-            except Exception:
-                pass  # canh bao xung dot la tinh nang phu — khong duoc chan luong tao KPI
+            except Exception as e:
+                logger.warning("conflict detection failed: %s", e)  # tinh nang phu, khong chan luong tao KPI
         return schemas.ChatResponse(
             reply=_kpi_proposal_reply(
                 proposed, changes, lang=lang, new_objectives=new_objs,
-                conflicts=conflicts, history=history, user_text=text,
+                conflicts=conflicts, history=history, user_text=text, kpis=kpis,
             ),
             intent=intent,
             proposed_objectives=new_objs,
@@ -799,7 +952,7 @@ def handle_message(
     if intent == "delete_kpi":
         objectives = kpi_service.objectives_with_progress(db, user_id)
         delete_req = extract_delete_request(
-            _history_block(history) + text, objectives, kpis
+            _history_block(history) + visible_text, objectives, kpis
         )
 
         target_type = delete_req["target_type"]
@@ -852,10 +1005,10 @@ def handle_message(
             prompts.DELETE_REPLY_SYSTEM.format(
                 target_block=target_block, today=_today(), memories=mem_block
             ) + _lang_suffix(lang),
-            text, history=history,
+            visible_text, history=history,
         )
         return schemas.ChatResponse(
-            reply=reply,
+            reply=_safe_reply(reply, kpis),
             intent=intent,
             delete_proposal=schemas.DeleteProposal(
                 target_type=target_type,
@@ -867,16 +1020,16 @@ def handle_message(
 
     if intent == "coaching":
         # tim KPI nguoi dung nhac toi; khong ro -> chon KPI tut ky vong nhat
-        target = _match_kpi(text, kpis)
+        target = _match_kpi(visible_text, kpis)
         if target is None and kpis:
             target = min(kpis, key=lambda k: kpi_service.health_of(k)[1])
         if target is None:
             facts = "The user has no active KPIs, so coaching/RCA cannot be performed yet."
-            no_kpi = _status_reply(text, facts, intent, lang, history)
+            no_kpi = _status_reply(visible_text, facts, intent, lang, history, kpis=kpis)
             return schemas.ChatResponse(reply=no_kpi, intent=intent)
         analysis, causes, proposed = coach_kpi(db, target, user_id, lang)
         return schemas.ChatResponse(
-            reply=_coaching_reply(analysis, causes, proposed, text, lang, history),
+            reply=_coaching_reply(analysis, causes, proposed, visible_text, lang, history, kpis=kpis),
             intent=intent,
             proposed_items=proposed,
         )
@@ -910,7 +1063,7 @@ def handle_message(
             f"Saved period label: {period_label}\n"
             "Return the report content, and include a brief natural note that it has been saved."
         )
-        saved_note = _status_reply(text, facts, "weekly_summary_saved", lang, history)
+        saved_note = _status_reply(visible_text, facts, "weekly_summary_saved", lang, history, kpis=kpis)
         return schemas.ChatResponse(reply=content + "\n\n---\n" + saved_note, intent="weekly_summary")
 
     if intent == "question":
@@ -919,40 +1072,44 @@ def handle_message(
             prompts.ANSWER_SYSTEM.format(context=context, today=_today()) + _lang_suffix(lang),
             text, history=history, max_tokens=900,
         )
-        return schemas.ChatResponse(reply=reply, intent=intent)
+        return schemas.ChatResponse(reply=_safe_reply(reply, kpis), intent=intent)
 
     # other / chitchat
-    if _is_account_help_question(text):
+    if _is_account_help_question(visible_text):
         context = kpi_service.full_context_text(db, user_id) + user_context
         reply = call_text(
             prompts.ANSWER_SYSTEM.format(context=context, today=_today()) + _lang_suffix(lang),
-            text, history=history, max_tokens=700,
+            visible_text, history=history, max_tokens=700,
         )
-        return schemas.ChatResponse(reply=reply, intent="question")
+        return schemas.ChatResponse(reply=_safe_reply(reply, kpis), intent="question")
     brief = kpi_service.kpi_list_text(kpis) + user_context
     reply = call_text(
         prompts.CHITCHAT_SYSTEM.format(context_brief=brief) + _lang_suffix(lang),
-        text, temperature=0.7, history=history, max_tokens=500,
+        visible_text, temperature=0.7, history=history, max_tokens=500,
     )
-    return schemas.ChatResponse(reply=reply, intent="other")
+    return schemas.ChatResponse(reply=_safe_reply(reply, kpis), intent="other")
 
 
 def weekly_report(db: Session, user_id: int = 1, lang: str = "vi") -> str:
+    kpis = kpi_service.get_active_kpis(db, user_id)
     context = kpi_service.full_context_text(db, user_id)
     prompt_text = "Write the weekly summary for me." if lang == "en" else "Viết bản tổng kết tuần này cho tôi."
-    return call_text(
+    reply = call_text(
         prompts.WEEKLY_REPORT_SYSTEM.format(context=context, today=_today()) + _lang_suffix(lang),
         prompt_text,
     )
+    return _safe_reply(reply, kpis)
 
 
 def self_review(db: Session, period_label: str, user_id: int = 1) -> str:
     """Sinh ban tu danh gia cuoi ky bang LLM tu du lieu KPI hien tai."""
+    kpis = kpi_service.get_active_kpis(db, user_id)
     context = kpi_service.full_context_text(db, user_id)
     system = prompts.SELF_REVIEW_SYSTEM.format(
         context=context, today=_today(), period_label=period_label
     )
-    return call_text(system, f"Viết bản tự đánh giá cho kỳ {period_label}.")
+    reply = call_text(system, f"Viết bản tự đánh giá cho kỳ {period_label}.")
+    return _safe_reply(reply, kpis)
 
 
 PERIOD_NAMES = {"week": "TUẦN", "month": "THÁNG", "quarter": "QUÝ", "year": "NĂM"}
@@ -967,6 +1124,7 @@ def period_report(
     user_id: int = 1,
     lang: str = "vi",
 ) -> str:
+    kpis = kpi_service.get_active_kpis(db, user_id)
     context = kpi_service.period_context_text(db, start, end, period_type, user_id)
     system = prompts.PERIOD_REPORT_SYSTEM.format(
         period_name=PERIOD_NAMES.get(period_type, "KỲ"),
@@ -982,4 +1140,5 @@ def period_report(
         if lang == "en" else
         f"Viết báo cáo {period_name_lower} {period_label} cho tôi."
     )
-    return call_text(system, prompt_text)
+    reply = call_text(system, prompt_text)
+    return _safe_reply(reply, kpis)

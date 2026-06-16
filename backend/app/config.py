@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     vision_base_url: str = ""
     vision_api_key: str = ""
     vision_model: str = ""
+    # Optional path to the Tesseract binary for local OCR fallback on chat attachments.
+    tesseract_cmd: str = ""
 
     # Email (SMTP) — dùng để gửi email thật qua Gmail
     # App Password: lấy từ https://myaccount.google.com/apppasswords
@@ -91,6 +93,10 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_host: str = "smtp.gmail.com"
     smtp_port: int = 587
+
+    # Autonomous Agent loop — deterministic background loop, no direct KPI writes.
+    agent_autonomous_enabled: bool = True
+    agent_autonomous_interval_seconds: int = 900
 
     @property
     def google_credentials_path(self) -> Path:

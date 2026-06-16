@@ -12,6 +12,33 @@ from ..services import kpi_service
 router = APIRouter(prefix="/api/work-items", tags=["work-items"])
 
 
+def _cycle_locked_error(cycle: models.KPICycle):
+    raise HTTPException(
+        status_code=423,
+        detail={
+            "error": "CYCLE_LOCKED",
+            "message": f'Chu kỳ "{cycle.name}" đã được chốt, không thể chỉnh sửa đầu việc/KPI.',
+            "locked_at": cycle.locked_at.isoformat() if cycle.locked_at else None,
+        },
+    )
+
+
+def _check_kpi_cycle_not_locked(db: Session, kpi_id: int | None, user_id: int):
+    if kpi_id is None:
+        return
+    kpi = db.get(models.KPI, kpi_id)
+    if not kpi or kpi.user_id != user_id:
+        raise HTTPException(404, "Không tìm thấy KPI")
+    if not kpi.objective_id:
+        return
+    obj = db.get(models.Objective, kpi.objective_id)
+    if not obj or obj.user_id != user_id or not obj.cycle_id:
+        return
+    cycle = db.get(models.KPICycle, obj.cycle_id)
+    if cycle and cycle.is_locked:
+        _cycle_locked_error(cycle)
+
+
 @router.get("")
 def list_items(
     current_user: CurrentUser,
@@ -65,6 +92,8 @@ def confirm(
     payload: schemas.ConfirmItemsRequest, current_user: CurrentUser, db: Session = Depends(get_db)
 ):
     """Nguoi dung xac nhan (co the da chinh sua) cac dau viec Agent de xuat."""
+    for item in payload.items:
+        _check_kpi_cycle_not_locked(db, item.kpi_id, current_user.id)
     return kpi_service.confirm_items(db, payload.items, user_id=current_user.id)
 
 
@@ -82,6 +111,7 @@ def update_status(
     item = db.get(models.WorkItem, item_id)
     if not item or item.user_id != current_user.id:
         raise HTTPException(404, "Không tìm thấy đầu việc")
+    _check_kpi_cycle_not_locked(db, item.kpi_id, current_user.id)
     item.status = status
     if value_delta and item.kpi_id:
         kpi = db.get(models.KPI, item.kpi_id)
@@ -99,6 +129,7 @@ def delete_item(item_id: int, current_user: CurrentUser, db: Session = Depends(g
     item = db.get(models.WorkItem, item_id)
     if not item or item.user_id != current_user.id:
         raise HTTPException(404, "Không tìm thấy đầu việc")
+    _check_kpi_cycle_not_locked(db, item.kpi_id, current_user.id)
     if item.kpi_id and item.progress_delta:
         kpi = db.get(models.KPI, item.kpi_id)
         if kpi and kpi.user_id == current_user.id:

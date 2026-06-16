@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import Dashboard from './pages/Dashboard'
+import DashboardPersonalPulse from './pages/DashboardPersonalPulse'
 import Chat from './pages/Chat'
 import Kpis from './pages/Kpis'
 import Journal from './pages/Journal'
@@ -16,7 +17,10 @@ import { CycleProvider, useCycle } from './CycleContext'
 import NotificationsBell from './components/NotificationsBell'
 import OnboardingWizard from './components/OnboardingWizard'
 import HelpPanel from './components/HelpPanel'
+import SupportPanel from './components/SupportPanel'
 import { ToastProvider } from './components/Toast'
+import { UiIcon } from './components/UiIcon'
+import AutonomousAgentInbox from './components/AutonomousAgentInbox'
 import { api } from './api'
 
 function loadUser() {
@@ -57,7 +61,8 @@ const LOGOUT_ICON = Sico(<><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><
 const HELP_ICON = Sico(<><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.8 2.8 0 0 1 5.1 1.6c0 2-2.6 2.1-2.6 4" /><path d="M12 18h.01" /></>)
 const PANEL_ICON = Sico(<><path d="M4 5h16M4 12h16M4 19h16" /><path d="M9 5v14" /></>)
 const NAV = [
-  { to: '/dashboard', key: 'nav.dashboard', icon: 'dashboard' },
+  { to: '/dashboard', key: 'nav.dashboard', icon: 'dashboard', end: true },
+  { to: '/dashboard/personal-pulse', key: 'nav.dashboard_pulse', icon: 'dashboard' },
   { to: '/chat', key: 'nav.chat', icon: 'chat' },
   { to: '/kpis', key: 'nav.kpis', icon: 'kpis' },
   { to: '/reports', key: 'nav.reports', icon: 'reports' },
@@ -68,6 +73,7 @@ const NAV = [
 
 const PAGE_TITLE_KEYS = {
   '/dashboard': 'nav.dashboard',
+  '/dashboard/personal-pulse': 'nav.dashboard_pulse',
   '/chat':      'nav.chat',
   '/kpis':      'nav.kpis',
   '/reports':   'nav.reports',
@@ -85,12 +91,12 @@ function CycleSelector() {
       className="cycle-selector"
       value={activeCycleId ?? ''}
       onChange={e => setActiveCycleId(e.target.value ? parseInt(e.target.value, 10) : null)}
-      title={tr('cycle.active') || 'Chu kỳ hiện tại'}
-      aria-label={tr('cycle.active') || 'Chu kỳ hiện tại'}
+      title={tr('cycle.active')}
+      aria-label={tr('cycle.active')}
     >
       {cycles.map(c => (
         <option key={c.id} value={c.id}>
-          {c.name || `Năm ${currentYear}`}{c.is_locked ? ' 🔒' : ''}
+          {c.name || tr('onboarding.cycle.year_name', { year: currentYear })}{c.is_locked ? ` (${tr('cycle.locked_badge')})` : ''}
         </option>
       ))}
     </select>
@@ -132,6 +138,7 @@ function AppContent() {
   }, [user?.id])
 
   const pageTitle = tr(PAGE_TITLE_KEYS[location.pathname] || 'app.title')
+  const isChatRoute = location.pathname === '/chat'
 
   useEffect(() => {
     if (!user) return
@@ -233,7 +240,7 @@ function AppContent() {
         </div>
         <nav>
           {NAV.map((n) => (
-            <NavLink key={n.to} to={n.to} title={sidebarCollapsed ? tr(n.key) : undefined}>
+            <NavLink key={n.to} to={n.to} end={n.end} title={sidebarCollapsed ? tr(n.key) : undefined}>
               {ICONS[n.icon]}<span>{tr(n.key)}</span>
             </NavLink>
           ))}
@@ -258,7 +265,7 @@ function AppContent() {
             <div className="quick-account-panel">
               <div className="quick-account-head">
                 <strong>{tr('account.quick_title')}</strong>
-                <button className="msg-tool" onClick={() => setQuickAccountOpen(false)} aria-label={tr('common.cancel')}>×</button>
+                <button className="msg-tool" onClick={() => setQuickAccountOpen(false)} aria-label={tr('common.cancel')}><UiIcon name="x" /></button>
               </div>
               <label className="field-label" htmlFor="quick-name">{tr('account.name')}</label>
               <input
@@ -317,7 +324,7 @@ function AppContent() {
             <button
               className="side-ctrl"
               onClick={toggleLang}
-              title={lang === 'vi' ? 'Switch to English' : 'Chuyển sang Tiếng Việt'}
+              title={lang === 'vi' ? tr('lang.switch_to_en') : tr('lang.switch_to_vi')}
             >
               {GLOBE}<span>{lang === 'vi' ? 'EN' : 'VI'}</span>
             </button>
@@ -337,12 +344,13 @@ function AppContent() {
           <span className="app-header-title">{pageTitle}</span>
           <div className="app-header-actions">
             <CycleSelector />
+            <AutonomousAgentInbox />
             <NotificationsBell />
             <button
               className="app-header-btn icon-only"
               onClick={() => setShowOnboardingHelp(true)}
-              title="Help → Xem lại hướng dẫn"
-              aria-label="Help - Xem lại hướng dẫn"
+              title={tr('help.replay_onboarding')}
+              aria-label={tr('help.replay_onboarding')}
             >
               {HELP_ICON}
             </button>
@@ -357,7 +365,7 @@ function AppContent() {
             <button
               className="app-header-btn header-mobile-only"
               onClick={toggleLang}
-              title={lang === 'vi' ? 'Switch to English' : 'Chuyển sang Tiếng Việt'}
+              title={lang === 'vi' ? tr('lang.switch_to_en') : tr('lang.switch_to_vi')}
             >
               {GLOBE}<span>{lang === 'vi' ? 'EN' : 'VI'}</span>
             </button>
@@ -371,10 +379,11 @@ function AppContent() {
             </button>
           </div>
         </header>
-        <div className="content-body" ref={mainRef}>
+        <div className={`content-body${isChatRoute ? ' chat-content-body' : ''}`} ref={mainRef}>
           <Routes>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/dashboard/personal-pulse" element={<DashboardPersonalPulse />} />
             <Route path="/chat" element={<Chat />} />
             <Route path="/kpis" element={<Kpis />} />
             <Route path="/reports" element={<Reports />} />
@@ -383,6 +392,7 @@ function AppContent() {
             <Route path="/settings" element={<Settings user={user} onUserUpdate={handleUserUpdate} />} />
           </Routes>
         </div>
+        {!isChatRoute && (
         <footer className="app-footer">
           <div className="app-footer-inner">
             <div className="app-footer-brand">
@@ -393,17 +403,19 @@ function AppContent() {
             <div className="app-footer-meta">
               <span>{tr('footer.privacy')}</span>
               <span className="app-footer-sep">·</span>
-              <span>{tr('footer.made')}</span>
+              <span>{tr('footer.made').replace(/with\s+\S+\s+by/, 'by')}</span>
               <span className="app-footer-sep">·</span>
               <span>© {new Date().getFullYear()}</span>
             </div>
           </div>
         </footer>
+        )}
         <HelpPanel
           targetRef={mainRef}
           screenName={pageTitle}
           position="right"
         />
+        <SupportPanel user={user} />
       </main>
     </div>
   )

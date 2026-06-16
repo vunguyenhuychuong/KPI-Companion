@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
+import { useLang } from '../LangContext'
+import { UiIcon } from '../components/UiIcon'
 
 const BASE = '/api'
 
@@ -7,9 +9,9 @@ async function fetchSharedReport(token) {
   const res = await fetch(`${BASE}/shared/${token}`)
   if (res.status === 410) {
     const data = await res.json().catch(() => ({}))
-    throw new Error(data.detail || 'Link đã hết hạn hoặc bị hủy')
+    throw new Error(data.detail || 'shared.error_expired')
   }
-  if (!res.ok) throw new Error(`Lỗi ${res.status}`)
+  if (!res.ok) throw new Error(`shared.error_http:${res.status}`)
   return res.json()
 }
 
@@ -28,15 +30,15 @@ function RingProgress({ value, size = 100, strokeWidth = 9 }) {
   )
 }
 
-function StatusPill({ pct }) {
+function StatusPill({ pct, tr }) {
   if (pct >= 80) return (
-    <span style={{ background: 'rgba(34,197,94,.15)', color: 'var(--sr-green)', padding: '2px 9px', borderRadius: 20, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap' }}>✓ Đạt</span>
+    <span style={{ background: 'rgba(34,197,94,.15)', color: 'var(--sr-green)', padding: '2px 9px', borderRadius: 20, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap' }}>{tr('shared.status_done')}</span>
   )
   if (pct >= 50) return (
-    <span style={{ background: 'rgba(234,179,8,.15)', color: 'var(--sr-yellow)', padding: '2px 9px', borderRadius: 20, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap' }}>⚠ Cần cải thiện</span>
+    <span style={{ background: 'rgba(234,179,8,.15)', color: 'var(--sr-yellow)', padding: '2px 9px', borderRadius: 20, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap' }}>{tr('shared.status_improve')}</span>
   )
   return (
-    <span style={{ background: 'rgba(239,68,68,.15)', color: 'var(--sr-red)', padding: '2px 9px', borderRadius: 20, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap' }}>✕ Chưa đạt</span>
+    <span style={{ background: 'rgba(239,68,68,.15)', color: 'var(--sr-red)', padding: '2px 9px', borderRadius: 20, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap' }}>{tr('shared.status_not_done')}</span>
   )
 }
 
@@ -82,9 +84,11 @@ const CSS = `
   }
   @keyframes sr-spin { to { transform: rotate(360deg) } }
   .sr-card {
-    background: var(--surface);
+    background: var(--grad-panel), var(--surface);
     border: 1px solid var(--border);
     border-radius: 14px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(10px) saturate(140%);
     transition: border-color .2s;
   }
   .sr-stat-val { font-size: 26px; font-weight: 800; color: var(--primary); line-height: 1; }
@@ -92,6 +96,7 @@ const CSS = `
 `
 
 export default function SharedReport() {
+  const { tr, lang } = useLang()
   const { token } = useParams()
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
@@ -107,7 +112,7 @@ export default function SharedReport() {
       <style>{CSS}</style>
       <div style={{ textAlign: 'center' }}>
         <div style={{ width: 36, height: 36, border: '3px solid var(--primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'sr-spin .7s linear infinite', margin: '0 auto 12px' }} />
-        <div style={{ fontSize: 14 }}>Đang tải báo cáo...</div>
+        <div style={{ fontSize: 14 }}>{tr('shared.loading')}</div>
       </div>
     </div>
   )
@@ -116,9 +121,11 @@ export default function SharedReport() {
     <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', background: 'var(--bg)' }}>
       <style>{CSS}</style>
       <div style={{ textAlign: 'center', maxWidth: 380, padding: '40px 24px' }}>
-        <div style={{ width: 72, height: 72, borderRadius: '50%', background: 'rgba(239,68,68,.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px', fontSize: 30 }}>🔗</div>
-        <h2 style={{ color: 'var(--sr-red)', margin: '0 0 8px', fontSize: 20 }}>Link không khả dụng</h2>
-        <p style={{ color: 'var(--text-muted)', fontSize: 14, margin: 0, lineHeight: 1.6 }}>{error}</p>
+        <div className="shared-error-icon"><UiIcon name="link" /></div>
+        <h2 style={{ color: 'var(--sr-red)', margin: '0 0 8px', fontSize: 20 }}>{tr('shared.link_unavailable')}</h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: 14, margin: 0, lineHeight: 1.6 }}>
+          {error === 'shared.error_expired' ? tr('shared.error_expired') : error.startsWith('shared.error_http:') ? tr('shared.error_http', { status: error.split(':')[1] }) : error}
+        </p>
       </div>
     </div>
   )
@@ -136,18 +143,19 @@ export default function SharedReport() {
   const behind = objectives.filter(o => o.progress < 50).length
 
   const expiresAt = new Date(data.share_link?.expires_at)
-  const expiresStr = expiresAt.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' })
+  const locale = lang === 'vi' ? 'vi-VN' : 'en-US'
+  const expiresStr = expiresAt.toLocaleDateString(locale, { day: '2-digit', month: '2-digit', year: 'numeric' })
   const expiringSoon = (expiresAt - new Date()) / 86400000 <= 2
 
-  const fmt = (d) => new Date(d).toLocaleDateString('vi-VN')
+  const fmt = (d) => new Date(d).toLocaleDateString(locale)
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)', fontFamily: 'inherit', color: 'var(--text)' }}>
+    <div style={{ minHeight: '100vh', background: 'transparent', fontFamily: 'inherit', color: 'var(--text)' }}>
       <style>{CSS}</style>
 
       {/* ── Header ── */}
       <header style={{
-        background: 'linear-gradient(135deg, var(--primary) 0%, var(--primary-2) 100%)',
+        background: 'var(--grad)',
         color: '#fff', padding: '13px 24px',
         display: 'flex', alignItems: 'center', gap: 12,
       }}>
@@ -160,12 +168,12 @@ export default function SharedReport() {
         }}>K</div>
         <div>
           <div style={{ fontWeight: 700, fontSize: 15 }}>KPI Companion</div>
-          <div style={{ fontSize: 11, opacity: .75, letterSpacing: .4 }}>BÁO CÁO CHIA SẺ · CHỈ XEM</div>
+          <div style={{ fontSize: 11, opacity: .75, letterSpacing: .4 }}>{tr('shared.readonly_report')}</div>
         </div>
         <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-          <div style={{ fontSize: 11, opacity: .65 }}>Hết hạn</div>
+          <div style={{ fontSize: 11, opacity: .65 }}>{tr('shared.expires')}</div>
           <div style={{ fontSize: 13, fontWeight: 600, color: expiringSoon ? '#fde68a' : 'rgba(255,255,255,.95)' }}>
-            {expiresStr} {expiringSoon && '⚠️'}
+            {expiresStr} {expiringSoon && <span className="inline-ui-icon"><UiIcon name="warning" /></span>}
           </div>
         </div>
       </header>
@@ -180,7 +188,7 @@ export default function SharedReport() {
             <RingProgress value={avgProgress} size={104} strokeWidth={10} />
             <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
               <span style={{ fontSize: 21, fontWeight: 800, color: avgProgress >= 80 ? 'var(--sr-green)' : avgProgress >= 50 ? 'var(--sr-yellow)' : 'var(--sr-red)', lineHeight: 1 }}>{avgProgress}%</span>
-              <span style={{ fontSize: 9, color: 'var(--text-muted)', marginTop: 3, letterSpacing: .5 }}>TIẾN ĐỘ</span>
+              <span style={{ fontSize: 9, color: 'var(--text-muted)', marginTop: 3, letterSpacing: .5 }}>{tr('shared.progress')}</span>
             </div>
           </div>
 
@@ -189,11 +197,11 @@ export default function SharedReport() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
               <h1 style={{ margin: 0, fontSize: 21, fontWeight: 800, color: 'var(--text)' }}>{cycle.name}</h1>
               {cycle.is_locked && (
-                <span style={{ background: 'var(--surface-2)', color: 'var(--text-muted)', padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600, border: '1px solid var(--border)' }}>🔒 Đã chốt</span>
+                <span style={{ background: 'var(--surface-2)', color: 'var(--text-muted)', padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600, border: '1px solid var(--border)', display: 'inline-flex', alignItems: 'center', gap: 5 }}><UiIcon name="lock" /> {tr('cycle.locked_badge')}</span>
               )}
             </div>
             <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 14 }}>
-              {cycle.start_date && cycle.end_date ? `${fmt(cycle.start_date)} — ${fmt(cycle.end_date)}` : 'Không xác định'}
+              {cycle.start_date && cycle.end_date ? `${fmt(cycle.start_date)} — ${fmt(cycle.end_date)}` : tr('shared.unspecified')}
             </div>
 
             {/* Status pills */}
@@ -201,19 +209,19 @@ export default function SharedReport() {
               {onTrack > 0 && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'rgba(34,197,94,.12)', color: 'var(--sr-green)', padding: '4px 12px', borderRadius: 20, fontSize: 12, fontWeight: 700, border: '1px solid rgba(34,197,94,.25)' }}>
                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--sr-green)', display: 'inline-block' }} />
-                  {onTrack} Đạt mục tiêu
+                  {tr('shared.count_on_track', { count: onTrack })}
                 </div>
               )}
               {atRisk > 0 && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'rgba(234,179,8,.12)', color: 'var(--sr-yellow)', padding: '4px 12px', borderRadius: 20, fontSize: 12, fontWeight: 700, border: '1px solid rgba(234,179,8,.25)' }}>
                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--sr-yellow)', display: 'inline-block' }} />
-                  {atRisk} Cần cải thiện
+                  {tr('shared.count_improve', { count: atRisk })}
                 </div>
               )}
               {behind > 0 && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'rgba(239,68,68,.12)', color: 'var(--sr-red)', padding: '4px 12px', borderRadius: 20, fontSize: 12, fontWeight: 700, border: '1px solid rgba(239,68,68,.25)' }}>
                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--sr-red)', display: 'inline-block' }} />
-                  {behind} Chưa đạt
+                  {tr('shared.count_not_done', { count: behind })}
                 </div>
               )}
             </div>
@@ -223,7 +231,7 @@ export default function SharedReport() {
           <div style={{ display: 'flex', gap: 0, borderLeft: '1px solid var(--border)', marginLeft: 4, paddingLeft: 20, flexShrink: 0 }}>
             <div style={{ textAlign: 'center', padding: '0 16px', borderRight: '1px solid var(--border)' }}>
               <div className="sr-stat-val">{objectives.length}</div>
-              <div className="sr-stat-lbl">Mục tiêu</div>
+              <div className="sr-stat-lbl">{tr('shared.objectives')}</div>
             </div>
             <div style={{ textAlign: 'center', padding: '0 16px' }}>
               <div className="sr-stat-val">{totalKpis}</div>
@@ -245,7 +253,7 @@ export default function SharedReport() {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                       <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)', flex: 1 }}>{obj.name}</span>
-                      <StatusPill pct={pct} />
+                      <StatusPill pct={pct} tr={tr} />
                       <span style={{ fontSize: 15, fontWeight: 800, color: accentColor, minWidth: 40, textAlign: 'right' }}>{pct}%</span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -265,7 +273,7 @@ export default function SharedReport() {
                   </div>
                 )}
                 {obj.kpis.length === 0 && (
-                  <div style={{ padding: '12px 20px 12px 36px', fontSize: 13, color: 'var(--text-muted)' }}>Chưa có KPI nào</div>
+                  <div style={{ padding: '12px 20px 12px 36px', fontSize: 13, color: 'var(--text-muted)' }}>{tr('shared.no_kpis')}</div>
                 )}
               </div>
             )
@@ -278,7 +286,7 @@ export default function SharedReport() {
             <div style={{ width: 26, height: 26, borderRadius: 7, background: 'var(--primary)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 13 }}>K</div>
             <span style={{ fontWeight: 700, fontSize: 13, color: 'var(--text)' }}>KPI Companion</span>
           </div>
-          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Báo cáo chỉ xem · Không thể chỉnh sửa</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{tr('shared.footer_note')}</span>
         </div>
       </div>
     </div>

@@ -1,6 +1,20 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useLang } from '../LangContext'
+import NumberStepper from './NumberStepper'
+import { UiIcon, cleanIconLabel } from './UiIcon'
+
+const normalizeNumericInput = (value, { min = 0, max = Infinity, integer = false } = {}) => {
+  if (value === '') return ''
+  const raw = String(value).replace(',', '.').replace('%', '').trim()
+  if (!raw || raw === '-' || raw === '.' || raw === '-.') return ''
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) return ''
+  const numeric = integer ? Math.trunc(parsed) : parsed
+  return String(Math.min(max, Math.max(min, numeric)))
+}
+const normalizeWeightInput = (value) => normalizeNumericInput(value, { min: 0, max: 100, integer: true })
+const normalizeNonNegativeInput = (value) => normalizeNumericInput(value, { min: 0 })
 
 /**
  * The de xuat tu Tro ly AI: tao Objective MOI (neu co) + KPI gan vao.
@@ -30,7 +44,7 @@ export default function KpiProposal({ kpis: proposedKpis, newObjectives, weightC
   const updateObj = (i, field, value) =>
     setNewObjs(newObjs.map((o, idx) => (idx === i ? { ...o, [field]: value } : o)))
   const updateChange = (i, value) =>
-    setChanges(changes.map((c, idx) => (idx === i ? { ...c, new_weight: Number(value) || 0 } : c)))
+    setChanges(changes.map((c, idx) => (idx === i ? { ...c, new_weight: normalizeWeightInput(value) } : c)))
   const removeRow = (i) => setRows(rows.filter((_, idx) => idx !== i))
   const removeChange = (i) => setChanges(changes.filter((_, idx) => idx !== i))
   const removeObj = (i) => {
@@ -53,6 +67,19 @@ export default function KpiProposal({ kpis: proposedKpis, newObjectives, weightC
     }
   }
 
+  const validWeight = (v) => {
+    const n = Number(v)
+    return Number.isInteger(n) && n >= 0 && n <= 100
+  }
+  const validPositive = (v) => {
+    const n = Number(v)
+    return Number.isFinite(n) && n > 0
+  }
+  const hasInvalidNumbers =
+    newObjs.some((o) => !validWeight(o.weight)) ||
+    rows.some((r) => !validWeight(r.weight) || !validPositive(r.target_value)) ||
+    changes.some((c) => !validWeight(c.new_weight))
+
   const confirm = async () => {
     setSaving(true)
     setError('')
@@ -62,10 +89,10 @@ export default function KpiProposal({ kpis: proposedKpis, newObjectives, weightC
         kpis: rows.map((r) => ({
           ...r,
           weight: Number(r.weight) || 0,
-          target_value: Number(r.target_value) || 100,
+          target_value: Number(r.target_value),
           objective_id: r.objective_ref ? null : (r.objective_id ? Number(r.objective_id) : null),
         })),
-        weight_changes: changes,
+        weight_changes: changes.map((c) => ({ ...c, new_weight: Number(c.new_weight) || 0 })),
       }
       await api.confirmKpiProposal(payload)
       onConfirmed?.()
@@ -81,20 +108,20 @@ export default function KpiProposal({ kpis: proposedKpis, newObjectives, weightC
       {newObjs.length > 0 && (
         <div className="proposal-card">
           <div className="proposal-ref" style={{ marginBottom: 6 }}>
-            {tr('kpi_proposal.new_objectives')}
+            <UiIcon name="flag" /> {cleanIconLabel(tr('kpi_proposal.new_objectives'))}
           </div>
           {newObjs.map((o, i) => (
             <div className="proposal-controls" key={i}>
-              <span>🏁</span>
+              <span className="inline-ui-icon"><UiIcon name="flag" /></span>
               <input className="proposal-title" style={{ flex: 1, minWidth: 160 }} value={o.name}
                 onChange={(e) => updateObj(i, 'name', e.target.value)} />
               <label className="delta-label" title={tr('kpi_proposal.obj_weight_tooltip')}>
-                ⚖
-                <input type="number" min="0" max="100" value={o.weight}
-                  onChange={(e) => updateObj(i, 'weight', e.target.value)} />
+                <UiIcon name="scale" />
+                <NumberStepper min="0" max="100" step="1" className="compact" value={o.weight}
+                  onChange={(value) => updateObj(i, 'weight', normalizeWeightInput(value))} />
                 %
               </label>
-              <button className="btn-icon" title={tr('kpi_proposal.remove_obj')} onClick={() => removeObj(i)}>✕</button>
+              <button className="btn-icon" title={tr('kpi_proposal.remove_obj')} onClick={() => removeObj(i)}><UiIcon name="x" /></button>
             </div>
           ))}
         </div>
@@ -105,33 +132,33 @@ export default function KpiProposal({ kpis: proposedKpis, newObjectives, weightC
           <div className="proposal-main">
             <input className="proposal-title" value={r.name}
               onChange={(e) => update(i, 'name', e.target.value)} />
-            {r.target && <div className="proposal-ref">🎯 {r.target}</div>}
+            {r.target && <div className="proposal-ref"><UiIcon name="target" /> {r.target}</div>}
           </div>
           <div className="proposal-controls">
             <select value={selectValue(r)} onChange={(e) => onSelect(i, e.target.value)}>
               <option value="">{tr('kpi_proposal.no_objective')}</option>
               {newObjs.map((o) => (
-                <option key={`new:${o.name}`} value={`new:${o.name}`}>🆕 {o.name}</option>
+                <option key={`new:${o.name}`} value={`new:${o.name}`}>{o.name}</option>
               ))}
               {objectives.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
             </select>
             <label className="delta-label" title={tr('kpi_proposal.target_tooltip')}>
-              <input type="number" step="any" min="0" style={{ width: 60 }} value={r.target_value}
-                onChange={(e) => update(i, 'target_value', e.target.value)} />
+              <NumberStepper step="any" min="0" className="compact" value={r.target_value}
+                onChange={(value) => update(i, 'target_value', normalizeNonNegativeInput(value))} />
               <input style={{ width: 84 }} value={r.unit}
                 onChange={(e) => update(i, 'unit', e.target.value)} />
             </label>
             <label className="delta-label" title={tr('kpi_proposal.weight_tooltip')}>
-              ⚖
-              <input type="number" min="0" max="100" value={r.weight}
-                onChange={(e) => update(i, 'weight', e.target.value)} />
+              <UiIcon name="scale" />
+              <NumberStepper min="0" max="100" step="1" className="compact" value={r.weight}
+                onChange={(value) => update(i, 'weight', normalizeWeightInput(value))} />
               %
             </label>
             <label className="delta-label" title={tr('kpi_proposal.deadline_tooltip')}>
               <input type="date" value={r.deadline || ''}
                 onChange={(e) => update(i, 'deadline', e.target.value || null)} />
             </label>
-            <button className="btn-icon" title={tr('kpi_proposal.remove_kpi')} onClick={() => removeRow(i)}>✕</button>
+            <button className="btn-icon" title={tr('kpi_proposal.remove_kpi')} onClick={() => removeRow(i)}><UiIcon name="x" /></button>
           </div>
         </div>
       ))}
@@ -139,29 +166,29 @@ export default function KpiProposal({ kpis: proposedKpis, newObjectives, weightC
       {changes.length > 0 && (
         <div className="proposal-card">
           <div className="proposal-ref" style={{ marginBottom: 6 }}>
-            {tr('kpi_proposal.adjust_weights')}
+            <UiIcon name="scale" /> {cleanIconLabel(tr('kpi_proposal.adjust_weights'))}
           </div>
           {changes.map((c, i) => (
             <div className="proposal-controls" key={c.kpi_id}>
               <span style={{ fontSize: 13 }}>{c.kpi_name}</span>
-              <span className="muted">{c.old_weight}% →</span>
+              <span className="muted">{c.old_weight}% {'->'}</span>
               <label className="delta-label">
-                <input type="number" min="0" max="100" value={c.new_weight}
-                  onChange={(e) => updateChange(i, e.target.value)} />
+                <NumberStepper min="0" max="100" step="1" className="compact" value={c.new_weight}
+                  onChange={(value) => updateChange(i, value)} />
                 %
               </label>
-              <button className="btn-icon" title={tr('kpi_proposal.remove_change')} onClick={() => removeChange(i)}>✕</button>
+              <button className="btn-icon" title={tr('kpi_proposal.remove_change')} onClick={() => removeChange(i)}><UiIcon name="x" /></button>
             </div>
           ))}
         </div>
       )}
 
-      {error && <div className="error-text">⚠️ {error}</div>}
+      {error && <div className="error-text"><UiIcon name="warning" /> {error}</div>}
       <div className="proposal-actions">
-        <button className="btn primary" disabled={saving || (!rows.length && !newObjs.length)} onClick={confirm}>
-          {saving ? tr('kpi_proposal.saving') : tr('kpi_proposal.confirm', { count: rows.length })}
+        <button className="btn primary" disabled={saving || hasInvalidNumbers || (!rows.length && !newObjs.length)} onClick={confirm}>
+          <UiIcon name="check" />{saving ? tr('kpi_proposal.saving') : tr('kpi_proposal.confirm', { count: rows.length })}
         </button>
-        {onDismiss && <button className="btn ghost" onClick={onDismiss}>{tr('kpi_proposal.dismiss')}</button>}
+        {onDismiss && <button className="btn ghost" onClick={onDismiss}><UiIcon name="x" />{tr('kpi_proposal.dismiss')}</button>}
       </div>
     </div>
   )

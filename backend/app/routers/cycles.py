@@ -7,7 +7,7 @@ import re
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -168,6 +168,14 @@ def delete_cycle(cycle_id: int, current_user: CurrentUser, db: Session = Depends
 class LockRequest(BaseModel):
     reason: str = ""
 
+    @field_validator("reason")
+    @classmethod
+    def _reason_required(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("Vui lòng nhập lý do chốt/mở khóa chu kỳ")
+        return v
+
 
 @router.post("/{cycle_id}/lock")
 def lock_cycle(
@@ -191,6 +199,14 @@ def lock_cycle(
 class UnlockRequest(BaseModel):
     reason: str = ""
 
+    @field_validator("reason")
+    @classmethod
+    def _reason_required(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("Vui lòng nhập lý do chốt/mở khóa chu kỳ")
+        return v
+
 
 @router.post("/{cycle_id}/unlock")
 def unlock_cycle(
@@ -205,6 +221,7 @@ def unlock_cycle(
     cycle.is_locked = False
     cycle.locked_at = None
     cycle.locked_by = None
+    cycle.lock_reason = payload.reason
     db.commit()
     return {"ok": True, "message": f'Đã mở khoá chu kỳ "{cycle.name}"'}
 

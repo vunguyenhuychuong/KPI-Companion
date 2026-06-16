@@ -3,9 +3,11 @@ import { marked } from 'marked'
 import Highcharts from 'highcharts'
 import { api } from '../api'
 import { useLang } from '../LangContext'
+import { useCycle } from '../CycleContext'
 import { prefs } from '../prefs'
 import { Modal, ConfirmModal } from '../components/Modal'
 import { useToast } from '../components/Toast'
+import { UiIcon, cleanIconLabel } from '../components/UiIcon'
 
 function now() { return new Date() }
 
@@ -92,7 +94,7 @@ function CycleCompareChart({ tr }) {
 
   return (
     <div>
-      {error && <div className="error-text">⚠️ {error}</div>}
+      {error && <div className="error-text"><UiIcon name="warning" /> {error}</div>}
       <p className="muted" style={{ marginBottom: 8 }}>{tr('reports.compare_hint')}</p>
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>{tr('reports.compare_select_label')}</div>
@@ -101,13 +103,13 @@ function CycleCompareChart({ tr }) {
             <label key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', padding: '4px 10px', borderRadius: 8, border: '1px solid var(--border)', background: selected.includes(c.id) ? 'var(--primary)' : 'var(--surface)', color: selected.includes(c.id) ? '#fff' : 'var(--text)', fontSize: 13 }}>
               <input type="checkbox" checked={selected.includes(c.id)} onChange={() => toggle(c.id)} style={{ display: 'none' }} />
               {c.name}
-              {c.is_locked && <span style={{ fontSize: 10, opacity: 0.7 }}>🔒</span>}
+              {c.is_locked && <span className="inline-ui-icon" style={{ opacity: 0.8 }}><UiIcon name="lock" /></span>}
             </label>
           ))}
         </div>
       </div>
       <button className="btn primary" onClick={doCompare} disabled={selected.length < 2 || loading} style={{ marginBottom: 16 }}>
-        {loading ? tr('reports.compare_loading') : tr('reports.compare_btn')}
+        <UiIcon name="table" />{loading ? tr('reports.compare_loading') : cleanIconLabel(tr('reports.compare_btn'))}
       </button>
 
       {compareData && allObjectiveNames.length === 0 && (
@@ -125,15 +127,16 @@ function CycleCompareChart({ tr }) {
 
 export default function Reports() {
   const { tr } = useLang()
+  const { activeCycleId } = useCycle()
   const toast = useToast()
 
   const PERIODS = [
-    { key: 'week', label: tr('reports.tab_week') },
-    { key: 'month', label: tr('reports.tab_month') },
-    { key: 'quarter', label: tr('reports.tab_quarter') },
-    { key: 'year', label: tr('reports.tab_year') },
-    { key: 'self_review', label: tr('reports.tab_self_review') },
-    { key: 'compare', label: tr('reports.tab_compare') },
+    { key: 'week', label: cleanIconLabel(tr('reports.tab_week')), icon: 'calendar' },
+    { key: 'month', label: cleanIconLabel(tr('reports.tab_month')), icon: 'calendar' },
+    { key: 'quarter', label: cleanIconLabel(tr('reports.tab_quarter')), icon: 'table' },
+    { key: 'year', label: cleanIconLabel(tr('reports.tab_year')), icon: 'target' },
+    { key: 'self_review', label: cleanIconLabel(tr('reports.tab_self_review')), icon: 'fileText' },
+    { key: 'compare', label: cleanIconLabel(tr('reports.tab_compare')), icon: 'scan' },
   ]
 
   const [saved, setSaved] = useState([])
@@ -235,7 +238,7 @@ export default function Reports() {
     setShowExportConfirm(false)
     setBusy(true)
     try {
-      await api.exportEvaluation()
+      await api.exportEvaluation(activeCycleId)
     } catch (e) { setError(e.message) } finally { setBusy(false) }
   }
 
@@ -318,11 +321,11 @@ export default function Reports() {
     <div className="page">
       <header className="page-header row">
         <div>
-          <h1>{tr('reports.title')}</h1>
+          <h1 className="page-title-with-icon"><UiIcon name="fileText" /> {cleanIconLabel(tr('reports.title'))}</h1>
           <p>{tr('reports.subtitle')}</p>
         </div>
         <button className="btn" onClick={doExport} disabled={busy}>
-          {tr('reports.export')}
+          <UiIcon name="download" />{cleanIconLabel(tr('reports.export'))}
         </button>
       </header>
 
@@ -332,7 +335,7 @@ export default function Reports() {
             <button key={p.key}
               className={`period-tab ${periodType === p.key ? 'active' : ''}`}
               onClick={() => setPeriodType(p.key)}>
-              {p.label}
+              <UiIcon name={p.icon} />{p.label}
             </button>
           ))}
         </div>
@@ -340,7 +343,7 @@ export default function Reports() {
           <div className="form-row" style={{ alignItems: 'center' }}>
             <p className="muted" style={{ margin: 0, flex: 1 }}>{tr('reports.self_review_hint')}</p>
             <button className="btn primary" onClick={generate} disabled={busy}>
-              {busy ? tr('reports.generating', { secs }) : tr('reports.self_review_btn')}
+              <UiIcon name="sparkles" />{busy ? tr('reports.generating', { secs }) : tr('reports.self_review_btn')}
             </button>
           </div>
         ) : (
@@ -373,17 +376,18 @@ export default function Reports() {
                 </label>
               )}
               <button className="btn primary" onClick={generate} disabled={busy}>
-                {busy ? tr('reports.generating', { secs }) : tr('reports.generate_btn')}
+                <UiIcon name="sparkles" />{busy ? tr('reports.generating', { secs }) : cleanIconLabel(tr('reports.generate_btn'))}
               </button>
             </div>
-            <p className="muted" style={{ marginTop: 8 }}
-              dangerouslySetInnerHTML={{ __html: marked.parseInline(tr('reports.overwrite_note')) }}
-            />
+            <p className="muted report-note" style={{ marginTop: 8 }}>
+              <UiIcon name="sparkles" />
+              <span dangerouslySetInnerHTML={{ __html: marked.parseInline(cleanIconLabel(tr('reports.overwrite_note'))) }} />
+            </p>
           </>
         )}
       </div>
 
-      {error && <div className="error-text">⚠️ {error}</div>}
+      {error && <div className="error-text"><UiIcon name="warning" /> {error}</div>}
 
       {periodType === 'compare' && (
         <div className="card" style={{ padding: '20px 24px' }}>
@@ -403,7 +407,7 @@ export default function Reports() {
                 <b>{r.period_label}</b>
                 <div className="muted">{r.created_at?.slice(0, 16).replace('T', ' ')}</div>
               </div>
-              <button className="btn-icon" title={tr('reports.delete_title')} onClick={(e) => { e.stopPropagation(); setDeleteConfirm(r.id) }}>✕</button>
+              <button className="btn-icon" title={tr('reports.delete_title')} onClick={(e) => { e.stopPropagation(); setDeleteConfirm(r.id) }}><UiIcon name="trash" /></button>
             </div>
           ))}
         </div>
@@ -418,17 +422,17 @@ export default function Reports() {
                     <button className="btn small" onClick={() => exportReport('pdf')}
                       disabled={exportingFormat !== null}
                       title={tr('reports.export_pdf_title')}>
-                      {exportingFormat === 'pdf' ? '...' : tr('reports.export_pdf_btn')}
+                      <UiIcon name="fileText" />{exportingFormat === 'pdf' ? '...' : tr('reports.export_pdf_btn')}
                     </button>
                   )}
                   <button className="btn small primary" onClick={openEditModal}>
-                    {tr('reports.edit_send')}
+                    <UiIcon name="edit" />{cleanIconLabel(tr('reports.edit_send'))}
                   </button>
                   <button className="btn small" onClick={regenerate} disabled={busy}
                     title={tr('reports.regenerate_tooltip')}>
-                    {busy ? tr('reports.regenerating', { secs }) : tr('reports.regenerate_btn')}
+                    <UiIcon name="refresh" />{busy ? tr('reports.regenerating', { secs }) : cleanIconLabel(tr('reports.regenerate_btn'))}
                   </button>
-                  <button className="btn small" onClick={copy}>{tr('reports.copy_btn')}</button>
+                  <button className="btn small" onClick={copy}><UiIcon name="copy" />{cleanIconLabel(tr('reports.copy_btn'))}</button>
                 </div>
               </div>
               <div className="report-content" dangerouslySetInnerHTML={{ __html: marked.parse(viewing.content) }} />
@@ -449,7 +453,7 @@ export default function Reports() {
         actions={
           <>
             <button className="btn" onClick={() => setShowExportConfirm(false)}>{tr('common.cancel')}</button>
-            <button className="btn primary" onClick={confirmExport}>{tr('reports.export')}</button>
+            <button className="btn primary" onClick={confirmExport}><UiIcon name="download" />{cleanIconLabel(tr('reports.export'))}</button>
           </>
         }
       >
@@ -486,9 +490,10 @@ export default function Reports() {
                 setMgrBusy(false)
               }
             }} disabled={mgrBusy || !mgrTo.trim()}>
-              {mgrBusy ? tr('export.sending') : tr('reports.send_email_btn')}
+              <UiIcon name="mail" />{mgrBusy ? tr('export.sending') : cleanIconLabel(tr('reports.send_email_btn'))}
             </button>
             <button className="btn" onClick={() => { setShowEditModal(false); openSendModal() }}>
+              <UiIcon name="send" />
               {tr('reports.continue_send')}
             </button>
           </>
@@ -525,7 +530,7 @@ export default function Reports() {
             <button type="button" className="format-btn" title={tr('reports.format_list')} onClick={() => insertFormat('list')}>•</button>
             <button type="button" className="format-btn" title={tr('reports.format_list_num')} onClick={() => insertFormat('list_num')}>1.</button>
             <button type="button" className="format-btn" title={tr('reports.format_quote')} onClick={() => insertFormat('quote')}>&gt;</button>
-            <button type="button" className="format-btn" title={tr('reports.format_link')} onClick={() => insertFormat('link')}>🔗</button>
+            <button type="button" className="format-btn" title={tr('reports.format_link')} onClick={() => insertFormat('link')}><UiIcon name="link" /></button>
           </div>
           <textarea
             ref={editTextareaRef}
@@ -572,7 +577,7 @@ export default function Reports() {
           <>
             <button className="btn" onClick={() => setShowSendModal(false)}>{tr('common.cancel')}</button>
             <button className="btn primary" onClick={doSend} disabled={mgrBusy || !mgrTo.trim()}>
-              {mgrBusy ? tr('export.sending') : tr('export.send_btn')}
+              <UiIcon name="send" />{mgrBusy ? tr('export.sending') : tr('export.send_btn')}
             </button>
           </>
         }
@@ -601,7 +606,7 @@ export default function Reports() {
           />
         </div>
 
-        {error && <div className="error-text" style={{ marginBottom: 12 }}>⚠️ {error}</div>}
+        {error && <div className="error-text" style={{ marginBottom: 12 }}><UiIcon name="warning" /> {error}</div>}
 
         {mgrResult && (
           <div className="manager-preview" style={{ marginTop: 16 }}>

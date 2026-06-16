@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
+from ..agent import memory as agent_memory
 
 
 def expected_progress(kpi: models.KPI, today: date | None = None) -> float:
@@ -366,12 +367,30 @@ def confirm_items(
             source=it.source,
             source_ref=it.source_ref,
             work_date=it.work_date,
+            mapping_reason=it.mapping_reason or "",
+            confidence=it.confidence,
+            alternative_kpis=[a.model_dump() for a in it.alternative_kpis] if it.alternative_kpis else None,
             confirmed=True,
         )
         db.add(wi)
         if kpi and it.value_delta:
             # cong vao THUC DAT theo don vi; cho phep vuot chi tieu (>100%)
             kpi.current_value = max(0.0, round(kpi.current_value + it.value_delta, 2))
+        if it.original_kpi_id is not None and it.original_kpi_id != (kpi.id if kpi else None):
+            old = db.get(models.KPI, it.original_kpi_id)
+            old_name = old.name if old else "khong gan KPI"
+            new_name = kpi.name if kpi else "khong gan KPI"
+            agent_memory.remember_correction(
+                db,
+                user_id,
+                f'Khi dau viec "{it.title}" duoc de xuat gan KPI "{old_name}" nhung user sua sang KPI "{new_name}", uu tien cach gan moi cho cac dau viec tuong tu.',
+            )
+        if it.original_status and it.original_status != wi.status:
+            agent_memory.remember_correction(
+                db,
+                user_id,
+                f'Khi dau viec "{it.title}" duoc de xuat trang thai "{it.original_status}" nhung user sua thanh "{wi.status}", ap dung correction nay cho cac dau viec tuong tu.',
+            )
         saved.append(wi)
     db.commit()
     return saved
@@ -385,7 +404,7 @@ def kpi_list_text(kpis: list[models.KPI]) -> str:
     for k in kpis:
         obj = f" | thuộc mục tiêu: {k.objective_name}" if k.objective_name else ""
         lines.append(
-            f"- id={k.id} | {k.name} | chỉ tiêu: {k.target or k.description or 'n/a'}{obj} | "
+            f"- internal_kpi_id={k.id} | display_name=\"{k.name}\" | chỉ tiêu: {k.target or k.description or 'n/a'}{obj} | "
             f"đơn vị đo: \"{k.unit}\" | chỉ tiêu số: {k.target_value:g} | "
             f"thực đạt hiện tại: {k.current_value:g} {k.unit} (= {k.progress:.0f}%) | "
             f"deadline {k.deadline or f'{k.year}-12-31'}"
@@ -406,7 +425,7 @@ def period_context_text(
         obj = f", mục tiêu \"{k.objective_name}\"" if k.objective_name else ""
         over = " — VƯỢT CHỈ TIÊU" if k.progress > 100 else ""
         parts.append(
-            f"- [{k.id}] {k.name}: thực đạt {k.current_value:g}/{k.target_value:g} {k.unit} "
+            f"- KPI \"{k.name}\": thực đạt {k.current_value:g}/{k.target_value:g} {k.unit} "
             f"= {k.progress:.0f}%{over}, kỳ vọng theo thời gian {exp:.0f}% (lệch {gap:+.0f}%, {health}){obj}"
         )
 
@@ -478,7 +497,7 @@ def full_context_text(db: Session, user_id: int = 1) -> str:
         obj = f", thuộc mục tiêu \"{k.objective_name}\"" if k.objective_name else ""
         over = " — VƯỢT CHỈ TIÊU" if k.progress > 100 else ""
         parts.append(
-            f"- [{k.id}] {k.name}: thực đạt {k.current_value:g}/{k.target_value:g} {k.unit} "
+            f"- KPI \"{k.name}\": thực đạt {k.current_value:g}/{k.target_value:g} {k.unit} "
             f"= {k.progress:.0f}%{over} / kỳ vọng theo thời gian {exp:.0f}% "
             f"(lệch {gap:+.0f}%, trạng thái {health}){obj}, "
             f"deadline {k.deadline or f'{k.year}-12-31'}"

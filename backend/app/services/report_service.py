@@ -35,21 +35,20 @@ APPRAISAL_BLUE = PatternFill("solid", fgColor="B8CCE4")
 RED_BOLD = Font(bold=True, color="FF0000", size=10)
 
 
-def export_appraisal_excel(db: Session, user: models.User) -> bytes:
+def export_appraisal_excel(db: Session, user: models.User, cycle_id: int | None = None) -> bytes:
     """Xuat dung MAU PERFORMANCE APPRAISAL cua cong ty — import nguoc lai duoc.
 
     Chua co KPI -> xuat template trong (giu nguyen tieu de, quy tac, header)
     de nguoi dung dien tay hoac doi chieu.
     """
-    kpis = kpi_service.get_active_kpis(db, user.id)
-    objectives = list(
-        db.scalars(
-            select(models.Objective).where(
-                models.Objective.user_id == user.id,
-                models.Objective.archived == False,  # noqa: E712
-            )
-        )
+    kpis = kpi_service.get_active_kpis(db, user.id, cycle_id=cycle_id)
+    objective_query = select(models.Objective).where(
+        models.Objective.user_id == user.id,
+        models.Objective.archived == False,  # noqa: E712
     )
+    if cycle_id is not None:
+        objective_query = objective_query.where(models.Objective.cycle_id == cycle_id)
+    objectives = list(db.scalars(objective_query))
     year = kpis[0].year if kpis else date.today().year
 
     wb = Workbook()
@@ -154,8 +153,8 @@ def export_appraisal_excel(db: Session, user: models.User) -> bytes:
     return buf.getvalue()
 
 
-def export_evaluation_excel(db: Session, user_id: int = 1) -> bytes:
-    kpis = kpi_service.get_active_kpis(db, user_id)
+def export_evaluation_excel(db: Session, user_id: int = 1, cycle_id: int | None = None) -> bytes:
+    kpis = kpi_service.get_active_kpis(db, user_id, cycle_id=cycle_id)
     today = date.today()
     wb = Workbook()
 
@@ -192,7 +191,7 @@ def export_evaluation_excel(db: Session, user_id: int = 1) -> bytes:
     widths = [5, 26, 32, 34, 13, 10, 10, 10, 12, 11, 11, 11, 14]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[ws.cell(row=4, column=i).column_letter].width = w
-    dash = kpi_service.build_dashboard(db, user_id)
+    dash = kpi_service.build_dashboard(db, user_id, cycle_id=cycle_id)
     ws.append([])
     ws.append(["", "TỔNG TIẾN ĐỘ NĂM (theo trọng số mục tiêu, KPI vượt tính tối đa 100%)",
                "", "", "", "", "", "", "", dash.overall_progress])
@@ -254,7 +253,7 @@ def export_evaluation_excel(db: Session, user_id: int = 1) -> bytes:
     for lg in logs:
         kpi = db.get(models.KPI, lg.kpi_id)
         ws4.append([
-            lg.changed_at.date().isoformat(), kpi.name if kpi else f"#{lg.kpi_id}",
+            lg.changed_at.date().isoformat(), kpi.name if kpi else "KPI đã bị xóa hoặc không còn truy cập được",
             lg.field, lg.old_value, lg.new_value, lg.reason,
         ])
         for c in range(1, len(headers4) + 1):

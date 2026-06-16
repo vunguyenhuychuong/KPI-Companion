@@ -40,7 +40,7 @@ export async function callVisionAPI({ base64Image, screenHint, lang }) {
   try {
     data = text ? JSON.parse(text) : null
   } catch {
-    throw new Error(text || 'Vision AI trả về dữ liệu không hợp lệ.')
+    throw new Error(text || 'help.vision_invalid')
   }
   if (!res.ok) {
     throw new Error(data?.detail || `API ${res.status}`)

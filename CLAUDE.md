@@ -79,7 +79,10 @@
 | `VISION_BASE_URL` | Không | Endpoint Vision OpenAI-compatible cho Help Panel |
 | `VISION_MODEL` | Không | Tên model vision, ví dụ `qwen-vl-max` |
 | `VISION_API_KEY` | Không | API key Vision; để trống thì dùng hướng dẫn fallback |
+| `TESSERACT_CMD` | Không | Đường dẫn Tesseract binary cho OCR local khi đọc ảnh/PDF scan trong Chat attachments; để trống nếu `tesseract` đã có trong PATH |
 | `DATABASE_URL` | Không | Mặc định `backend/kpi_companion.db` |
+| `AGENT_AUTONOMOUS_ENABLED` | Không | Bật/tắt vòng lặp Agent tự chủ nền; mặc định `true`; chỉ tạo insight/proposal, không tự ghi KPI |
+| `AGENT_AUTONOMOUS_INTERVAL_SECONDS` | Không | Chu kỳ chạy nền của Agent tự chủ; mặc định `900`, tối thiểu thực thi 60 giây |
 
 > Khi thêm biến mới: cập nhật bảng này **và** `.env.example` cùng lúc.
 
@@ -97,6 +100,11 @@
 - [x] **SMART Goal Validation** — `POST /api/kpis/{id}/validate-smart`; nút 🎯 trên KpiCard; panel hiển thị scores S/M/A/R/T + issues + suggestions; gọi LLM via `SMART_VALIDATE_SYSTEM`
 - [x] **Self-review PDF + Excel** — `POST /api/reports/self-review` sinh bản tự đánh giá (upsert theo năm); `GET /api/reports/saved/{id}/export?format=xlsx|pdf` xuất file; tab "📝 Tự đánh giá" trong Reports với nút ⬇ Excel / ⬇ PDF khi đang xem; `SELF_REVIEW_SYSTEM` prompt; `export_self_review_excel()` + `export_report_pdf()` trong `report_service.py`
 - [x] **AI Help Panel** — nút `?` nổi chụp vùng nội dung bằng `html2canvas`, gửi qua backend `/api/help/vision` tới Vision OpenAI-compatible nếu cấu hình `VISION_*`; chưa cấu hình thì hiển thị hướng dẫn fallback theo route; drawer desktop + bottom sheet mobile.
+- [x] **Contact Support Panel** — floating button toàn app mở drawer hỗ trợ kỹ thuật; danh sách admin đọc từ `frontend/public/support-config.json` (fallback `supportConfig.js`); form không dùng `<form>`, tự lấy tên/email user và gửi bằng `mailto:` fallback.
+- [x] **Chat attachments** — Trợ lý AI hỗ trợ đính kèm tối đa 5 file/tin nhắn, 10MB/file; lưu trong `uploads/chat`, preview ảnh/file trong lịch sử chat, trích nội dung TXT/MD/CSV/JSON/XLSX/XLSM/DOCX/PDF text; ảnh và PDF scan ưu tiên Vision (`VISION_*`), fallback OCR local qua `pytesseract` + Tesseract binary (`TESSERACT_CMD` hoặc PATH), đưa nội dung đọc được vào Agent như bằng chứng người dùng cung cấp.
+- [x] **Autonomous Agent Loop** — service nền `services/autonomous_agent.py` chạy Perceive → Reason → Act → Remember theo chu kỳ; ghi `AgentCycleLog`, tạo chat session "Agent tự chủ" với insight/proposal cần xác nhận; không tự confirm hay ghi KPI/Objectives/Work items.
+- [x] **Autonomous Agent Inbox** — nút Agent tự chủ trên header gọi `/api/agent/autonomous/refresh` khi mở app, hiển thị các proposal tạm đang pending ngoài Chat để user xác nhận/ẩn ngay.
+- [x] **AI Category Guard** — Agent tự chủ gọi Qwen qua `call_json` để đọc ngữ cảnh Objective/KPI và phát hiện KPI có vẻ nằm sai nhóm Work/Personal; chạy khi mở app/quét nền và sau khi user tạo/sửa/xác nhận KPI; hiển thị thẻ gợi ý chuyển phân loại trong Autonomous Inbox, chỉ ghi `category` sau khi user xác nhận.
 
 ## Known Issues & TODO
 <!-- Cập nhật liên tục — KHÔNG xóa mục đã fix, đổi sang [x] -->

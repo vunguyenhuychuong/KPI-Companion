@@ -1,12 +1,28 @@
+import { translations } from './i18n'
+
 const BASE = '/api'
 
 function getToken() {
   return localStorage.getItem('kpi_token')
 }
 
+function apiText(key, vars = {}) {
+  const lang = localStorage.getItem('kpi_lang') || 'vi'
+  const str = translations[lang]?.[key] ?? translations.vi?.[key] ?? key
+  return Object.entries(vars).reduce((s, [k, v]) => s.replaceAll(`{${k}}`, String(v ?? '')), str)
+}
+
 async function request(path, options = {}, timeoutMs = 0) {
-  const controller = timeoutMs > 0 ? new AbortController() : null
-  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
+  const externalSignal = options.signal
+  const fetchOptions = { ...options }
+  delete fetchOptions.signal
+  const controller = (timeoutMs > 0 || externalSignal) ? new AbortController() : null
+  const abortFromExternal = () => controller?.abort()
+  if (externalSignal) {
+    if (externalSignal.aborted) controller?.abort()
+    else externalSignal.addEventListener('abort', abortFromExternal, { once: true })
+  }
+  const timer = (controller && timeoutMs > 0) ? setTimeout(() => controller.abort(), timeoutMs) : null
   const token = getToken()
   const headers = {}
   if (!(options.body instanceof FormData)) {
@@ -20,26 +36,27 @@ async function request(path, options = {}, timeoutMs = 0) {
     res = await fetch(BASE + path, {
       headers,
       signal: controller?.signal,
-      ...options,
+      ...fetchOptions,
     })
   } catch (err) {
     // Request bị hủy do quá thời gian chờ (AbortController) — tách riêng với lỗi mạng.
     if (err.name === 'AbortError') {
-      throw new Error('Yêu cầu mất quá nhiều thời gian và đã bị hủy. Vui lòng thử lại.')
+      throw new Error(apiText('api.timeout'))
     }
     // TypeError "Failed to fetch": không tới được backend (chưa chạy / sai cổng).
-    throw new Error('Không kết nối được máy chủ — backend (cổng 8000) có thể chưa chạy. Hãy khởi động backend rồi thử lại.')
+    throw new Error(apiText('api.network_full'))
   } finally {
     if (timer) clearTimeout(timer)
+    if (externalSignal) externalSignal.removeEventListener('abort', abortFromExternal)
   }
   if (res.status === 401) {
     localStorage.removeItem('kpi_token')
     localStorage.removeItem('kpi_user')
     window.location.reload()
-    throw new Error('Phiên đăng nhập hết hạn, vui lòng đăng nhập lại')
+    throw new Error(apiText('api.auth_expired_full'))
   }
   if (!res.ok) {
-    let detail = `Lỗi ${res.status}`
+    let detail = apiText('api.error_status', { status: res.status })
     try {
       const data = await res.json()
       if (Array.isArray(data.detail)) {
@@ -100,7 +117,7 @@ export const api = {
       request('/kpis/balance', { method: 'POST', body: JSON.stringify({ objective_id: objectiveId }) }),
   confirmKpiProposal: (payload) =>
       request('/kpis/confirm-proposal', { method: 'POST', body: JSON.stringify(payload) }),
-  analyzeConflicts: () => request('/kpis/conflicts/analyze', { method: 'POST' }, 120000),
+  analyzeConflicts: (cycleId) => request('/kpis/conflicts/analyze' + (cycleId ? `?cycle_id=${cycleId}` : ''), { method: 'POST' }, 120000),
   kpiForecast: (id) => request(`/kpis/${id}/forecast`),
   coachKpi: (id, lang = 'vi') => request(`/kpis/${id}/coach?lang=${lang}`, { method: 'POST' }, 120000),
   smartValidateKpi: (id) => request(`/kpis/${id}/validate-smart`, { method: 'POST' }, 60000),
@@ -109,26 +126,27 @@ export const api = {
   archivedKpis: () => request('/kpis/archived'),
   restoreKpi: (id) => request(`/kpis/${id}/restore`, { method: 'POST' }),
   deleteKpiPermanent: (id) => request(`/kpis/${id}/permanent`, { method: 'DELETE' }),
-  previewImport: async (file) => {
+  previewImport: async (file, cycleId) => {
     const fd = new FormData()
     fd.append('file', file)
     const token = getToken()
     const headers = token ? { Authorization: `Bearer ${token}` } : {}
+    const qs = cycleId != null ? `?cycle_id=${encodeURIComponent(cycleId)}` : ''
     let res
     try {
-      res = await fetch(`${BASE}/kpis/import/preview`, { method: 'POST', headers, body: fd })
+      res = await fetch(`${BASE}/kpis/import/preview${qs}`, { method: 'POST', headers, body: fd })
     } catch {
-      throw new Error('Không kết nối được máy chủ — backend (cổng 8000) có thể chưa chạy.')
+      throw new Error(apiText('api.network_short'))
     }
     if (res.status === 401) {
       localStorage.removeItem('kpi_token'); localStorage.removeItem('kpi_user')
       window.location.reload()
-      throw new Error('Phiên đăng nhập hết hạn')
+      throw new Error(apiText('api.auth_expired_short'))
     }
     const data = await res.json()
     if (!res.ok) {
       const err = new Error(
-        (typeof data.detail === 'string' ? data.detail : data.detail?.message) || `Lỗi ${res.status}`
+        (typeof data.detail === 'string' ? data.detail : data.detail?.message) || apiText('api.error_status', { status: res.status })
       )
       err._type = data.detail?.type
       throw err
@@ -136,21 +154,23 @@ export const api = {
     return data
   },
 
-  importKpis: async (file, mode = 'auto') => {
+  importKpis: async (file, mode = 'auto', cycleId) => {
     const fd = new FormData()
     fd.append('file', file)
     const token = getToken()
     const headers = token ? { Authorization: `Bearer ${token}` } : {}
+    const qs = new URLSearchParams({ mode })
+    if (cycleId != null) qs.set('cycle_id', cycleId)
     let res
     try {
-      res = await fetch(`${BASE}/kpis/import?mode=${mode}`, { method: 'POST', headers, body: fd })
+      res = await fetch(`${BASE}/kpis/import?${qs}`, { method: 'POST', headers, body: fd })
     } catch {
-      throw new Error('Không kết nối được máy chủ — backend (cổng 8000) có thể chưa chạy.')
+      throw new Error(apiText('api.network_short'))
     }
     if (res.status === 401) {
       localStorage.removeItem('kpi_token'); localStorage.removeItem('kpi_user')
       window.location.reload()
-      throw new Error('Phiên đăng nhập hết hạn')
+      throw new Error(apiText('api.auth_expired_short'))
     }
     const data = await res.json()
     // 409 weight_conflict: tra ve object dac biet de frontend hien dialog
@@ -161,7 +181,7 @@ export const api = {
       const d = data.detail
       throw new Error(
         Array.isArray(d) ? d.map(e => e.msg.replace(/^Value error,\s*/i, '')).join(' | ')
-          : (typeof d === 'string' ? d : JSON.stringify(d)) || `Lỗi ${res.status}`
+          : (typeof d === 'string' ? d : JSON.stringify(d)) || apiText('api.error_status', { status: res.status })
       )
     }
     return data
@@ -214,8 +234,13 @@ export const api = {
   deleteObjective: (id) => request(`/objectives/${id}`, { method: 'DELETE' }),
 
   // Chat
-  sendChat: (message, sessionId = null, lang = 'vi', timeoutMs = 90000) =>
-      request('/chat', { method: 'POST', body: JSON.stringify({ message, session_id: sessionId, lang }) }, timeoutMs),
+  sendChat: (message, sessionId = null, lang = 'vi', attachments = [], timeoutMs = 90000, signal = null) =>
+      request('/chat', { method: 'POST', body: JSON.stringify({ message, session_id: sessionId, lang, attachments }), signal }, timeoutMs),
+  uploadChatAttachment: (file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request('/chat/attachments', { method: 'POST', body: fd })
+  },
   chatHistory: (sessionId) => request(`/chat/history${sessionId ? `?session_id=${sessionId}` : ''}`),
   chatSessions: () => request('/chat/sessions'),
   setProposalStatus: (messageId, status) =>
@@ -236,6 +261,10 @@ export const api = {
   // Notifications (proactive alerts)
   notifications: () => request('/notifications'),
   burnoutCheck: () => request('/burnout'),
+  autonomousAgentStatus: () => request('/agent/autonomous/status'),
+  runAutonomousAgentNow: () => request('/agent/autonomous/run-now', { method: 'POST' }),
+  autonomousAgentInbox: () => request('/agent/autonomous/inbox'),
+  refreshAutonomousAgentInbox: () => request('/agent/autonomous/refresh', { method: 'POST' }),
 
   // Settings (app-level connection config)
   getConnectionSettings: () => request('/settings/connections'),
@@ -258,6 +287,8 @@ export const api = {
 
   // Reports
   dashboard: (cycleId) => request('/reports/dashboard' + (cycleId ? `?cycle_id=${cycleId}` : '')),
+  dashboardInsight: (cycleId) =>
+      request('/reports/dashboard-insight' + (cycleId ? `?cycle_id=${cycleId}` : ''), { method: 'POST', body: '{}' }, 90000),
   weeklyReport: () => request('/reports/weekly'),
   generateReport: (periodType, periodLabel = null) =>
       request('/reports/generate', {
@@ -282,9 +313,9 @@ export const api = {
     const res = await fetch(BASE + path, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
-    if (res.status === 401) throw new Error('Phiên đăng nhập hết hạn, vui lòng đăng nhập lại')
+    if (res.status === 401) throw new Error(apiText('api.auth_expired_full'))
     if (!res.ok) {
-      let detail = `Lỗi ${res.status}`
+      let detail = apiText('api.error_status', { status: res.status })
       try { detail = (await res.json()).detail || detail } catch { /* ignore */ }
       throw new Error(detail)
     }
@@ -304,8 +335,14 @@ export const api = {
     `/reports/saved/${id}/export?format=${format}`,
     `tu-danh-gia.${format}`,
   ),
-  exportEvaluation: () => api.downloadFile('/reports/export', 'bao-cao-kpi.xlsx'),
-  exportAppraisal: () => api.downloadFile('/reports/export-appraisal', 'performance-appraisal.xlsx'),
+  exportEvaluation: (cycleId) => api.downloadFile(
+    `/reports/export${cycleId != null ? `?cycle_id=${encodeURIComponent(cycleId)}` : ''}`,
+    'bao-cao-kpi.xlsx',
+  ),
+  exportAppraisal: (cycleId) => api.downloadFile(
+    `/reports/export-appraisal${cycleId != null ? `?cycle_id=${encodeURIComponent(cycleId)}` : ''}`,
+    'performance-appraisal.xlsx',
+  ),
   exportData: (formats, sections) => api.downloadFile(
     `/reports/export-data?formats=${encodeURIComponent(formats.join(','))}&sections=${encodeURIComponent(sections.join(','))}`,
     'kpi-export',
@@ -313,11 +350,11 @@ export const api = {
 }
 
 export const STATUS_LABELS = {
-  da_lam: 'Đã làm',
-  dang_lam: 'Đang làm',
-  se_lam: 'Sẽ làm',
-  phat_sinh: 'Phát sinh',
-  loai_bo: 'Loại bỏ',
+  get da_lam() { return apiText('status.da_lam') },
+  get dang_lam() { return apiText('status.dang_lam') },
+  get se_lam() { return apiText('status.se_lam') },
+  get phat_sinh() { return apiText('status.phat_sinh') },
+  get loai_bo() { return apiText('status.loai_bo') },
 }
 
 export const STATUS_COLORS = {
