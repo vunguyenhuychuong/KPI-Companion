@@ -486,7 +486,17 @@ async def lifespan(app: FastAPI):
         await autonomous_agent_service.runner.stop()
 
 
-app = FastAPI(title="KPI Companion API", version="0.1.0", lifespan=lifespan)
+_docs_url = "/docs" if settings.swagger_enabled else None
+_redoc_url = "/redoc" if settings.swagger_enabled else None
+_openapi_url = "/openapi.json" if settings.swagger_enabled else None
+app = FastAPI(
+    title="KPI Companion API",
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url=_docs_url,
+    redoc_url=_redoc_url,
+    openapi_url=_openapi_url,
+)
 app.mount("/uploads", StaticFiles(directory=settings.uploads_dir), name="uploads")
 
 origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]

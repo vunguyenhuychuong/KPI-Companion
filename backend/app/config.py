@@ -42,6 +42,9 @@ class Settings(BaseSettings):
             return f"{prefix}{p.as_posix()}"
         return v
 
+    # Swagger UI — tat khi deploy public (SWAGGER_ENABLED=false trong .env)
+    swagger_enabled: bool = True
+
     # JWT Auth — đặt JWT_SECRET_KEY dài, ngẫu nhiên trong .env khi deploy thật
     jwt_secret_key: str = "change-me-in-production-with-a-long-random-string"
     jwt_algorithm: str = "HS256"
