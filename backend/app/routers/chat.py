@@ -1,7 +1,7 @@
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -11,6 +11,7 @@ from ..agent import memory as agent_memory
 from ..auth import CurrentUser
 from ..config import settings
 from ..database import get_db
+from ..rate_limit import _user_or_ip, limiter
 from ..services import attachment_service
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -99,7 +100,9 @@ def delete_memory(memory_id: int, current_user: CurrentUser, db: Session = Depen
 
 
 @router.post("", response_model=schemas.ChatResponse)
+@limiter.limit("10/minute", key_func=_user_or_ip)
 def chat(
+    request: Request,
     payload: schemas.ChatRequest,
     current_user: CurrentUser,
     background_tasks: BackgroundTasks,
