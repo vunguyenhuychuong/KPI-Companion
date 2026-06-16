@@ -366,47 +366,147 @@ def forecast_kpi(
     )
 
 
+def _valid_user_kpi(db: Session, kpi_id: int | None, user_id: int) -> models.KPI | None:
+    if not kpi_id:
+        return None
+    candidate = db.get(models.KPI, kpi_id)
+    if candidate and candidate.user_id == user_id and not candidate.archived:
+        return candidate
+    return None
+
+
+def _alternative_kpis_payload(item: schemas.ProposedWorkItem) -> list[dict] | None:
+    if not item.alternative_kpis:
+        return None
+    return [a.model_dump() for a in item.alternative_kpis]
+
+
+def _status_or_default(status: str | None) -> str:
+    return status if status in schemas.WORK_STATUSES else "da_lam"
+
+
+def _apply_progress_from_work_item(db: Session, work_item: models.WorkItem, kpi: models.KPI | None):
+    if not kpi or not work_item.progress_delta:
+        return
+    # Cong vao THUC DAT theo don vi KPI; cho phep vuot chi tieu (>100%).
+    old_value = kpi.current_value
+    new_value = max(0.0, round(kpi.current_value + work_item.progress_delta, 2))
+    kpi.current_value = new_value
+    db.add(
+        models.KPIChangeLog(
+            kpi_id=kpi.id,
+            field="current_value",
+            old_value=str(old_value),
+            new_value=str(new_value),
+            reason=f'Ghi nhận đầu việc "{work_item.title}"',
+        )
+    )
+
+
+def _work_item_from_proposed(
+    db: Session,
+    item: schemas.ProposedWorkItem,
+    user_id: int,
+    confirmed: bool,
+) -> models.WorkItem:
+    kpi = _valid_user_kpi(db, item.kpi_id, user_id)
+    return models.WorkItem(
+        user_id=user_id,
+        kpi_id=kpi.id if kpi else None,
+        title=item.title,
+        detail=item.detail,
+        status=_status_or_default(item.status),
+        progress_delta=item.value_delta,  # luu theo don vi cua KPI
+        source=item.source,
+        source_ref=item.source_ref,
+        work_date=item.work_date,
+        mapping_reason=item.mapping_reason or "",
+        confidence=item.confidence,
+        alternative_kpis=_alternative_kpis_payload(item),
+        confirmed=confirmed,
+    )
+
+
+def create_draft_items(
+    db: Session,
+    items: list[schemas.ProposedWorkItem],
+    user_id: int = 1,
+    commit: bool = True,
+) -> list[models.WorkItem]:
+    """Luu nhap Work Journal tu agent/connector, chua cong tien do KPI."""
+    saved: list[models.WorkItem] = []
+    for item in items:
+        wi = _work_item_from_proposed(db, item, user_id, confirmed=False)
+        db.add(wi)
+        saved.append(wi)
+    if commit:
+        db.commit()
+        for wi in saved:
+            db.refresh(wi)
+    else:
+        db.flush()
+    return saved
+
+
+def update_draft_item_from_proposed(
+    db: Session,
+    work_item: models.WorkItem,
+    item: schemas.ProposedWorkItem,
+    user_id: int = 1,
+    commit: bool = True,
+) -> models.WorkItem:
+    """Cap nhat nhap truoc khi nguoi dung xac nhan."""
+    kpi = _valid_user_kpi(db, item.kpi_id, user_id)
+    work_item.kpi_id = kpi.id if kpi else None
+    work_item.title = item.title
+    work_item.detail = item.detail
+    work_item.status = _status_or_default(item.status)
+    work_item.progress_delta = item.value_delta
+    work_item.source = item.source
+    work_item.source_ref = item.source_ref
+    work_item.work_date = item.work_date
+    work_item.mapping_reason = item.mapping_reason or ""
+    work_item.confidence = item.confidence
+    work_item.alternative_kpis = _alternative_kpis_payload(item)
+    if commit:
+        db.commit()
+        db.refresh(work_item)
+    else:
+        db.flush()
+    return work_item
+
+
+def confirm_draft_item(
+    db: Session,
+    work_item: models.WorkItem,
+    user_id: int = 1,
+    commit: bool = True,
+) -> models.WorkItem:
+    """Chuyen nhap Journal thanh bang chung chinh thuc va cong tien do KPI."""
+    kpi = _valid_user_kpi(db, work_item.kpi_id, user_id)
+    if kpi is None:
+        work_item.kpi_id = None
+    work_item.confirmed = True
+    work_item.status = _status_or_default(work_item.status)
+    _apply_progress_from_work_item(db, work_item, kpi)
+    if commit:
+        db.commit()
+        db.refresh(work_item)
+    else:
+        db.flush()
+    return work_item
+
+
 def confirm_items(
         db: Session, items: list[schemas.ProposedWorkItem], user_id: int = 1
 ) -> list[models.WorkItem]:
     """Luu dau viec da xac nhan va cong tien do vao KPI tuong ung."""
     saved: list[models.WorkItem] = []
     for it in items:
-        kpi = None
-        if it.kpi_id:
-            candidate = db.get(models.KPI, it.kpi_id)
-            if candidate and candidate.user_id == user_id and not candidate.archived:
-                kpi = candidate
-        wi = models.WorkItem(
-            user_id=user_id,
-            kpi_id=kpi.id if kpi else None,
-            title=it.title,
-            detail=it.detail,
-            status=it.status if it.status in schemas.WORK_STATUSES else "da_lam",
-            progress_delta=it.value_delta,  # luu theo don vi cua KPI
-            source=it.source,
-            source_ref=it.source_ref,
-            work_date=it.work_date,
-            mapping_reason=it.mapping_reason or "",
-            confidence=it.confidence,
-            alternative_kpis=[a.model_dump() for a in it.alternative_kpis] if it.alternative_kpis else None,
-            confirmed=True,
-        )
+        kpi = _valid_user_kpi(db, it.kpi_id, user_id)
+        wi = _work_item_from_proposed(db, it, user_id, confirmed=True)
         db.add(wi)
-        if kpi and it.value_delta:
-            # cong vao THUC DAT theo don vi; cho phep vuot chi tieu (>100%)
-            old_value = kpi.current_value
-            new_value = max(0.0, round(kpi.current_value + it.value_delta, 2))
-            kpi.current_value = new_value
-            db.add(
-                models.KPIChangeLog(
-                    kpi_id=kpi.id,
-                    field="current_value",
-                    old_value=str(old_value),
-                    new_value=str(new_value),
-                    reason=f'Ghi nhận đầu việc "{it.title}"',
-                )
-            )
+        _apply_progress_from_work_item(db, wi, kpi)
         if it.original_kpi_id is not None and it.original_kpi_id != (kpi.id if kpi else None):
             old = db.get(models.KPI, it.original_kpi_id)
             old_name = old.name if old else "khong gan KPI"

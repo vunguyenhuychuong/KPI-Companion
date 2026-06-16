@@ -260,6 +260,10 @@ export const api = {
 
   // Work items
   listWorkItems: (params = '') => request('/work-items' + params),
+  listWorkItemDrafts: () => request('/work-items/drafts'),
+  updateWorkItemDraft: (id, item) => request(`/work-items/drafts/${id}`, { method: 'PUT', body: JSON.stringify(item) }),
+  confirmWorkItemDraft: (id) => request(`/work-items/drafts/${id}/confirm`, { method: 'POST' }),
+  deleteWorkItemDraft: (id) => request(`/work-items/drafts/${id}`, { method: 'DELETE' }),
   deleteWorkItem: (id) => request(`/work-items/${id}`, { method: 'DELETE' }),
   confirmItems: (items) => request('/work-items/confirm', { method: 'POST', body: JSON.stringify({ items }) }),
   confirmDeleteKpi: (payload) => request('/kpis/confirm-delete', { method: 'POST', body: JSON.stringify(payload) }),
@@ -395,4 +399,5 @@ export const SOURCE_LABELS = {
   slack: '💬 Slack',
   outlook: '📧 Outlook',
   manual: '✍️ Manual',
+  agent_loop: 'Agent',
 }

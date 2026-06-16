@@ -3,10 +3,10 @@
 The loop is deliberately conservative:
 - It observes KPI/work-item state on a timer.
 - It reasons deterministically about the most urgent next nudge.
-- It acts by writing a chat insight/proposal only.
+- It acts by writing a chat insight/proposal or an unconfirmed Journal draft.
 - It remembers the cycle in AgentCycleLog to avoid repeating the same nudge.
 
-It never confirms proposals or mutates KPI/objective/work-item data directly.
+It never confirms proposals, creates official work evidence, or mutates KPI/objective progress directly.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from ..agent.llm import call_json
 from ..config import settings
 from ..connectors import fetch_activities
 from ..database import SessionLocal
-from . import kpi_service, oauth_service
+from . import kpi_service, notification_email, oauth_service
 
 logger = logging.getLogger(__name__)
 
@@ -295,7 +295,6 @@ def _already_has_source_item(
             select(models.WorkItem)
             .where(
                 models.WorkItem.user_id == user_id,
-                models.WorkItem.confirmed == True,  # noqa: E712
                 models.WorkItem.source == source,
                 models.WorkItem.source_ref == ref,
             )
@@ -306,7 +305,6 @@ def _already_has_source_item(
         select(models.WorkItem)
         .where(
             models.WorkItem.user_id == user_id,
-            models.WorkItem.confirmed == True,  # noqa: E712
             models.WorkItem.source == source,
             models.WorkItem.title == item.title,
             models.WorkItem.work_date == item.work_date,
@@ -439,7 +437,7 @@ def _daily_source_scan_event(
             "chỉ là kế hoạch, hoặc độ tin cậy thấp."
         ),
         act=(
-            "Mình đã tạo các thẻ nhật ký nháp kèm nguồn, lý do gán KPI và độ tin cậy để bạn rà lại."
+            "Mình đã tạo các nháp trong Nhật ký công việc kèm nguồn, lý do gán KPI và độ tin cậy để bạn rà lại."
         ),
         remember="Đã ghi nhận lần quét nguồn hôm nay để tránh nhắc lặp cùng một loạt dữ liệu.",
         proposed_items=proposed,
@@ -637,15 +635,15 @@ def _event_message(event: AutonomousEvent, proposed: list[schemas.ProposedWorkIt
         ignored = scan.get("ignored") or {}
         ignored_count = sum(int(v or 0) for v in ignored.values()) if isinstance(ignored, dict) else 0
         action_note = (
-            "Mình đã chuẩn bị các thẻ nhật ký công việc bên dưới kèm nguồn, lý do gán KPI và độ tin cậy. "
-            "Bạn có thể chỉnh lại KPI, trạng thái hoặc số tiến độ trước khi xác nhận."
+            "Mình đã tạo nháp trong Nhật ký công việc kèm nguồn, lý do gán KPI và độ tin cậy. "
+            "Bạn có thể vào Nhật ký để chỉnh lại KPI, trạng thái hoặc số tiến độ trước khi xác nhận."
         )
         return (
             f"**Mình vừa nhận thấy {event.title}.**\n\n"
             f"{event.perceive} {event.reason}\n\n"
             f"{event.act} {action_note} "
             f"Mình đã bỏ qua {ignored_count} mục chưa đủ liên quan hoặc chưa đủ tin cậy. "
-            "Chưa có dữ liệu nào được ghi vào nhật ký chính thức; tiến độ KPI chỉ được cộng sau khi bạn xác nhận."
+            "Chưa có dữ liệu nào được ghi vào nhật ký chính thức; tiến độ KPI chỉ được cộng sau khi bạn xác nhận trong Nhật ký."
         )
     if event.category_suggestion:
         action_note = (
@@ -824,6 +822,12 @@ def _save_event(db: Session, user_id: int, event: AutonomousEvent, today: date) 
         proposed = []
     else:
         proposed = _proposal_for_event(event, today)
+    draft_count = 0
+    inbox_proposed = proposed
+    if event.event_type == "source_scan" and proposed:
+        drafts = kpi_service.create_draft_items(db, proposed, user_id=user_id, commit=False)
+        draft_count = len(drafts)
+        inbox_proposed = []
     category_suggestions = [event.category_suggestion] if event.category_suggestion else []
     session = _get_or_create_session(db, user_id)
     message = models.ChatMessage(
@@ -839,13 +843,13 @@ def _save_event(db: Session, user_id: int, event: AutonomousEvent, today: date) 
                 "summary": event.title,
                 "source_scan": event.scan_summary,
             },
-            "proposed_items": [p.model_dump(mode="json") for p in proposed],
+            "proposed_items": [p.model_dump(mode="json") for p in inbox_proposed],
             "category_suggestions": category_suggestions,
             "proposed_objectives": [],
             "proposed_kpis": [],
             "weight_changes": [],
             "delete_proposal": None,
-            "proposal_status": "pending" if (proposed or category_suggestions) else None,
+            "proposal_status": "pending" if (inbox_proposed or category_suggestions) else None,
         },
     )
     db.add(message)
@@ -859,7 +863,8 @@ def _save_event(db: Session, user_id: int, event: AutonomousEvent, today: date) 
         meta={
             "event_type": event.event_type,
             "message_session_id": session.id,
-            "proposed_items": len(proposed),
+            "proposed_items": len(inbox_proposed),
+            "journal_drafts": draft_count,
             "category_suggestions": len(category_suggestions),
             "source_scan": event.scan_summary,
         },
@@ -867,6 +872,11 @@ def _save_event(db: Session, user_id: int, event: AutonomousEvent, today: date) 
     db.add(log)
     db.commit()
     db.refresh(log)
+    if draft_count:
+        try:
+            notification_email.send_worklog_draft_email(db, user_id, draft_count)
+        except Exception:
+            logger.exception("Worklog draft email failed for user_id=%s", user_id)
     return log
 
 

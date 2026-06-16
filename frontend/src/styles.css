@@ -1171,6 +1171,64 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   flex-shrink: 0;
   justify-content: center;
 }
+.journal-page .journal-drafts-card {
+  overflow: visible;
+  border-color: color-mix(in srgb, var(--primary) 28%, var(--border));
+}
+.journal-draft-list {
+  display: grid;
+  gap: 10px;
+}
+.journal-draft-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+.journal-draft-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.journal-draft-top .muted {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.journal-confidence {
+  margin-left: auto;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.journal-draft-grid {
+  padding-top: 2px;
+}
+.journal-draft-reason {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.journal-draft-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 
 /* KPI card: grid 2 cot â€” noi dung trai, thanh icon PHAI co dinh, khong bao gio rot dong */
 .kpi-card-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: start; }
@@ -2309,6 +2367,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   .journal-manual-kpi { min-height: 58px; }
   .journal-page .form-row .muted,
   .journal-filter-row .muted { justify-self: start; padding-bottom: 0; }
+  .journal-confidence { margin-left: 0; }
 }
 
 @media (max-width: 640px) {
@@ -2368,6 +2427,10 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   .journal-field.span-2,
   .journal-field.full { grid-column: 1; }
   .journal-manual-footer .btn { width: 100%; }
+  .journal-draft-actions { display: grid; grid-template-columns: 1fr; }
+  .journal-draft-actions .btn { justify-content: center; width: 100%; }
+  .journal-draft-top { align-items: flex-start; }
+  .journal-draft-top .muted { white-space: normal; }
   .onboarding-modal { max-height: 92vh; overflow-y: auto; }
   .onboarding-progress { padding: 12px 14px; }
   .onboarding-step span { display: none; }

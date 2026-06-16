@@ -353,7 +353,7 @@ class NotificationLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    type: Mapped[str] = mapped_column(String(30))  # kpi_reminder | weekly_summary | sync_error
+    type: Mapped[str] = mapped_column(String(30))  # kpi_reminder | weekly_summary | sync_error | worklog_draft
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     status: Mapped[str] = mapped_column(String(20), default="sent")  # sent | failed
     error_msg: Mapped[str] = mapped_column(String(500), default="")

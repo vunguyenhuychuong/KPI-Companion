@@ -173,7 +173,7 @@ def migrate():
 
 
 def cleanup_draft_data():
-    """Remove old draft/proposal payloads; only confirmed user tasks remain persisted."""
+    """Remove old chat proposal payloads; Work Journal drafts are persisted for review."""
     draft_meta_keys = {
         "proposed_items",
         "proposed_objectives",
@@ -183,14 +183,6 @@ def cleanup_draft_data():
     }
     db = SessionLocal()
     try:
-        draft_items = list(
-            db.scalars(
-                select(models.WorkItem).where(models.WorkItem.confirmed == False)  # noqa: E712
-            )
-        )
-        for item in draft_items:
-            db.delete(item)
-
         messages = list(
             db.scalars(
                 select(models.ChatMessage).where(models.ChatMessage.meta.isnot(None))
