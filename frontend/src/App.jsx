@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import Dashboard from './pages/Dashboard'
-import DashboardPersonalPulse from './pages/DashboardPersonalPulse'
 import Chat from './pages/Chat'
 import Kpis from './pages/Kpis'
 import Journal from './pages/Journal'
@@ -62,7 +61,6 @@ const HELP_ICON = Sico(<><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.8 2.8
 const PANEL_ICON = Sico(<><path d="M4 5h16M4 12h16M4 19h16" /><path d="M9 5v14" /></>)
 const NAV = [
   { to: '/dashboard', key: 'nav.dashboard', icon: 'dashboard', end: true },
-  { to: '/dashboard/personal-pulse', key: 'nav.dashboard_pulse', icon: 'dashboard' },
   { to: '/chat', key: 'nav.chat', icon: 'chat' },
   { to: '/kpis', key: 'nav.kpis', icon: 'kpis' },
   { to: '/reports', key: 'nav.reports', icon: 'reports' },
@@ -73,7 +71,6 @@ const NAV = [
 
 const PAGE_TITLE_KEYS = {
   '/dashboard': 'nav.dashboard',
-  '/dashboard/personal-pulse': 'nav.dashboard_pulse',
   '/chat':      'nav.chat',
   '/kpis':      'nav.kpis',
   '/reports':   'nav.reports',
@@ -86,17 +83,28 @@ function CycleSelector() {
   const { cycles, activeCycleId, setActiveCycleId, loading, currentYear } = useCycle()
   const { tr } = useLang()
   if (loading || cycles.length === 0) return null
+  const cycleBaseName = (cycle) => cycle.name || tr('onboarding.cycle.year_name', { year: currentYear })
+  const cycleHeaderLabel = (cycle) => {
+    const base = cycleBaseName(cycle)
+    const yearOnly = base.match(/^Năm\s+(\d{4})$/i)?.[1]
+    const compact = yearOnly || base
+    return `${compact}${cycle.is_locked ? ' 🔒' : ''}`
+  }
+  const activeCycle = cycles.find(c => c.id === activeCycleId)
+  const activeTitle = activeCycle
+    ? `${cycleBaseName(activeCycle)}${activeCycle.is_locked ? ` - ${tr('cycle.locked_badge')}` : ''}`
+    : tr('cycle.active')
   return (
     <select
       className="cycle-selector"
       value={activeCycleId ?? ''}
       onChange={e => setActiveCycleId(e.target.value ? parseInt(e.target.value, 10) : null)}
-      title={tr('cycle.active')}
+      title={activeTitle}
       aria-label={tr('cycle.active')}
     >
       {cycles.map(c => (
         <option key={c.id} value={c.id}>
-          {c.name || tr('onboarding.cycle.year_name', { year: currentYear })}{c.is_locked ? ` (${tr('cycle.locked_badge')})` : ''}
+          {cycleHeaderLabel(c)}
         </option>
       ))}
     </select>
@@ -116,6 +124,7 @@ function AppContent() {
   const [quickProfile, setQuickProfile] = useState(() => ({
     name: loadUser()?.name || '',
     role: loadUser()?.role || '',
+    employee_code: loadUser()?.employee_code || '',
     picture: loadUser()?.picture || '',
   }))
   const [quickMsg, setQuickMsg] = useState('')
@@ -145,6 +154,7 @@ function AppContent() {
     setQuickProfile({
       name: user.name || '',
       role: user.role || '',
+      employee_code: user.employee_code || '',
       picture: user.picture || '',
     })
   }, [user])
@@ -180,6 +190,7 @@ function AppContent() {
       const updated = await api.updateMe({
         name: quickProfile.name.trim(),
         role: quickProfile.role.trim(),
+        employee_code: (quickProfile.employee_code || '').trim(),
         picture: quickProfile.picture.trim(),
       })
       handleUserUpdate(updated)
@@ -284,6 +295,15 @@ function AppContent() {
                 maxLength={100}
                 placeholder={tr('account.role_placeholder')}
               />
+              <label className="field-label" htmlFor="quick-employee-code">{tr('account.employee_code')}</label>
+              <input
+                id="quick-employee-code"
+                className="input"
+                value={quickProfile.employee_code}
+                onChange={e => setQuickProfile(p => ({ ...p, employee_code: e.target.value }))}
+                maxLength={100}
+                placeholder={tr('account.employee_code_placeholder')}
+              />
               <label className="field-label" htmlFor="quick-picture">{tr('account.picture')}</label>
               <input
                 id="quick-picture"
@@ -344,7 +364,7 @@ function AppContent() {
           <span className="app-header-title">{pageTitle}</span>
           <div className="app-header-actions">
             <CycleSelector />
-            <AutonomousAgentInbox />
+            {!isChatRoute && <AutonomousAgentInbox />}
             <NotificationsBell />
             <button
               className="app-header-btn icon-only"
@@ -383,7 +403,7 @@ function AppContent() {
           <Routes>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/dashboard/personal-pulse" element={<DashboardPersonalPulse />} />
+            <Route path="/dashboard/personal-pulse" element={<Navigate to="/dashboard" replace />} />
             <Route path="/chat" element={<Chat />} />
             <Route path="/kpis" element={<Kpis />} />
             <Route path="/reports" element={<Reports />} />
@@ -403,7 +423,7 @@ function AppContent() {
             <div className="app-footer-meta">
               <span>{tr('footer.privacy')}</span>
               <span className="app-footer-sep">·</span>
-              <span>{tr('footer.made').replace(/with\s+\S+\s+by/, 'by')}</span>
+              <span>{tr('footer.made')}</span>
               <span className="app-footer-sep">·</span>
               <span>© {new Date().getFullYear()}</span>
             </div>

@@ -144,6 +144,13 @@ def _language_name(lang: str) -> str:
     return "English" if lang == "en" else "Vietnamese"
 
 
+def _compact_text(value: object, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip(" ,.;:-") + "…"
+
+
 def _work_first_context(db: Session, user_id: int = 1) -> str:
     work_context = kpi_service.full_context_text(db, user_id, category="Work")
     personal_context = kpi_service.full_context_text(db, user_id, category="Personal")
@@ -397,6 +404,7 @@ def _has_any(text: str, words: list[str]) -> bool:
 def _classify_intent_fast(text: str, history: list[dict] | None = None) -> str | None:
     """Nhan dien nhanh cac intent ro rang de tranh 1 call LLM moi tin nhan."""
     low = text.strip().lower()
+    visible_low = _strip_attachment_context(text).strip().lower()
     if not low:
         return "other"
 
@@ -408,6 +416,11 @@ def _classify_intent_fast(text: str, history: list[dict] | None = None) -> str |
         return "question"
     if _has_any(low, ["weekly summary", "báo cáo tuần", "bao cao tuan", "tổng kết tuần", "tong ket tuan"]):
         return "weekly_summary"
+    if _has_attachment_context(text) and _has_any(visible_low, ["file", "tệp", "tep", "đính kèm", "dinh kem", "upload", "excel", "xlsx", "xlsm", "csv", "pdf", "spreadsheet", "bảng", "bang"]):
+        if _has_any(visible_low, ["đề xuất", "de xuat", "tạo kpi", "tao kpi", "create kpi", "proposal"]) and _has_any(visible_low, ["kpi", "objective", "mục tiêu", "muc tieu"]):
+            return "create_kpi"
+        if _has_any(visible_low, ["đọc", "doc", "xem", "phân tích", "phan tich", "tóm tắt", "tom tat", "đếm", "dem", "count", "thống kê", "thong ke", "tổng hợp", "tong hop", "suy luận", "suy luan", "bao nhiêu", "bao nhieu", "số liệu", "so lieu"]):
+            return "question"
     if _has_any(low, ["file", "tệp", "tep", "đính kèm", "dinh kem", "upload", "excel", "csv", "pdf"]) and _has_any(low, ["cập nhật", "cap nhat", "ghi nhận", "ghi nhan", "tiến độ", "tien do"]) and _has_any(low, ["kpi", "công việc", "cong viec"]):
         return "update_progress"
     if _has_any(low, ["file", "tệp", "tep", "đính kèm", "dinh kem", "upload", "excel", "csv", "pdf"]) and _has_any(low, ["đọc", "doc", "xem", "phân tích", "phan tich", "tóm tắt", "tom tat"]):
@@ -638,22 +651,43 @@ def coach_kpi(
 
     mem = memory.memories_text(db, user_id)
     mem_block = f"\n\nGHI NHỚ VỀ NGƯỜI DÙNG:\n{mem}" if mem else ""
+    concise_guard = """
+
+MANDATORY BREVITY RULES FOR AI COACH:
+- Return only the JSON object described above.
+- Keep analysis to 1-2 direct sentences, max 280 characters.
+- Do not start with empathy, reassurance, motivational filler, or generic coaching phrases.
+- Focus on the core signal: actual progress, expected progress/gap, and the most likely blocker.
+- Return exactly 2 root_causes. Each cause <= 80 characters and each question <= 100 characters.
+- Return exactly 2 actions. Each title <= 70 characters and each detail <= 120 characters.
+- Do not use markdown headings, long frameworks, or phrases like "I understand", "we should review together", or "root-cause analysis".
+- If evidence is missing, say the missing evidence plainly instead of inventing context.
+"""
 
     data = call_json(
         prompts.COACH_SYSTEM.format(
             kpi_block=kpi_block, recent_items=recent_text, today=_today(), memories=mem_block
-        ) + _lang_suffix(lang),
+        ) + concise_guard + _lang_suffix(lang),
         "Hãy phân tích nguyên nhân và đề xuất cách khắc phục KPI này.",
+        temperature=0.2,
+        max_tokens=650,
     )
-    analysis = str(data.get("analysis") or "")
+    analysis = _compact_text(data.get("analysis"), 320)
     root_causes: list[schemas.RootCause] = []
     for r in data.get("root_causes", []) or []:
+        if len(root_causes) >= 2:
+            break
         if isinstance(r, dict) and str(r.get("cause", "")).strip():
             root_causes.append(
-                schemas.RootCause(cause=str(r["cause"]), question=str(r.get("question") or ""))
+                schemas.RootCause(
+                    cause=_compact_text(r["cause"], 110),
+                    question=_compact_text(r.get("question"), 130),
+                )
             )
     proposed: list[schemas.ProposedWorkItem] = []
     for r in data.get("actions", []) or []:
+        if len(proposed) >= 2:
+            break
         if not isinstance(r, dict) or not str(r.get("title", "")).strip():
             continue
         try:
@@ -662,7 +696,7 @@ def coach_kpi(
             delta = 0.0
         proposed.append(
             schemas.ProposedWorkItem(
-                title=str(r["title"])[:500], detail=str(r.get("detail") or ""),
+                title=_compact_text(r["title"], 90), detail=_compact_text(r.get("detail"), 160),
                 status="se_lam", kpi_id=kpi.id, kpi_name=kpi.name, kpi_unit=kpi.unit,
                 value_delta=delta, source="chat",
             )
@@ -794,17 +828,23 @@ def detect_conflicts(
         if not ids and not names:
             continue
         sev = r.get("severity")
+        severity = sev if sev in SEVERITY_ORDER else "medium"
+        try:
+            score = float(r.get("conflict_score"))
+        except (TypeError, ValueError):
+            score = {"high": 0.9, "medium": 0.72, "low": 0.45}.get(severity, 0.7)
         out.append(
             schemas.KPIConflict(
                 kpi_ids=ids,
                 kpi_names=names,
                 type=r.get("type") if r.get("type") in schemas.CONFLICT_TYPES else "resource_tradeoff",
-                severity=sev if sev in SEVERITY_ORDER else "medium",
+                severity=severity,
+                conflict_score=max(0.0, min(1.0, score)),
                 explanation=str(r["explanation"]),
                 suggestion=str(r.get("suggestion") or ""),
             )
         )
-    out.sort(key=lambda c: SEVERITY_ORDER[c.severity])
+    out.sort(key=lambda c: (SEVERITY_ORDER[c.severity], -c.conflict_score))
     return out
 
 
@@ -996,7 +1036,7 @@ def decompose_kpi_smart(kpi: models.KPI) -> list[dict]:
 
 _STATUS_LABELS_EN = {
     "da_lam": "Done", "dang_lam": "In Progress", "se_lam": "Planned",
-    "phat_sinh": "Ad-hoc", "loai_bo": "Dropped",
+    "phat_sinh": "Newly Added", "loai_bo": "Removed",
 }
 
 
@@ -1013,9 +1053,12 @@ def _user_profile_context(db: Session, user_id: int, lang: str = "vi") -> str:
             f"- Display name: {user.name or '(not set)'}\n"
             f"- Email: {user.email or '(not set)'}\n"
             f"- Role/job title: {user.role or '(not set)'}\n"
+            f"- Department: {user.department or '(not set)'}\n"
+            f"- Employee code: {user.employee_code or '(not set)'}\n"
+            f"- Preferred language: {user.preferred_language or 'vi'}\n"
             f"- Avatar: {'configured' if has_avatar else 'not configured'}\n"
             f"- Onboarding: {'completed' if user.onboarding_completed else 'not completed'}\n"
-            "- Profile settings are available in Settings > Account: display name, role, avatar URL/upload, and password.\n"
+            "- Profile settings are available in Settings > Account: display name, employee code, role, avatar URL/upload, and password.\n"
             "- Change password: Settings > Account > Password, enter current password, new password, confirmation, then Save password. Password must be 6-100 characters.\n"
             "- Forgot password: use Login > Forgot password; demo mode returns a reset URL/token if SMTP is not configured.\n"
             "- Change avatar: Settings > Account > Profile, paste an image URL or upload JPG/PNG/WebP/GIF up to 2MB, then save.\n"
@@ -1025,11 +1068,14 @@ def _user_profile_context(db: Session, user_id: int, lang: str = "vi") -> str:
     return (
         "\n\n## NGU CANH HO SO VA CAI DAT NGUOI DUNG:\n"
         f"- Ten hien thi: {user.name or '(chua dat)'}\n"
-        f"- Email: {user.email or '(chua dat)'}\n"
-        f"- Vai tro/vi tri: {user.role or '(chua dat)'}\n"
-        f"- Anh dai dien: {'da cau hinh' if has_avatar else 'chua cau hinh'}\n"
+            f"- Email: {user.email or '(chua dat)'}\n"
+            f"- Vai tro/vi tri: {user.role or '(chua dat)'}\n"
+            f"- Phong ban: {user.department or '(chua dat)'}\n"
+            f"- Ma nhan vien: {user.employee_code or '(chua dat)'}\n"
+            f"- Ngon ngu uu tien: {user.preferred_language or 'vi'}\n"
+            f"- Anh dai dien: {'da cau hinh' if has_avatar else 'chua cau hinh'}\n"
         f"- Onboarding: {'da hoan thanh' if user.onboarding_completed else 'chua hoan thanh'}\n"
-        "- Ho so nam o Cai dat > Tai khoan: ten hien thi, vai tro, URL anh dai dien/upload avatar, va mat khau.\n"
+        "- Ho so nam o Cai dat > Tai khoan: ten hien thi, ma nhan vien, vai tro, URL anh dai dien/upload avatar, va mat khau.\n"
         "- Doi mat khau: vao Cai dat > Tai khoan > Mat khau, nhap mat khau hien tai, mat khau moi, xac nhan, roi bam Luu mat khau. Mat khau dai 6-100 ky tu.\n"
         "- Quen mat khau: dung Login > Quen mat khau; che do demo tra reset URL/token neu SMTP chua cau hinh.\n"
         "- Doi avatar: vao Cai dat > Tai khoan > Ho so, dan URL anh hoac upload JPG/PNG/WebP/GIF toi da 2MB, roi luu.\n"
@@ -1043,6 +1089,7 @@ def _is_account_help_question(text: str) -> bool:
     return _has_any(low, [
         "m?t kh?u", "mat khau", "password", "avatar", "?nh ??i di?n", "anh dai dien",
         "h? s?", "ho so", "profile", "c?i ??t", "cai dat", "settings",
+        "mã nhân viên", "ma nhan vien", "mã nv", "ma nv", "mnv", "employee code", "employee id",
     ])
 
 
@@ -1050,8 +1097,11 @@ def handle_message(
     db: Session, text: str, user_id: int = 1, history: list[dict] | None = None, lang: str = "vi"
 ) -> schemas.ChatResponse:
     """Diem vao chinh cua Agent cho moi tin nhan chat. history giup hieu cau hoi noi tiep."""
+    visible_text = _strip_attachment_context(text).strip() or text.strip()
     kpis = kpi_service.get_active_kpis(db, user_id)
     intent = classify_intent(text, history)
+    if intent == "sync_request" and _has_attachment_context(text):
+        intent = "question"
     profile_context = _user_profile_context(db, user_id, lang)
 
     # khoi ghi nho Agent da tu hoc — giup hieu cach goi tat, vai tro, thoi quen nguoi dung
@@ -1268,7 +1318,8 @@ def handle_message(
         context = _work_first_context(db, user_id) + user_context
 
         # Neu user hoi ve Google data (lich/email/sheets) -> fetch va inject vao context
-        google_sources = _google_sources_for_query(text)
+        google_query_text = visible_text if _has_attachment_context(text) else text
+        google_sources = _google_sources_for_query(google_query_text)
         if google_sources:
             g_start, g_end = _date_range_for_query(text)
             try:
@@ -1305,7 +1356,7 @@ def handle_message(
                 )
 
         # Đọc trực tiếp các Google Sheet URL người dùng đề cập trong tin nhắn
-        gsheet_refs = _extract_gsheets_from_text(text)
+        gsheet_refs = _extract_gsheets_from_text(google_query_text)
         if gsheet_refs:
             if oauth_service.is_connected(db, user_id, "google"):
                 for sid, gid in gsheet_refs[:2]:  # giới hạn 2 sheet

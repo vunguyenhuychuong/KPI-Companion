@@ -18,6 +18,10 @@ _UNSAFE_CHARS_RE = re.compile(
 )
 
 KPI_CATEGORIES = {"Work", "Personal"}
+KPI_CADENCES = {"weekly", "monthly", "quarterly"}
+KPI_DATA_SOURCE_MODES = {"manual", "api", "export"}
+KPI_TARGET_MODES = {"same", "period_custom"}
+KPI_METRIC_SOURCE_TYPES = {"manual", "api_sync", "agent_auto", "import"}
 
 
 def _normalize_category(v) -> str:
@@ -27,6 +31,24 @@ def _normalize_category(v) -> str:
         if s in ("personal", "cá nhân", "ca nhan", "personal goal"):
             return "Personal"
     return "Work"
+
+
+def _normalize_choice(v, allowed: set[str], default: str) -> str:
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in allowed:
+            return s
+    return default
+
+
+def _validate_threshold(v: float | int | None, field_name: str) -> float | None:
+    if v is None:
+        return None
+    if not math.isfinite(float(v)):
+        raise ValueError(f"{field_name} phai la so hop le")
+    if float(v) < 0 or float(v) > 100:
+        raise ValueError(f"{field_name} phai nam trong khoang 0-100%")
+    return float(v)
 
 
 def _validate_weight(v: float | int | None) -> float | None:
@@ -84,11 +106,11 @@ def _validate_safe_text(v: str, field_name: str, max_len: int) -> str:
 
 WORK_STATUSES = ["da_lam", "dang_lam", "se_lam", "phat_sinh", "loai_bo"]
 STATUS_LABELS = {
-    "da_lam": "Đã làm",
-    "dang_lam": "Đang làm",
-    "se_lam": "Sẽ làm",
-    "phat_sinh": "Phát sinh",
-    "loai_bo": "Loại bỏ",
+    "da_lam": "Hoàn thành",
+    "dang_lam": "Đang thực hiện",
+    "se_lam": "Đã lên kế hoạch",
+    "phat_sinh": "Phát sinh ngoài kế hoạch",
+    "loai_bo": "Hủy bỏ",
 }
 
 
@@ -205,11 +227,33 @@ class KPIBase(BaseModel):
     target_value: float = 100.0
     current_value: float = 0.0
     category: str = "Work"  # "Work" | "Personal"
+    cadence: str = "monthly"
+    data_source_mode: str = "manual"
+    target_mode: str = "same"
+    warning_threshold: float = 80.0
+    critical_threshold: float = 70.0
+    trend_drop_periods: int = 3
+    alert_muted_until: date | None = None
 
     @field_validator("category")
     @classmethod
     def _norm_category(cls, v: str) -> str:
         return _normalize_category(v)
+
+    @field_validator("cadence")
+    @classmethod
+    def _norm_cadence(cls, v: str) -> str:
+        return _normalize_choice(v, KPI_CADENCES, "monthly")
+
+    @field_validator("data_source_mode")
+    @classmethod
+    def _norm_data_source(cls, v: str) -> str:
+        return _normalize_choice(v, KPI_DATA_SOURCE_MODES, "manual")
+
+    @field_validator("target_mode")
+    @classmethod
+    def _norm_target_mode(cls, v: str) -> str:
+        return _normalize_choice(v, KPI_TARGET_MODES, "same")
 
     @field_validator("weight")
     @classmethod
@@ -227,6 +271,30 @@ class KPIBase(BaseModel):
         return _validate_non_negative_number(v, "Thực đạt")
 
 
+    @field_validator("warning_threshold")
+    @classmethod
+    def _warning_threshold(cls, v: float) -> float:
+        return _validate_threshold(v, "Warning threshold")
+
+    @field_validator("critical_threshold")
+    @classmethod
+    def _critical_threshold(cls, v: float) -> float:
+        return _validate_threshold(v, "Critical threshold")
+
+    @field_validator("trend_drop_periods")
+    @classmethod
+    def _trend_drop_periods(cls, v: int) -> int:
+        if v < 2 or v > 12:
+            raise ValueError("Trend alert periods must be between 2 and 12")
+        return v
+
+    @model_validator(mode="after")
+    def _threshold_order(self) -> "KPIBase":
+        if self.critical_threshold > self.warning_threshold:
+            raise ValueError("Critical threshold must be less than or equal to warning threshold")
+        return self
+
+
 class KPICreate(KPIBase):
     pass
 
@@ -242,6 +310,13 @@ class KPIUpdate(BaseModel):
     current_value: float | None = None
     objective_id: int | None = None
     category: str | None = None  # "Work" | "Personal"; None = khong doi
+    cadence: str | None = None
+    data_source_mode: str | None = None
+    target_mode: str | None = None
+    warning_threshold: float | None = None
+    critical_threshold: float | None = None
+    trend_drop_periods: int | None = None
+    alert_muted_until: date | None = None
     clear_objective: bool = False  # true -> go KPI khoi muc tieu (vi None nghia la "khong doi")
     reason: str = ""  # ly do thay doi -> ghi vao change log
 
@@ -249,6 +324,21 @@ class KPIUpdate(BaseModel):
     @classmethod
     def _norm_category(cls, v: str | None) -> str | None:
         return _normalize_category(v) if v is not None else None
+
+    @field_validator("cadence")
+    @classmethod
+    def _norm_cadence(cls, v: str | None) -> str | None:
+        return _normalize_choice(v, KPI_CADENCES, "monthly") if v is not None else None
+
+    @field_validator("data_source_mode")
+    @classmethod
+    def _norm_data_source(cls, v: str | None) -> str | None:
+        return _normalize_choice(v, KPI_DATA_SOURCE_MODES, "manual") if v is not None else None
+
+    @field_validator("target_mode")
+    @classmethod
+    def _norm_target_mode(cls, v: str | None) -> str | None:
+        return _normalize_choice(v, KPI_TARGET_MODES, "same") if v is not None else None
 
     @field_validator("weight")
     @classmethod
@@ -266,6 +356,26 @@ class KPIUpdate(BaseModel):
         return _validate_non_negative_number(v, "Thực đạt")
 
 
+    @field_validator("warning_threshold")
+    @classmethod
+    def _warning_threshold(cls, v: float | None) -> float | None:
+        return _validate_threshold(v, "Warning threshold")
+
+    @field_validator("critical_threshold")
+    @classmethod
+    def _critical_threshold(cls, v: float | None) -> float | None:
+        return _validate_threshold(v, "Critical threshold")
+
+    @field_validator("trend_drop_periods")
+    @classmethod
+    def _trend_drop_periods(cls, v: int | None) -> int | None:
+        if v is None:
+            return None
+        if v < 2 or v > 12:
+            raise ValueError("Trend alert periods must be between 2 and 12")
+        return v
+
+
 class KPIOut(KPIBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -275,6 +385,51 @@ class KPIOut(KPIBase):
     created_at: datetime
     objective_name: str | None = None
     sub_goals: list[SubGoalOut] = []
+
+
+class KPIPeriodMetricBase(BaseModel):
+    period_type: str = "monthly"
+    period_key: str = ""
+    target_value: float = 100.0
+    actual_value: float = 0.0
+    source_type: str = "manual"
+    source_ref: str = ""
+    confirmed: bool = True
+
+    @field_validator("period_type")
+    @classmethod
+    def _norm_period_type(cls, v: str) -> str:
+        return _normalize_choice(v, KPI_CADENCES, "monthly")
+
+    @field_validator("source_type")
+    @classmethod
+    def _norm_source_type(cls, v: str) -> str:
+        return _normalize_choice(v, KPI_METRIC_SOURCE_TYPES, "manual")
+
+    @field_validator("target_value")
+    @classmethod
+    def _target_positive(cls, v: float) -> float:
+        return _validate_positive_number(v, "Target value")
+
+    @field_validator("actual_value")
+    @classmethod
+    def _actual_non_negative(cls, v: float) -> float:
+        return _validate_non_negative_number(v, "Actual value")
+
+
+class KPIPeriodMetricUpsert(KPIPeriodMetricBase):
+    pass
+
+
+class KPIPeriodMetricOut(KPIPeriodMetricBase):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    kpi_id: int
+    period_start: date
+    period_end: date
+    attainment_pct: float
+    created_at: datetime
+    updated_at: datetime
 
 
 # ---------- Work items ----------
@@ -289,7 +444,7 @@ class ProposedWorkItem(BaseModel):
 
     title: str
     detail: str = ""
-    status: str = Field(description="da_lam|dang_lam|se_lam|phat_sinh|loai_bo")
+    status: str = Field(description="da_lam(Done)|dang_lam(In Progress)|se_lam(Planned)|phat_sinh(Newly Added)|loai_bo(Removed)")
     kpi_id: int | None = None
     kpi_name: str | None = None
     kpi_unit: str | None = None  # don vi cua KPI de hien thi (vd: khoa hoc, %, bao cao)
@@ -489,8 +644,16 @@ class KPIConflict(BaseModel):
     kpi_names: list[str] = []
     type: str = "resource_tradeoff"
     severity: str = "medium"  # high | medium | low
+    conflict_score: float = 0.7  # 0..1, >=0.7 => canh bao tren UI
     explanation: str = ""
     suggestion: str = ""
+
+    @field_validator("conflict_score")
+    @classmethod
+    def _score_range(cls, v: float) -> float:
+        if not math.isfinite(float(v)):
+            return 0.7
+        return max(0.0, min(1.0, float(v)))
 
 
 class ConflictAnalysisOut(BaseModel):
@@ -503,6 +666,12 @@ class KPIProposalConfirm(BaseModel):
     kpis: list[ProposedKPI] = []
     weight_changes: list[WeightChange] = []
     cycle_id: int | None = None  # gan vao chu ky nay khi tao Objective moi
+    source_mode: str = "manual"  # field ky thuat: manual | api | export
+
+    @field_validator("source_mode")
+    @classmethod
+    def _norm_source_mode(cls, v: str) -> str:
+        return _normalize_choice(v, KPI_DATA_SOURCE_MODES, "manual")
 
 
 # ---------- Chat ----------
@@ -524,6 +693,7 @@ class ChatRequest(BaseModel):
     session_id: int | None = None  # None -> tu tao phien moi
     lang: str = "vi"  # "vi" | "en" — ngon ngu tra loi cua Agent
     attachments: list[ChatAttachment] = []
+    persist: bool = True  # False -> phan tich tam thoi, khong tao phien chat / lich su
 
 
 class MeetingProposal(BaseModel):
@@ -570,6 +740,15 @@ class ChatResponse(BaseModel):
     session_id: int | None = None
     # id tin nhan assistant trong DB — frontend dung de luu trang thai xac nhan de xuat
     message_id: int | None = None
+
+
+class ChatPersistResponseRequest(BaseModel):
+    """Luu mot ket qua AI da sinh tam thoi thanh phien chat khi user chuyen sang Tro ly."""
+
+    message: str
+    lang: str = "vi"
+    attachments: list[ChatAttachment] = []
+    response: ChatResponse
 
 
 class ProposalStatusUpdate(BaseModel):
@@ -699,6 +878,9 @@ class UserLogin(BaseModel):
 class UserProfileUpdate(BaseModel):
     name: str
     role: str | None = None
+    department: str | None = None
+    employee_code: str | None = None
+    preferred_language: str | None = None
     picture: str | None = None
 
     @field_validator("name")
@@ -713,6 +895,23 @@ class UserProfileUpdate(BaseModel):
     @classmethod
     def _validate_role(cls, v: str | None) -> str | None:
         return _validate_safe_text(v, "Vi tri cong viec", 100) if v is not None else None
+
+    @field_validator("department")
+    @classmethod
+    def _validate_department(cls, v: str | None) -> str | None:
+        return _validate_safe_text(v, "Phong ban", 100) if v is not None else None
+
+    @field_validator("employee_code")
+    @classmethod
+    def _validate_employee_code(cls, v: str | None) -> str | None:
+        return _validate_safe_text(v, "Ma nhan vien", 100) if v is not None else None
+
+    @field_validator("preferred_language")
+    @classmethod
+    def _validate_preferred_language(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return v if v in {"vi", "en"} else "vi"
 
     @field_validator("picture")
     @classmethod
@@ -764,6 +963,9 @@ class Token(BaseModel):
     picture: str = ""
     email: str | None = None
     role: str = ""
+    department: str = ""
+    employee_code: str = ""
+    preferred_language: str = "vi"
     onboarding_completed: bool = False
 
 
@@ -779,6 +981,53 @@ class KPIStatus(BaseModel):
     gap: float
 
 
+class DashboardMetricCard(BaseModel):
+    key: str
+    value: float = 0.0
+    value_text: str = ""
+    unit: str = ""
+    delta_pct: float | None = None
+    tone: str = "neutral"  # neutral | green | yellow | red
+    detail: str = ""
+    action: str = ""
+
+
+class DashboardPerformancePoint(BaseModel):
+    label: str
+    period_key: str
+    actual: float = 0.0
+    target: float = 100.0
+    attainment_pct: float = 0.0
+    weighted_score: float = 0.0
+    delta_pct: float | None = None
+    severity: str = "green"
+    is_estimated: bool = False
+
+
+class DashboardCategoryPoint(BaseModel):
+    key: str
+    name: str
+    attainment_pct: float = 0.0
+    kpi_count: int = 0
+    at_risk_count: int = 0
+    tone: str = "green"
+    objective_id: int | None = None
+
+
+class DashboardRiskItem(BaseModel):
+    kpi_id: int
+    name: str
+    objective_name: str = ""
+    attainment_pct: float = 0.0
+    expected_progress: float = 0.0
+    gap: float = 0.0
+    velocity_pct: float = 0.0
+    projected_progress: float = 0.0
+    conflict_score: float | None = None
+    deadline: date | None = None
+    severity: str = "green"
+
+
 class DashboardOut(BaseModel):
     year: int
     overall_progress: float  # co trong so
@@ -789,6 +1038,10 @@ class DashboardOut(BaseModel):
     recent_items: list[WorkItemOut]
     todo_items: list[WorkItemOut] = []  # viec can lam: se_lam + dang_lam
     weekly_activity: list[dict] = []  # 8 tuan gan nhat: [{"label": "08/06", "count": n}]
+    output_metrics: list[DashboardMetricCard] = []
+    performance_periods: list[DashboardPerformancePoint] = []
+    category_progress: list[DashboardCategoryPoint] = []
+    at_risk_items: list[DashboardRiskItem] = []
 
 
 class DashboardInsightOut(BaseModel):
@@ -946,6 +1199,129 @@ class AgentCycleLogOut(BaseModel):
     created_at: datetime
 
 
+class AgentUserSettingsOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    daily_check_enabled: bool = True
+    daily_check_time: str = "08:00"
+    weekly_digest_enabled: bool = True
+    weekly_digest_weekday: int = 0
+    monthly_report_enabled: bool = True
+    monthly_report_day: int = 1
+    retention_days: int = 90
+    feedback_learning_enabled: bool = True
+    conflict_warning_score: float = 0.7
+
+
+class AgentUserSettingsUpdate(BaseModel):
+    daily_check_enabled: bool | None = None
+    daily_check_time: str | None = None
+    weekly_digest_enabled: bool | None = None
+    weekly_digest_weekday: int | None = None
+    monthly_report_enabled: bool | None = None
+    monthly_report_day: int | None = None
+    retention_days: int | None = None
+    feedback_learning_enabled: bool | None = None
+    conflict_warning_score: float | None = None
+
+    @field_validator("daily_check_time")
+    @classmethod
+    def _time_hhmm(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        value = v.strip()
+        if not re.match(r"^\d{2}:\d{2}$", value):
+            raise ValueError("Gio chay phai co dinh dang HH:MM")
+        hour, minute = [int(x) for x in value.split(":")]
+        if hour > 23 or minute > 59:
+            raise ValueError("Gio chay khong hop le")
+        return value
+
+    @field_validator("weekly_digest_weekday")
+    @classmethod
+    def _weekday(cls, v: int | None) -> int | None:
+        if v is None:
+            return None
+        if v < 0 or v > 6:
+            raise ValueError("Thu trong tuan phai nam trong khoang 0-6")
+        return v
+
+    @field_validator("monthly_report_day")
+    @classmethod
+    def _month_day(cls, v: int | None) -> int | None:
+        if v is None:
+            return None
+        if v < 1 or v > 28:
+            raise ValueError("Ngay bao cao thang phai nam trong khoang 1-28")
+        return v
+
+    @field_validator("retention_days")
+    @classmethod
+    def _retention(cls, v: int | None) -> int | None:
+        if v is None:
+            return None
+        if v < 30 or v > 365:
+            raise ValueError("Retention phai nam trong khoang 30-365 ngay")
+        return v
+
+    @field_validator("conflict_warning_score")
+    @classmethod
+    def _conflict_warning_score(cls, v: float | None) -> float | None:
+        return _validate_threshold(None if v is None else float(v) * 100, "Conflict warning score") / 100 if v is not None else None
+
+
+class AgentFeedbackEventCreate(BaseModel):
+    event_type: str = "proposal"
+    target_type: str = ""
+    target_id: str = ""
+    target_name: str = ""
+    action: str = "dismissed"
+    signal: float = 0.0
+    source: str = ""
+    reason: str = ""
+    confidence: float | None = None
+    meta: dict = Field(default_factory=dict)
+
+
+class AgentFeedbackEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    event_type: str
+    target_type: str = ""
+    target_id: str = ""
+    target_name: str = ""
+    action: str
+    signal: float = 0.0
+    source: str = ""
+    reason: str = ""
+    confidence: float | None = None
+    meta: dict | None = None
+    created_at: datetime
+
+
+class AgentInsightSnapshotOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    insight_type: str
+    title: str = ""
+    content: str = ""
+    data_signature: str = ""
+    source: str = ""
+    status: str = "active"
+    confidence: float | None = None
+    kpi_id: int | None = None
+    meta: dict | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentBrainStatusOut(BaseModel):
+    settings: AgentUserSettingsOut
+    feedback_counts: dict[str, int] = {}
+    recent_feedback: list[AgentFeedbackEventOut] = []
+    recent_insights: list[AgentInsightSnapshotOut] = []
+    calibrations: list[str] = []
+
+
 class AutonomousAgentStatusOut(BaseModel):
     enabled: bool
     interval_seconds: int
@@ -1012,6 +1388,8 @@ class NotificationSettingsOut(BaseModel):
     kpi_reminder_enabled: bool = True
     weekly_summary_enabled: bool = True
     sync_error_enabled: bool = True
+    in_app_enabled: bool = True
+    email_enabled: bool = True
     recipient_email: str = ""
 
 
@@ -1019,4 +1397,6 @@ class NotificationSettingsUpdate(BaseModel):
     kpi_reminder_enabled: bool | None = None
     weekly_summary_enabled: bool | None = None
     sync_error_enabled: bool | None = None
+    in_app_enabled: bool | None = None
+    email_enabled: bool | None = None
     recipient_email: str | None = None

@@ -45,6 +45,9 @@ def _token_response(user: models.User) -> schemas.Token:
         picture=user.picture or "",
         email=user.email,
         role=user.role or "",
+        department=user.department or "",
+        employee_code=user.employee_code or "",
+        preferred_language=user.preferred_language or "vi",
         onboarding_completed=user.onboarding_completed,
     )
 
@@ -176,6 +179,9 @@ def get_me(current_user: CurrentUser, db: Session = Depends(get_db)):
         "email": current_user.email,
         "picture": current_user.picture or "",
         "role": current_user.role or "",
+        "department": current_user.department or "",
+        "employee_code": current_user.employee_code or "",
+        "preferred_language": current_user.preferred_language or "vi",
         "onboarding_completed": current_user.onboarding_completed,
     }
 
@@ -190,6 +196,12 @@ def update_me(
     user.name = payload.name
     if payload.role is not None:
         user.role = payload.role
+    if payload.department is not None:
+        user.department = payload.department
+    if payload.employee_code is not None:
+        user.employee_code = payload.employee_code
+    if payload.preferred_language is not None:
+        user.preferred_language = payload.preferred_language
     if payload.picture is not None:
         user.picture = payload.picture
     db.commit()
@@ -200,6 +212,9 @@ def update_me(
         "email": user.email,
         "picture": user.picture or "",
         "role": user.role or "",
+        "department": user.department or "",
+        "employee_code": user.employee_code or "",
+        "preferred_language": user.preferred_language or "vi",
         "onboarding_completed": user.onboarding_completed,
     }
 
@@ -243,6 +258,9 @@ async def upload_avatar(
         "email": user.email,
         "picture": user.picture or "",
         "role": user.role or "",
+        "department": user.department or "",
+        "employee_code": user.employee_code or "",
+        "preferred_language": user.preferred_language or "vi",
         "onboarding_completed": user.onboarding_completed,
     }
 

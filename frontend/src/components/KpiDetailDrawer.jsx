@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { marked } from 'marked'
 import { api } from '../api'
 import { useLang } from '../LangContext'
@@ -67,8 +68,9 @@ function CoachPanel({ kpi, lang, onConfirmed }) {
     )
 }
 
-export default function KpiDetailDrawer({ item, year, onClose, onReload, lang }) {
+export default function KpiDetailDrawer({ item, year, onClose, onReload, lang, onBack, backLabel }) {
     const { tr } = useLang()
+    const drawerRef = useRef(null)
     const { kpi, expected_progress, health, gap } = item
     const c = HC[health]
     const r = 44, circum = 2 * Math.PI * r
@@ -79,23 +81,40 @@ export default function KpiDetailDrawer({ item, year, onClose, onReload, lang })
     useEffect(() => {
         const onKey = e => { if (e.key === 'Escape') onClose() }
         window.addEventListener('keydown', onKey)
+        document.body.classList.add('kpi-drawer-open')
         document.body.style.overflow = 'hidden'
+        requestAnimationFrame(() => {
+            const drawer = drawerRef.current
+            drawer?.querySelector('.ddb-drawer-body')?.scrollTo({ top: 0, left: 0 })
+            drawer?.focus()
+        })
         return () => {
             window.removeEventListener('keydown', onKey)
+            document.body.classList.remove('kpi-drawer-open')
             document.body.style.overflow = ''
         }
     }, [onClose])
 
-    return (
+    const drawer = (
         <>
             <div className="ddb-backdrop" onClick={onClose} />
-            <div className="ddb-drawer" role="dialog" aria-modal="true">
+            <div className="ddb-drawer" role="dialog" aria-modal="true" aria-label={kpi.name} tabIndex={-1} ref={drawerRef}>
                 {/* Header */}
                 <div className="ddb-drawer-hd">
                     <div style={{ flex: 1, minWidth: 0 }}>
+                        {onBack && (
+                            <button
+                                className="btn small ghost"
+                                type="button"
+                                onClick={onBack}
+                                style={{ marginBottom: 10, paddingInline: 0, color: 'var(--muted)' }}
+                            >
+                                <UiIcon name="arrowLeft" />{backLabel || tr('common.back')}
+                            </button>
+                        )}
                         <div className="ddb-drawer-title">{kpi.name}</div>
                         {kpi.objective_name && (
-                            <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 3 }}>
+                            <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6, lineHeight: 1.35 }}>
                                 <span className="inline-ui-icon"><UiIcon name="flag" /></span> {kpi.objective_name}
                             </div>
                         )}
@@ -168,6 +187,10 @@ export default function KpiDetailDrawer({ item, year, onClose, onReload, lang })
                             [tr('kpis.deadline_label'), dl, daysLeft < 0 ? HC.red : daysLeft < 30 ? HC.yellow : undefined],
                             [tr('kpi_detail.remaining'), daysLeft >= 0 ? tr('kpi_detail.days', { days: daysLeft }) : tr('kpi_detail.overdue_days', { days: -daysLeft }), daysLeft < 0 ? HC.red : undefined],
                             [tr('kpi_detail.category'), kpi.category === 'Personal' ? tr('category.personal') : tr('category.work')],
+                            [tr('input.cadence'), tr(`input.cadence_${kpi.cadence || 'monthly'}`)],
+                            [tr('input.data_source_mode'), tr(`input.source_${kpi.data_source_mode || 'manual'}`)],
+                            [tr('input.warning_short'), `${kpi.warning_threshold ?? 80}%`],
+                            [tr('input.critical_short'), `${kpi.critical_threshold ?? 70}%`],
                         ].map(([k, v, color]) => (
                             <div className="ddb-drawer-meta-row" key={k}>
                                 <span className="ddb-drawer-meta-key">{k}</span>
@@ -189,4 +212,5 @@ export default function KpiDetailDrawer({ item, year, onClose, onReload, lang })
             </div>
         </>
     )
+    return createPortal(drawer, document.body)
 }

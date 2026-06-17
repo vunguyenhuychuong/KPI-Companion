@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useLang } from '../LangContext'
 import { useTheme } from '../ThemeContext'
-import { prefs, EXPORT_FORMATS, EXPORT_SECTIONS } from '../prefs'
+import { prefs } from '../prefs'
 import { ConfirmModal } from '../components/Modal'
 import { useToast } from '../components/Toast'
 import { api } from '../api'
@@ -45,25 +45,19 @@ export default function Settings({ user, onUserUpdate }) {
 
   // Pending states - cho AI & Export (chỉ lưu khi bấm nút tổng)
   const [pendingAutoCoach, setPendingAutoCoach] = useState(prefs.getAutoCoach())
-  const [pendingFmts, setPendingFmts] = useState(prefs.getExportFormats())
-  const [pendingSecs, setPendingSecs] = useState(prefs.getExportSections())
-  const [pendingMgrChannel, setPendingMgrChannel] = useState(prefs.getMgrChannel())
-  const [pendingMgrTo, setPendingMgrTo] = useState(prefs.getMgrRecipient())
 
   // Dirty: so sánh với giá trị gốc (đã apply) và prefs
   const dirty = originalTheme !== themeMode ||
     originalLang !== lang ||
-    pendingAutoCoach !== prefs.getAutoCoach() ||
-    JSON.stringify(pendingFmts) !== JSON.stringify(prefs.getExportFormats()) ||
-    JSON.stringify(pendingSecs) !== JSON.stringify(prefs.getExportSections()) ||
-    pendingMgrChannel !== prefs.getMgrChannel() ||
-    pendingMgrTo.trim() !== prefs.getMgrRecipient()
+    pendingAutoCoach !== prefs.getAutoCoach()
 
   const [saved, setSaved] = useState('')
   const [showResetConfirm, setShowResetConfirm] = useState(false)
   const flash = (msg) => { setSaved(msg); toast.success(msg); setTimeout(() => setSaved(''), 1800) }
   const [profileName, setProfileName] = useState(user?.name || '')
   const [profileRole, setProfileRole] = useState(user?.role || '')
+  const [profileDepartment, setProfileDepartment] = useState(user?.department || '')
+  const [profileEmployeeCode, setProfileEmployeeCode] = useState(user?.employee_code || '')
   const [profilePicture, setProfilePicture] = useState(user?.picture || '')
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -83,19 +77,29 @@ export default function Settings({ user, onUserUpdate }) {
   const [notifSaving, setNotifSaving] = useState(false)
   const [notifMsg, setNotifMsg] = useState('')
   const [notifOk, setNotifOk] = useState(false)
+  const [brainStatus, setBrainStatus] = useState(null)
+  const [brainSettings, setBrainSettings] = useState(null)
+  const [brainSaving, setBrainSaving] = useState(false)
+  const [brainMsg, setBrainMsg] = useState('')
 
   useEffect(() => {
     api.getNotificationSettings().then(s => {
       setNotifSettings(s)
       setNotifEmail(s.recipient_email || '')
     }).catch(() => {})
+    api.brainStatus().then(s => {
+      setBrainStatus(s)
+      setBrainSettings(s.settings)
+    }).catch(() => {})
   }, [])
 
   useEffect(() => {
     setProfileName(user?.name || '')
     setProfileRole(user?.role || '')
+    setProfileDepartment(user?.department || '')
+    setProfileEmployeeCode(user?.employee_code || '')
     setProfilePicture(user?.picture || '')
-  }, [user?.name, user?.role, user?.picture])
+  }, [user?.name, user?.role, user?.department, user?.employee_code, user?.picture])
 
   const saveNotifSettings = async () => {
     if (!notifSettings) return
@@ -112,6 +116,41 @@ export default function Settings({ user, onUserUpdate }) {
 
   const toggleNotif = (key) => {
     setNotifSettings(prev => ({ ...prev, [key]: !prev[key] }))
+  }
+
+  const setBrain = (key, value) => {
+    setBrainSettings(prev => ({ ...(prev || {}), [key]: value }))
+  }
+
+  const saveBrainSettings = async () => {
+    if (!brainSettings) return
+    setBrainSaving(true)
+    setBrainMsg('')
+    try {
+      const updated = await api.updateBrainSettings(brainSettings)
+      setBrainSettings(updated)
+      const status = await api.brainStatus()
+      setBrainStatus(status)
+      setBrainMsg(tr('settings.brain_saved'))
+      flash(tr('settings.saved'))
+    } catch (e) {
+      setBrainMsg(e.message)
+    } finally {
+      setBrainSaving(false)
+    }
+  }
+
+  const cleanupBrainHistory = async () => {
+    setBrainSaving(true)
+    setBrainMsg('')
+    try {
+      const res = await api.cleanupBrainRetention()
+      setBrainMsg(tr('settings.brain_cleanup_done', { count: res.deleted || 0 }))
+    } catch (e) {
+      setBrainMsg(e.message)
+    } finally {
+      setBrainSaving(false)
+    }
   }
 
   const sendTestEmail = async () => {
@@ -136,6 +175,9 @@ export default function Settings({ user, onUserUpdate }) {
       const updated = await api.updateMe({
         name,
         role: profileRole.trim(),
+        department: profileDepartment.trim(),
+        employee_code: profileEmployeeCode.trim(),
+        preferred_language: lang,
         picture: profilePicture.trim(),
       })
       onUserUpdate?.(updated)
@@ -202,35 +244,34 @@ export default function Settings({ user, onUserUpdate }) {
   const applyTheme = (v) => { setThemeMode(v) }
   const applyLang = (v) => { setLangDirect(v) }
 
-  const saveAll = () => {
+  const saveAll = async () => {
     prefs.setAutoCoach(pendingAutoCoach)
-    prefs.setExportFormats(pendingFmts)
-    prefs.setExportSections(pendingSecs)
-    prefs.setMgrChannel(pendingMgrChannel)
-    prefs.setMgrRecipient(pendingMgrTo.trim())
+    if (originalLang !== lang && user?.name) {
+      try {
+        const updated = await api.updateMe({
+          name: user.name,
+          role: user.role || '',
+          department: user.department || '',
+          employee_code: user.employee_code || '',
+          preferred_language: lang,
+          picture: user.picture || '',
+        })
+        onUserUpdate?.(updated)
+      } catch (e) {
+        setAccountMsg(e.message)
+        return
+      }
+    }
     setOriginalTheme(themeMode)
     setOriginalLang(lang)
-    setPendingMgrTo(pendingMgrTo.trim())
     flash(tr('settings.saved'))
   }
 
   const toggleAutoCoach = () => setPendingAutoCoach(!pendingAutoCoach)
-  const toggleFmt = (k) => {
-    const next = pendingFmts.includes(k) ? pendingFmts.filter((x) => x !== k) : [...pendingFmts, k]
-    setPendingFmts(next)
-  }
-  const toggleSec = (k) => {
-    const next = pendingSecs.includes(k) ? pendingSecs.filter((x) => x !== k) : [...pendingSecs, k]
-    setPendingSecs(next)
-  }
 
   const doResetAll = () => {
     prefs.reset()
     setPendingAutoCoach(prefs.getAutoCoach())
-    setPendingFmts(prefs.getExportFormats())
-    setPendingSecs(prefs.getExportSections())
-    setPendingMgrChannel(prefs.getMgrChannel())
-    setPendingMgrTo(prefs.getMgrRecipient())
     setShowResetConfirm(false)
     flash(tr('settings.reset_done'))
   }
@@ -276,8 +317,30 @@ export default function Settings({ user, onUserUpdate }) {
         {saved && <span className="settings-saved">{saved}</span>}
       </header>
 
+      <div className="settings-layout">
+        <div className="settings-main-column">
+      {/* Giao dien & Ngon ngu */}
+      <div className="card settings-card settings-appearance-card">
+        <h3 className="icon-heading"><UiIcon name="palette" /> {cleanIconLabel(tr('settings.appearance'))}</h3>
+        <div className="setting-row">
+          <div className="setting-label">{tr('settings.theme')}</div>
+          <div className="seg">
+            <button className={`seg-btn ${themeMode === 'light' ? 'active' : ''}`} onClick={() => applyTheme('light')}><UiIcon name="sun" />{tr('theme.light')}</button>
+            <button className={`seg-btn ${themeMode === 'dark' ? 'active' : ''}`} onClick={() => applyTheme('dark')}><UiIcon name="moon" />{tr('theme.dark')}</button>
+            <button className={`seg-btn ${themeMode === 'system' ? 'active' : ''}`} onClick={() => applyTheme('system')}><UiIcon name="monitor" />{tr('theme.system')}</button>
+          </div>
+        </div>
+        <div className="setting-row">
+          <div className="setting-label">{tr('settings.language')}</div>
+          <div className="seg">
+            <button className={`seg-btn ${lang === 'vi' ? 'active' : ''}`} onClick={() => applyLang('vi')}>{tr('settings.lang_vi')}</button>
+            <button className={`seg-btn ${lang === 'en' ? 'active' : ''}`} onClick={() => applyLang('en')}>{tr('settings.lang_en')}</button>
+          </div>
+        </div>
+      </div>
+
       {/* Tai khoan */}
-      <div className="card">
+      <div className="card settings-card settings-account-card">
         <h3 className="icon-heading"><UiIcon name="user" /> {tr('account.section')}</h3>
         <div className="account-grid">
           <div>
@@ -301,6 +364,24 @@ export default function Settings({ user, onUserUpdate }) {
               onChange={(e) => setProfileRole(e.target.value)}
               maxLength={100}
               placeholder={tr('account.role_placeholder')}
+            />
+            <label className="field-label" htmlFor="profile-department">{tr('account.department')}</label>
+            <input
+              id="profile-department"
+              className="input"
+              value={profileDepartment}
+              onChange={(e) => setProfileDepartment(e.target.value)}
+              maxLength={100}
+              placeholder={tr('account.department_placeholder')}
+            />
+            <label className="field-label" htmlFor="profile-employee-code">{tr('account.employee_code')}</label>
+            <input
+              id="profile-employee-code"
+              className="input"
+              value={profileEmployeeCode}
+              onChange={(e) => setProfileEmployeeCode(e.target.value)}
+              maxLength={100}
+              placeholder={tr('account.employee_code_placeholder')}
             />
             <label className="field-label" htmlFor="profile-picture">{tr('account.picture')}</label>
             <div className="avatar-edit-row">
@@ -338,6 +419,8 @@ export default function Settings({ user, onUserUpdate }) {
               disabled={accountSaving || (
                 profileName.trim() === (user?.name || '') &&
                 profileRole.trim() === (user?.role || '') &&
+                profileDepartment.trim() === (user?.department || '') &&
+                profileEmployeeCode.trim() === (user?.employee_code || '') &&
                 profilePicture.trim() === (user?.picture || '')
               )}
             >
@@ -345,7 +428,11 @@ export default function Settings({ user, onUserUpdate }) {
             </button>
           </div>
         </div>
-        <div className="account-grid no-border">
+      </div>
+
+      <div className="card settings-card settings-password-card">
+        <h3 className="icon-heading"><UiIcon name="lock" /> {tr('account.password')}</h3>
+        <div className="account-grid no-border compact">
           <div>
             <div className="setting-label">{tr('account.password')}</div>
             <div className="muted setting-hint">{tr('account.password_hint')}</div>
@@ -393,28 +480,8 @@ export default function Settings({ user, onUserUpdate }) {
         </div>
       </div>
 
-      {/* Giao dien & Ngon ngu */}
-      <div className="card">
-        <h3 className="icon-heading"><UiIcon name="palette" /> {cleanIconLabel(tr('settings.appearance'))}</h3>
-        <div className="setting-row">
-          <div className="setting-label">{tr('settings.theme')}</div>
-          <div className="seg">
-            <button className={`seg-btn ${themeMode === 'light' ? 'active' : ''}`} onClick={() => applyTheme('light')}><UiIcon name="sun" />{tr('theme.light')}</button>
-            <button className={`seg-btn ${themeMode === 'dark' ? 'active' : ''}`} onClick={() => applyTheme('dark')}><UiIcon name="moon" />{tr('theme.dark')}</button>
-            <button className={`seg-btn ${themeMode === 'system' ? 'active' : ''}`} onClick={() => applyTheme('system')}><UiIcon name="monitor" />{tr('theme.system')}</button>
-          </div>
-        </div>
-        <div className="setting-row">
-          <div className="setting-label">{tr('settings.language')}</div>
-          <div className="seg">
-            <button className={`seg-btn ${lang === 'vi' ? 'active' : ''}`} onClick={() => applyLang('vi')}>{tr('settings.lang_vi')}</button>
-            <button className={`seg-btn ${lang === 'en' ? 'active' : ''}`} onClick={() => applyLang('en')}>{tr('settings.lang_en')}</button>
-          </div>
-        </div>
-      </div>
-
       {/* Tro ly AI */}
-      <div className="card">
+      <div className="card settings-card settings-ai-card">
         <h3 className="icon-heading"><UiIcon name="bot" /> {cleanIconLabel(tr('settings.ai_section'))}</h3>
         <div className="setting-row">
           <div>
@@ -423,47 +490,120 @@ export default function Settings({ user, onUserUpdate }) {
           </div>
           <Switch on={pendingAutoCoach} onClick={toggleAutoCoach} />
         </div>
-      </div>
-
-      {/* Export mac dinh */}
-      <div className="card">
-        <h3 className="icon-heading"><UiIcon name="package" /> {cleanIconLabel(tr('settings.export_section'))}</h3>
-        <p className="muted setting-hint">{tr('settings.export_hint')}</p>
-        <div className="setting-row">
-          <div className="setting-label">{tr('export.formats_label')}</div>
-          <div className="export-chips">
-            {EXPORT_FORMATS.map(([k, label]) => (
-              <button key={k} className={`export-chip ${pendingFmts.includes(k) ? 'active' : ''}`} onClick={() => toggleFmt(k)}>{label}</button>
-            ))}
+        {brainSettings ? (
+          <div className="brain-settings">
+            <div className="setting-row">
+              <div>
+                <div className="setting-label">{tr('settings.brain_daily')}</div>
+                <div className="muted setting-hint">{tr('settings.brain_daily_hint')}</div>
+              </div>
+              <div className="brain-inline">
+                <input className="input compact" type="time" value={brainSettings.daily_check_time || '08:00'}
+                  onChange={(e) => setBrain('daily_check_time', e.target.value)} />
+                <Switch on={brainSettings.daily_check_enabled !== false}
+                  onClick={() => setBrain('daily_check_enabled', brainSettings.daily_check_enabled === false)} />
+              </div>
+            </div>
+            <div className="setting-row">
+              <div>
+                <div className="setting-label">{tr('settings.brain_weekly')}</div>
+                <div className="muted setting-hint">{tr('settings.brain_weekly_hint')}</div>
+              </div>
+              <div className="brain-inline">
+                <select className="forecast-select" value={brainSettings.weekly_digest_weekday ?? 0}
+                  onChange={(e) => setBrain('weekly_digest_weekday', Number(e.target.value))}>
+                  {[0, 1, 2, 3, 4, 5, 6].map((d) => <option key={d} value={d}>{tr(`weekday.${d}`)}</option>)}
+                </select>
+                <Switch on={brainSettings.weekly_digest_enabled !== false}
+                  onClick={() => setBrain('weekly_digest_enabled', brainSettings.weekly_digest_enabled === false)} />
+              </div>
+            </div>
+            <div className="setting-row">
+              <div>
+                <div className="setting-label">{tr('settings.brain_monthly')}</div>
+                <div className="muted setting-hint">{tr('settings.brain_monthly_hint')}</div>
+              </div>
+              <div className="brain-inline">
+                <input className="input compact" type="number" min="1" max="28" value={brainSettings.monthly_report_day ?? 1}
+                  onChange={(e) => setBrain('monthly_report_day', Number(e.target.value))} />
+                <Switch on={brainSettings.monthly_report_enabled !== false}
+                  onClick={() => setBrain('monthly_report_enabled', brainSettings.monthly_report_enabled === false)} />
+              </div>
+            </div>
+            <div className="setting-row">
+              <div>
+                <div className="setting-label">{tr('settings.brain_feedback')}</div>
+                <div className="muted setting-hint">{tr('settings.brain_feedback_hint')}</div>
+              </div>
+              <Switch on={brainSettings.feedback_learning_enabled !== false}
+                onClick={() => setBrain('feedback_learning_enabled', brainSettings.feedback_learning_enabled === false)} />
+            </div>
+            <div className="setting-row">
+              <div>
+                <div className="setting-label">{tr('settings.brain_retention')}</div>
+                <div className="muted setting-hint">{tr('settings.brain_retention_hint')}</div>
+              </div>
+              <div className="brain-inline">
+                <input className="input compact" type="number" min="30" max="365" value={brainSettings.retention_days ?? 90}
+                  onChange={(e) => setBrain('retention_days', Number(e.target.value))} />
+                <button className="btn small ghost" onClick={cleanupBrainHistory} disabled={brainSaving}>
+                  <UiIcon name="trash" />{tr('settings.brain_cleanup')}
+                </button>
+              </div>
+            </div>
+            <div className="setting-row">
+              <div>
+                <div className="setting-label">{tr('settings.brain_conflict_score')}</div>
+                <div className="muted setting-hint">{tr('settings.brain_conflict_score_hint', { value: Math.round(Number(brainSettings.conflict_warning_score ?? 0.7) * 100) })}</div>
+              </div>
+              <input className="brain-slider" type="range" min="0.4" max="0.95" step="0.05"
+                value={brainSettings.conflict_warning_score ?? 0.7}
+                onChange={(e) => setBrain('conflict_warning_score', Number(e.target.value))} />
+            </div>
+            {brainStatus?.calibrations?.length > 0 && (
+              <div className="brain-calibration">
+                <strong>{tr('settings.brain_calibration')}</strong>
+                {brainStatus.calibrations.map((item, i) => <span key={`${item}-${i}`}>{item}</span>)}
+              </div>
+            )}
+            {brainMsg && <div className="form-msg">{brainMsg}</div>}
+            <button className="btn primary small" onClick={saveBrainSettings} disabled={brainSaving}>
+              <UiIcon name="check" />{brainSaving ? tr('account.saving') : tr('settings.brain_save')}
+            </button>
           </div>
-        </div>
-        <div className="setting-row">
-          <div className="setting-label">{tr('export.sections_label')}</div>
-          <div className="export-chips">
-            {EXPORT_SECTIONS.map(([k, lk]) => (
-              <button key={k} className={`export-chip ${pendingSecs.includes(k) ? 'active' : ''}`} onClick={() => toggleSec(k)}>{tr(lk)}</button>
-            ))}
-          </div>
-        </div>
-        <div className="setting-row">
-          <div className="setting-label">{tr('settings.mgr_default')}</div>
-          <div className="export-row" style={{ margin: 0, flex: 1 }}>
-            <select value={pendingMgrChannel} onChange={(e) => setPendingMgrChannel(e.target.value)} className="forecast-select" style={{ maxWidth: 130 }}>
-              <option value="email">{tr('export.channel_email')}</option>
-              <option value="webhook">{tr('export.channel_webhook')}</option>
-            </select>
-            <input className="export-recipient" placeholder={pendingMgrChannel === 'email' ? tr('export.recipient_ph_email') : tr('export.recipient_ph_webhook')}
-              value={pendingMgrTo} onChange={(e) => setPendingMgrTo(e.target.value)} />
-          </div>
-        </div>
+        ) : (
+          <div className="muted setting-hint">{tr('common.loading')}</div>
+        )}
       </div>
 
       {/* D2: Notification settings */}
-      <div className="card">
+      <div className="card settings-card settings-notifications-card">
         <h3 className="icon-heading"><UiIcon name="mail" /> {tr('settings.email_notifications')}</h3>
         <p className="muted setting-hint">{tr('settings.email_notifications_hint')}</p>
         {notifSettings ? (
           <>
+            <div className="notif-toggle-row">
+              <div className="notif-toggle-info">
+                <div className="notif-toggle-label">{tr('settings.notif_in_app')}</div>
+                <div className="notif-toggle-desc">{tr('settings.notif_in_app_desc')}</div>
+              </div>
+              <label className="toggle-switch">
+                <input type="checkbox" checked={notifSettings.in_app_enabled !== false}
+                  onChange={() => toggleNotif('in_app_enabled')} />
+                <span className="toggle-slider" />
+              </label>
+            </div>
+            <div className="notif-toggle-row">
+              <div className="notif-toggle-info">
+                <div className="notif-toggle-label">{tr('settings.notif_email_channel')}</div>
+                <div className="notif-toggle-desc">{tr('settings.notif_email_channel_desc')}</div>
+              </div>
+              <label className="toggle-switch">
+                <input type="checkbox" checked={notifSettings.email_enabled !== false}
+                  onChange={() => toggleNotif('email_enabled')} />
+                <span className="toggle-slider" />
+              </label>
+            </div>
             <div className="notif-toggle-row">
               <div className="notif-toggle-info">
                 <div className="notif-toggle-label">{tr('settings.notif_kpi_reminder')}</div>
@@ -519,11 +659,13 @@ export default function Settings({ user, onUserUpdate }) {
         )}
       </div>
 
-      <div className="card">
+      <div className="card settings-card settings-reset-card">
         <h3 className="icon-heading"><UiIcon name="refresh" /> {tr('settings.reset_section')}</h3>
         <div className="setting-row">
           <div className="muted setting-hint">{tr('settings.reset_hint')}</div>
           <button className="btn danger" onClick={() => setShowResetConfirm(true)}><UiIcon name="refresh" />{tr('settings.reset_btn')}</button>
+        </div>
+      </div>
         </div>
       </div>
 

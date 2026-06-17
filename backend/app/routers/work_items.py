@@ -39,6 +39,13 @@ def _check_kpi_cycle_not_locked(db: Session, kpi_id: int | None, user_id: int):
         _cycle_locked_error(cycle)
 
 
+def _get_user_draft(db: Session, item_id: int, user_id: int) -> models.WorkItem:
+    item = db.get(models.WorkItem, item_id)
+    if not item or item.user_id != user_id or item.confirmed:
+        raise HTTPException(404, "Không tìm thấy nháp nhật ký")
+    return item
+
+
 @router.get("")
 def list_items(
     current_user: CurrentUser,
@@ -87,6 +94,65 @@ def list_items(
     return {"items": [schemas.WorkItemOut.model_validate(w) for w in items], "total": total, "page": page, "page_size": page_size}
 
 
+@router.get("/drafts", response_model=list[schemas.WorkItemOut])
+def list_drafts(current_user: CurrentUser, db: Session = Depends(get_db)):
+    """Danh sach nhap Work Journal do Agent/nguon ket noi tao, chua cong KPI."""
+    items = list(
+        db.scalars(
+            select(models.WorkItem)
+            .where(
+                models.WorkItem.user_id == current_user.id,
+                models.WorkItem.confirmed == False,  # noqa: E712
+            )
+            .order_by(models.WorkItem.created_at.desc())
+            .limit(50)
+        )
+    )
+    return [schemas.WorkItemOut.model_validate(w) for w in items]
+
+
+@router.put("/drafts/{item_id}", response_model=schemas.WorkItemOut)
+def update_draft(
+    item_id: int,
+    payload: schemas.ProposedWorkItem,
+    current_user: CurrentUser,
+    db: Session = Depends(get_db),
+):
+    """Luu chinh sua nhap truoc khi xac nhan."""
+    item = _get_user_draft(db, item_id, current_user.id)
+    if not payload.title.strip():
+        raise HTTPException(400, "Vui lòng nhập tên công việc")
+    _check_kpi_cycle_not_locked(db, payload.kpi_id, current_user.id)
+    updated = kpi_service.update_draft_item_from_proposed(
+        db,
+        item,
+        payload,
+        user_id=current_user.id,
+    )
+    return schemas.WorkItemOut.model_validate(updated)
+
+
+@router.post("/drafts/{item_id}/confirm", response_model=schemas.WorkItemOut)
+def confirm_draft(
+    item_id: int,
+    current_user: CurrentUser,
+    db: Session = Depends(get_db),
+):
+    """Nguoi dung xac nhan nhap Journal; luc nay moi cong tien do KPI."""
+    item = _get_user_draft(db, item_id, current_user.id)
+    _check_kpi_cycle_not_locked(db, item.kpi_id, current_user.id)
+    confirmed = kpi_service.confirm_draft_item(db, item, user_id=current_user.id)
+    return schemas.WorkItemOut.model_validate(confirmed)
+
+
+@router.delete("/drafts/{item_id}", status_code=204)
+def delete_draft(item_id: int, current_user: CurrentUser, db: Session = Depends(get_db)):
+    """Bo qua nhap Journal; khong tru KPI vi chua tung cong tien do."""
+    item = _get_user_draft(db, item_id, current_user.id)
+    db.delete(item)
+    db.commit()
+
+
 @router.post("/confirm", response_model=list[schemas.WorkItemOut])
 def confirm(
     payload: schemas.ConfirmItemsRequest, current_user: CurrentUser, db: Session = Depends(get_db)
@@ -129,6 +195,7 @@ def update_status(
                     reason=f'Hoàn thành đầu việc "{item.title}"',
                 )
             )
+            kpi_service.record_period_delta(db, kpi, item, delta=value_delta)
     db.commit()
     db.refresh(item)
     return item
@@ -156,5 +223,6 @@ def delete_item(item_id: int, current_user: CurrentUser, db: Session = Depends(g
                     reason=f'Xóa đầu việc "{item.title}"',
                 )
             )
+            kpi_service.record_period_delta(db, kpi, item, delta=-(item.progress_delta or 0))
     db.delete(item)
     db.commit()

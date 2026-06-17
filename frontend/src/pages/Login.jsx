@@ -66,6 +66,9 @@ export default function Login({ onLogin }) {
       email: data.email || '',
       auth_provider: authProvider,
       role: data.role || '',
+      department: data.department || '',
+      employee_code: data.employee_code || '',
+      preferred_language: data.preferred_language || 'vi',
       picture: data.picture || '',
       onboarding_completed: data.onboarding_completed,
     }

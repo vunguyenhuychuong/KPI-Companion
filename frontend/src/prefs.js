@@ -5,6 +5,9 @@ const KEYS = {
   exportSections: 'kpi_export_sections',
   mgrChannel: 'kpi_mgr_channel',
   mgrRecipient: 'kpi_mgr_recipient',
+  agentInboxAutoOpened: 'kpi_agent_inbox_auto_opened',
+  agentInboxAutoOpenDismissed: 'kpi_agent_inbox_auto_open_dismissed',
+  agentInboxSeenIds: 'kpi_agent_inbox_seen_ids',
 }
 
 const DEFAULTS = {
@@ -37,6 +40,13 @@ export const prefs = {
 
   getMgrRecipient: () => localStorage.getItem(KEYS.mgrRecipient) || DEFAULTS.mgrRecipient,
   setMgrRecipient: (v) => localStorage.setItem(KEYS.mgrRecipient, v),
+
+  getAgentInboxAutoOpened: () => localStorage.getItem(KEYS.agentInboxAutoOpened) === '1',
+  setAgentInboxAutoOpened: (on) => localStorage.setItem(KEYS.agentInboxAutoOpened, on ? '1' : '0'),
+  getAgentInboxAutoOpenDismissed: () => localStorage.getItem(KEYS.agentInboxAutoOpenDismissed) === '1',
+  setAgentInboxAutoOpenDismissed: (on) => localStorage.setItem(KEYS.agentInboxAutoOpenDismissed, on ? '1' : '0'),
+  getAgentInboxSeenIds: () => readJSON(KEYS.agentInboxSeenIds, []),
+  setAgentInboxSeenIds: (ids) => localStorage.setItem(KEYS.agentInboxSeenIds, JSON.stringify(ids || [])),
 
   reset: () => Object.values(KEYS).forEach((k) => localStorage.removeItem(k)),
 

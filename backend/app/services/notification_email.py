@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..config import settings
 from .email_service import is_smtp_configured, send_email
 
 
@@ -26,12 +27,64 @@ def _log_notification(db: Session, user_id: int, ntype: str, status: str, error:
     db.commit()
 
 
+def send_worklog_draft_email(db: Session, user_id: int, draft_count: int) -> dict:
+    """Thong bao cho user Gmail khi Agent tao nhap nhat ky cong viec moi."""
+    if draft_count <= 0:
+        return {"ok": True, "message": "Khong co nhap moi"}
+    if not is_smtp_configured():
+        return {"ok": False, "message": "Chua cau hinh SMTP"}
+    ns = _get_notification_settings(db, user_id)
+    if not ns.email_enabled:
+        return {"ok": False, "message": "Kenh email da tat"}
+
+    user = db.get(models.User, user_id)
+    to_email = (user.email if user else "") or ""
+    if not to_email.lower().endswith("@gmail.com"):
+        return {"ok": False, "message": "User khong dang nhap bang Gmail"}
+
+    name = user.name or "ban"
+    base_url = (settings.frontend_url or "http://localhost:5173").rstrip("/")
+    journal_url = f"{base_url}/journal"
+    body = f"""Xin chao {name},
+
+AI Agent vua tao {draft_count} nhap nhat ky cong viec tu cac nguon da ket noi.
+
+Hay vao KPI Companion de xem bang chung, sua KPI/trang thai/gia tri neu can, roi xac nhan trong Nhat ky cong viec:
+{journal_url}
+
+Chua co tien do KPI nao duoc cong cho den khi ban xac nhan.
+"""
+
+    body_html = f"""<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#0f172a">
+<h2 style="color:#2563eb">Co nhap Nhat ky cong viec moi</h2>
+<p>Xin chao <strong>{name}</strong>,</p>
+<p>AI Agent vua tao <strong>{draft_count}</strong> nhap nhat ky cong viec tu cac nguon da ket noi.</p>
+<p>Hay xem bang chung, sua KPI/trang thai/gia tri neu can, roi xac nhan trong Nhat ky cong viec.</p>
+<p style="margin:20px 0">
+  <a href="{journal_url}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:10px 14px;border-radius:8px;font-weight:700">
+    Mo Nhat ky cong viec
+  </a>
+</p>
+<p style="color:#64748b;font-size:13px">Chua co tien do KPI nao duoc cong cho den khi ban xac nhan.</p>
+</div>"""
+
+    try:
+        send_email(to_email, "[KPI Companion] Co nhap Nhat ky cong viec moi", body, body_html)
+        _log_notification(db, user_id, "worklog_draft", "sent")
+        return {"ok": True, "message": f"Da gui thong bao toi {to_email}"}
+    except Exception as e:
+        _log_notification(db, user_id, "worklog_draft", "failed", str(e))
+        return {"ok": False, "message": str(e)}
+
+
 def send_kpi_reminder_email(db: Session, user_id: int) -> dict:
     """Gửi email nhắc nhở user cập nhật KPI chưa có actual value trong 5 ngày."""
     if not is_smtp_configured():
         return {"ok": False, "message": "Chưa cấu hình SMTP"}
 
     ns = _get_notification_settings(db, user_id)
+    if not ns.email_enabled:
+        return {"ok": False, "message": "Kenh email da tat"}
     if not ns.kpi_reminder_enabled:
         return {"ok": False, "message": "Thông báo KPI reminder đã tắt"}
 
@@ -118,6 +171,8 @@ def send_weekly_summary_email(db: Session, user_id: int) -> dict:
         return {"ok": False, "message": "Chưa cấu hình SMTP"}
 
     ns = _get_notification_settings(db, user_id)
+    if not ns.email_enabled:
+        return {"ok": False, "message": "Kenh email da tat"}
     if not ns.weekly_summary_enabled:
         return {"ok": False, "message": "Thông báo weekly summary đã tắt"}
 
@@ -190,6 +245,8 @@ def send_sync_error_email(db: Session, user_id: int, error_code: str, descriptio
         return {"ok": False, "message": "Chưa cấu hình SMTP"}
 
     ns = _get_notification_settings(db, user_id)
+    if not ns.email_enabled:
+        return {"ok": False, "message": "Kenh email da tat"}
     if not ns.sync_error_enabled:
         return {"ok": False, "message": "Thông báo lỗi đồng bộ đã tắt"}
 

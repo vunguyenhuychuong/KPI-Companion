@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { marked } from 'marked'
 import { api } from '../api'
 import { useLang } from '../LangContext'
+import { prefs } from '../prefs'
 import ProposalList from './ProposalList'
 import { useToast } from './Toast'
 import { UiIcon, cleanIconLabel } from './UiIcon'
@@ -20,6 +21,12 @@ function categoryLabel(category, tr) {
   return cleanIconLabel(category === 'Personal' ? tr('category.personal') : tr('category.work'))
 }
 
+function messageIds(items) {
+  return (items || [])
+    .map((item) => String(item.message_id || ''))
+    .filter(Boolean)
+}
+
 export default function AutonomousAgentInbox() {
   const { tr, lang } = useLang()
   const toast = useToast()
@@ -27,21 +34,64 @@ export default function AutonomousAgentInbox() {
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [unseenCount, setUnseenCount] = useState(0)
   const ref = useRef(null)
-  const loadedOnce = useRef(false)
-  const knownIds = useRef(new Set())
+  const itemsRef = useRef([])
+  const openRef = useRef(false)
+
+  useEffect(() => { itemsRef.current = items }, [items])
+  useEffect(() => { openRef.current = open }, [open])
+
+  const markSeen = useCallback((sourceItems = itemsRef.current) => {
+    const ids = messageIds(sourceItems)
+    if (!ids.length) {
+      setUnseenCount(0)
+      return
+    }
+    const seen = new Set(prefs.getAgentInboxSeenIds().map(String))
+    ids.forEach((id) => seen.add(id))
+    prefs.setAgentInboxSeenIds([...seen])
+    setUnseenCount(0)
+  }, [])
+
+  const openPanel = useCallback(() => {
+    markSeen()
+    setOpen(true)
+  }, [markSeen])
+
+  const closePanel = useCallback(() => {
+    prefs.setAgentInboxAutoOpenDismissed(true)
+    markSeen()
+    setOpen(false)
+  }, [markSeen])
 
   const load = async (scan = false, autoOpen = false) => {
     setLoading(true)
     setError('')
     try {
       const data = scan ? await api.refreshAutonomousAgentInbox() : await api.autonomousAgentInbox()
-      const ids = new Set((data || []).map((item) => item.message_id))
-      const hasNew = (data || []).some((item) => !knownIds.current.has(item.message_id))
-      setItems(data || [])
-      if ((autoOpen || (loadedOnce.current && hasNew)) && data?.length) setOpen(true)
-      knownIds.current = ids
-      loadedOnce.current = true
+      const rows = data || []
+      const ids = messageIds(rows)
+      const seen = new Set(prefs.getAgentInboxSeenIds().map(String))
+      const unseen = ids.filter((id) => !seen.has(id))
+      const shouldAutoOpen = Boolean(
+        rows.length &&
+        autoOpen &&
+        !prefs.getAgentInboxAutoOpened() &&
+        !prefs.getAgentInboxAutoOpenDismissed()
+      )
+      setItems(rows)
+      if (openRef.current || shouldAutoOpen) {
+        ids.forEach((id) => seen.add(id))
+        prefs.setAgentInboxSeenIds([...seen])
+        setUnseenCount(0)
+      } else {
+        setUnseenCount(unseen.length)
+      }
+      if (shouldAutoOpen) {
+        prefs.setAgentInboxAutoOpened(true)
+        setOpen(true)
+      }
     } catch (e) {
       setError(e.message || tr('agent_inbox.error'))
     } finally {
@@ -57,10 +107,12 @@ export default function AutonomousAgentInbox() {
   }, [])
 
   useEffect(() => {
-    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const h = (e) => {
+      if (openRef.current && ref.current && !ref.current.contains(e.target)) closePanel()
+    }
     document.addEventListener('mousedown', h)
     return () => document.removeEventListener('mousedown', h)
-  }, [])
+  }, [closePanel])
 
   const mark = async (item, status, messageKey) => {
     try {
@@ -90,10 +142,12 @@ export default function AutonomousAgentInbox() {
   return (
     <div className="agent-inbox-wrap" ref={ref}>
       <button
-        className={`agent-inbox-trigger${count ? ' has-items' : ''}`}
-        onClick={() => setOpen((v) => !v)}
+        className={`agent-inbox-trigger${count ? ' has-items' : ''}${unseenCount ? ' has-unseen' : ''}`}
+        onClick={() => (open ? closePanel() : openPanel())}
         title={tr('agent_inbox.open')}
         aria-label={tr('agent_inbox.open')}
+        aria-expanded={open}
+        aria-haspopup="dialog"
       >
         <UiIcon name="bot" />
         {count > 0 && <span className="notif-badge">{count > 9 ? '9+' : count}</span>}
@@ -105,14 +159,26 @@ export default function AutonomousAgentInbox() {
               <strong>{tr('agent_inbox.title')}</strong>
               <span>{count ? tr('agent_inbox.pending_count', { count }) : tr('agent_inbox.empty')}</span>
             </div>
-            <button
-              className="agent-inbox-refresh"
-              onClick={() => load(true, false)}
-              disabled={loading}
-              title={tr('agent_inbox.refresh')}
-            >
-              <UiIcon name="refresh" />{loading ? tr('agent_inbox.refreshing') : tr('agent_inbox.refresh')}
-            </button>
+            <div className="agent-inbox-head-actions">
+              <button
+                className="agent-inbox-refresh"
+                type="button"
+                onClick={() => load(true, false)}
+                disabled={loading}
+                title={tr('agent_inbox.refresh')}
+              >
+                <UiIcon name="refresh" />{loading ? tr('agent_inbox.refreshing') : tr('agent_inbox.refresh')}
+              </button>
+              <button
+                className="agent-inbox-close"
+                type="button"
+                onClick={closePanel}
+                title={tr('common.close')}
+                aria-label={tr('common.close')}
+              >
+                <UiIcon name="x" />
+              </button>
+            </div>
           </div>
           {error && <div className="agent-inbox-error">{error}</div>}
           {!count && !error && <div className="agent-inbox-empty">{tr('agent_inbox.empty')}</div>}
@@ -168,6 +234,16 @@ export default function AutonomousAgentInbox() {
                   </div>
                 </div>
               ))}
+              {!item.proposed_items?.length && !item.category_suggestions?.length && (
+                <div className="proposal-actions">
+                  <button className="btn primary" onClick={() => mark(item, 'saved', 'agent_inbox.insight_confirmed')}>
+                    <UiIcon name="check" />{tr('agent_inbox.insight_useful')}
+                  </button>
+                  <button className="btn ghost" onClick={() => mark(item, 'dismissed', 'agent_inbox.dismissed')}>
+                    <UiIcon name="x" />{tr('agent_inbox.category_dismiss')}
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>

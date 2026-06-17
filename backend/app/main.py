@@ -12,6 +12,7 @@ from .config import settings
 from .database import Base, SessionLocal, engine
 from .routers import auth as auth_router
 from .routers import autonomous_agent as autonomous_agent_router
+from .routers import brain as brain_router
 from .routers import burnout, chat, cycles, help, kpis, notification_settings, notifications, objectives, oauth, reports, settings as settings_router
 from .routers import calendar as calendar_router
 from .routers import share_links, sources, work_items
@@ -41,6 +42,92 @@ def migrate():
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_cycle_logs_user_id ON agent_cycle_logs(user_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_cycle_logs_cycle_key ON agent_cycle_logs(cycle_key)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_cycle_logs_event_fingerprint ON agent_cycle_logs(event_fingerprint)"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_user_settings (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER UNIQUE,
+                daily_check_enabled BOOLEAN DEFAULT 1,
+                daily_check_time VARCHAR(5) DEFAULT '08:00',
+                weekly_digest_enabled BOOLEAN DEFAULT 1,
+                weekly_digest_weekday INTEGER DEFAULT 0,
+                monthly_report_enabled BOOLEAN DEFAULT 1,
+                monthly_report_day INTEGER DEFAULT 1,
+                retention_days INTEGER DEFAULT 90,
+                feedback_learning_enabled BOOLEAN DEFAULT 1,
+                conflict_warning_score FLOAT DEFAULT 0.7,
+                updated_at DATETIME,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_user_settings_user_id ON agent_user_settings(user_id)"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_feedback_events (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER,
+                event_type VARCHAR(40),
+                target_type VARCHAR(40) DEFAULT '',
+                target_id VARCHAR(80) DEFAULT '',
+                target_name VARCHAR(300) DEFAULT '',
+                action VARCHAR(30),
+                signal FLOAT DEFAULT 0,
+                source VARCHAR(40) DEFAULT '',
+                reason VARCHAR(500) DEFAULT '',
+                confidence FLOAT,
+                meta JSON,
+                created_at DATETIME,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_feedback_events_user_id ON agent_feedback_events(user_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_feedback_events_event_type ON agent_feedback_events(event_type)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_feedback_events_action ON agent_feedback_events(action)"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS agent_insight_snapshots (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER,
+                insight_type VARCHAR(40),
+                title VARCHAR(300) DEFAULT '',
+                content TEXT DEFAULT '',
+                data_signature VARCHAR(80) DEFAULT '',
+                source VARCHAR(40) DEFAULT '',
+                status VARCHAR(30) DEFAULT 'active',
+                confidence FLOAT,
+                kpi_id INTEGER,
+                meta JSON,
+                created_at DATETIME,
+                updated_at DATETIME,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_insight_snapshots_user_id ON agent_insight_snapshots(user_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_insight_snapshots_insight_type ON agent_insight_snapshots(insight_type)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_insight_snapshots_data_signature ON agent_insight_snapshots(data_signature)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_insight_snapshots_kpi_id ON agent_insight_snapshots(kpi_id)"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS kpi_period_metrics (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER,
+                kpi_id INTEGER NOT NULL,
+                period_type VARCHAR(20) NOT NULL,
+                period_key VARCHAR(20) NOT NULL,
+                period_start DATE NOT NULL,
+                period_end DATE NOT NULL,
+                target_value FLOAT DEFAULT 100,
+                actual_value FLOAT DEFAULT 0,
+                attainment_pct FLOAT DEFAULT 0,
+                source_type VARCHAR(20) DEFAULT 'manual',
+                source_ref VARCHAR(500) DEFAULT '',
+                confirmed BOOLEAN DEFAULT 1,
+                created_at DATETIME,
+                updated_at DATETIME,
+                FOREIGN KEY(user_id) REFERENCES users(id),
+                FOREIGN KEY(kpi_id) REFERENCES kpis(id),
+                CONSTRAINT uq_kpi_period_metric UNIQUE (kpi_id, period_key)
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_kpi_period_metrics_user_id ON kpi_period_metrics(user_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_kpi_period_metrics_kpi_id ON kpi_period_metrics(kpi_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_kpi_period_metrics_period_key ON kpi_period_metrics(period_key)"))
 
         # KPI Cycles: tao default cycles cho objectives chua duoc gan cycle_id
         # (chay cho ca DB moi lan DB cu, su dung obj_cols de phat hien DB cu chua co cycle_id)
@@ -87,6 +174,19 @@ def migrate():
             conn.execute(text("ALTER TABLE kpis ADD COLUMN current_value FLOAT DEFAULT 0"))
             if "progress" in kpi_cols:  # KPI cu: thuc dat = % tien do cu (target=100)
                 conn.execute(text("UPDATE kpis SET current_value = progress"))
+        kpi_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(kpis)"))]
+        kpi_extra_cols = {
+            "cadence": "ALTER TABLE kpis ADD COLUMN cadence VARCHAR(20) DEFAULT 'monthly'",
+            "data_source_mode": "ALTER TABLE kpis ADD COLUMN data_source_mode VARCHAR(20) DEFAULT 'manual'",
+            "target_mode": "ALTER TABLE kpis ADD COLUMN target_mode VARCHAR(20) DEFAULT 'same'",
+            "warning_threshold": "ALTER TABLE kpis ADD COLUMN warning_threshold FLOAT DEFAULT 80",
+            "critical_threshold": "ALTER TABLE kpis ADD COLUMN critical_threshold FLOAT DEFAULT 70",
+            "trend_drop_periods": "ALTER TABLE kpis ADD COLUMN trend_drop_periods INTEGER DEFAULT 3",
+            "alert_muted_until": "ALTER TABLE kpis ADD COLUMN alert_muted_until DATE",
+        }
+        for col, sql in kpi_extra_cols.items():
+            if kpi_cols and col not in kpi_cols:
+                conn.execute(text(sql))
 
         # Phien chat: tin nhan cu (truoc khi co chat_sessions) gom vao 1 phien "Lich su truoc day"
         msg_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(chat_messages)"))]
@@ -160,6 +260,13 @@ def migrate():
             conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(100) DEFAULT ''"))
             # User cu: da dung qua -> danh dau hoan thanh onboarding
             conn.execute(text("UPDATE users SET onboarding_completed = 1"))
+        user_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(users)"))]
+        if user_cols and "department" not in user_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN department VARCHAR(100) DEFAULT ''"))
+        if user_cols and "employee_code" not in user_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN employee_code VARCHAR(100) DEFAULT ''"))
+        if user_cols and "preferred_language" not in user_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN preferred_language VARCHAR(10) DEFAULT 'vi'"))
 
         # D3 Cycle Lock: them cac cot metadata
         cycle_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(kpi_cycles)"))]
@@ -169,11 +276,17 @@ def migrate():
             conn.execute(text("ALTER TABLE kpi_cycles ADD COLUMN lock_reason VARCHAR(500) DEFAULT ''"))
             conn.execute(text("ALTER TABLE kpi_cycles ADD COLUMN cloned_from_cycle_id INTEGER"))
 
+        notif_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(user_notification_settings)"))]
+        if notif_cols and "in_app_enabled" not in notif_cols:
+            conn.execute(text("ALTER TABLE user_notification_settings ADD COLUMN in_app_enabled BOOLEAN DEFAULT 1"))
+        if notif_cols and "email_enabled" not in notif_cols:
+            conn.execute(text("ALTER TABLE user_notification_settings ADD COLUMN email_enabled BOOLEAN DEFAULT 1"))
+
         conn.commit()
 
 
 def cleanup_draft_data():
-    """Remove old draft/proposal payloads; only confirmed user tasks remain persisted."""
+    """Remove old chat proposal payloads; Work Journal drafts are persisted for review."""
     draft_meta_keys = {
         "proposed_items",
         "proposed_objectives",
@@ -183,14 +296,6 @@ def cleanup_draft_data():
     }
     db = SessionLocal()
     try:
-        draft_items = list(
-            db.scalars(
-                select(models.WorkItem).where(models.WorkItem.confirmed == False)  # noqa: E712
-            )
-        )
-        for item in draft_items:
-            db.delete(item)
-
         messages = list(
             db.scalars(
                 select(models.ChatMessage).where(models.ChatMessage.meta.isnot(None))
@@ -511,6 +616,7 @@ app.include_router(reports.router)
 app.include_router(settings_router.router)
 app.include_router(oauth.router)
 app.include_router(autonomous_agent_router.router)
+app.include_router(brain_router.router)
 app.include_router(notifications.router)
 app.include_router(burnout.router)
 app.include_router(notification_settings.router)
