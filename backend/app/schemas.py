@@ -482,6 +482,11 @@ class WorkItemOut(BaseModel):
     def _alternative_kpis_list(cls, v):
         return v or []
 
+    @field_validator("alternative_kpis", mode="before")
+    @classmethod
+    def _coerce_alt_kpis(cls, v):
+        return v if v is not None else []
+
 
 class ConfirmItemsRequest(BaseModel):
     items: list[ProposedWorkItem]

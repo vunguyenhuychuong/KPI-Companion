@@ -1,11 +1,15 @@
 """Khoi tao LLM Qwen qua endpoint OpenAI-compatible (base_url + api_key)."""
 import json
 import re
+import threading
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from ..config import settings
+
+# Giới hạn số LLM call chạy đồng thời — tránh quá tải VNGCloud vLLM endpoint.
+_LLM_SEMAPHORE = threading.Semaphore(5)
 
 
 def get_llm(temperature: float | None = None, max_tokens: int | None = None) -> ChatOpenAI:
@@ -71,7 +75,8 @@ def call_json(
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
     last_err: Exception | None = None
     for _ in range(2):
-        result = llm.invoke(messages)
+        with _LLM_SEMAPHORE:
+            result = llm.invoke(messages)
         try:
             return extract_json(result.content)
         except ValueError as e:
@@ -99,5 +104,6 @@ def call_text(
         cls = HumanMessage if h.get("role") == "user" else AIMessage
         messages.append(cls(content=h.get("content", "")))
     messages.append(HumanMessage(content=user_prompt))
-    result = llm.invoke(messages)
+    with _LLM_SEMAPHORE:
+        result = llm.invoke(messages)
     return strip_think(result.content)

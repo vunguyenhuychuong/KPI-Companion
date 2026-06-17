@@ -1,7 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 from sqlalchemy import select
@@ -18,6 +18,7 @@ from ..auth import (
 )
 from ..config import settings
 from ..database import get_db
+from ..rate_limit import limiter
 from ..services import email_service
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -53,7 +54,8 @@ def _token_response(user: models.User) -> schemas.Token:
 
 
 @router.post("/register", response_model=schemas.Token)
-def register(payload: schemas.UserCreate, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def register(request: Request, payload: schemas.UserCreate, db: Session = Depends(get_db)):
     email = payload.email.strip().lower()
     if db.scalars(select(models.User).where(models.User.email == email)).first():
         raise HTTPException(400, "Email đã được đăng ký")
@@ -121,7 +123,8 @@ def reset_password(payload: schemas.PasswordResetRequest, db: Session = Depends(
 
 
 @router.post("/login", response_model=schemas.Token)
-def login(payload: schemas.UserLogin, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def login(request: Request, payload: schemas.UserLogin, db: Session = Depends(get_db)):
     email = payload.email.strip().lower()
     user = db.scalars(select(models.User).where(models.User.email == email)).first()
     if not user or not user.hashed_password or not verify_password(payload.password, user.hashed_password):
