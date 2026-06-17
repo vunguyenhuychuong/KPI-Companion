@@ -4,12 +4,16 @@ from datetime import date
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import func, select, text
 
 from . import models
 from .auth import hash_password
 from .config import settings
 from .database import Base, SessionLocal, engine
+from .rate_limit import limiter
 from .routers import auth as auth_router
 from .routers import autonomous_agent as autonomous_agent_router
 from .routers import burnout, chat, cycles, help, kpis, notification_settings, notifications, objectives, oauth, reports, settings as settings_router
@@ -480,7 +484,20 @@ async def lifespan(app: FastAPI):
         await autonomous_agent_service.runner.stop()
 
 
-app = FastAPI(title="KPI Companion API", version="0.1.0", lifespan=lifespan)
+_docs_url = "/docs" if settings.swagger_enabled else None
+_redoc_url = "/redoc" if settings.swagger_enabled else None
+_openapi_url = "/openapi.json" if settings.swagger_enabled else None
+app = FastAPI(
+    title="KPI Companion API",
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url=_docs_url,
+    redoc_url=_redoc_url,
+    openapi_url=_openapi_url,
+)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 app.mount("/uploads", StaticFiles(directory=settings.uploads_dir), name="uploads")
 
 origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
