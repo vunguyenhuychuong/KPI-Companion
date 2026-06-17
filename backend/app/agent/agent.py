@@ -1097,11 +1097,7 @@ def handle_message(
     db: Session, text: str, user_id: int = 1, history: list[dict] | None = None, lang: str = "vi"
 ) -> schemas.ChatResponse:
     """Diem vao chinh cua Agent cho moi tin nhan chat. history giup hieu cau hoi noi tiep."""
-<<<<<<< HEAD
     visible_text = _strip_attachment_context(text).strip() or text.strip()
-=======
-    visible_text = _strip_attachment_context(text)
->>>>>>> fd33534a287afad0a1d2fd6ff3ebef5eadc6600b
     kpis = kpi_service.get_active_kpis(db, user_id)
     intent = classify_intent(text, history)
     if intent == "sync_request" and _has_attachment_context(text):

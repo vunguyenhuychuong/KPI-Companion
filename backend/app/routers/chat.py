@@ -11,12 +11,9 @@ from ..agent import memory as agent_memory
 from ..auth import CurrentUser
 from ..config import settings
 from ..database import get_db
-<<<<<<< HEAD
 from ..services import attachment_service, brain_layer
-=======
 from ..rate_limit import _user_or_ip, limiter
 from ..services import attachment_service
->>>>>>> fd33534a287afad0a1d2fd6ff3ebef5eadc6600b
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
