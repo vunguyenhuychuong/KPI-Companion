@@ -39,6 +39,9 @@ class User(Base):
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False)
     onboarding_skipped_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     role: Mapped[str] = mapped_column(String(100), default="")
+    department: Mapped[str] = mapped_column(String(100), default="")
+    employee_code: Mapped[str] = mapped_column(String(100), default="")
+    preferred_language: Mapped[str] = mapped_column(String(10), default="vi")
 
     kpis: Mapped[list["KPI"]] = relationship(back_populates="user")
 
@@ -107,6 +110,13 @@ class KPI(Base):
     progress_legacy: Mapped[float] = mapped_column("progress", Float, default=0.0)
     # Phan vung ngu canh: "Work" (cong viec) | "Personal" (ca nhan) — co lap hien thi/loc
     category: Mapped[str] = mapped_column(String(20), default="Work")
+    cadence: Mapped[str] = mapped_column(String(20), default="monthly")
+    data_source_mode: Mapped[str] = mapped_column(String(20), default="manual")
+    target_mode: Mapped[str] = mapped_column(String(20), default="same")
+    warning_threshold: Mapped[float] = mapped_column(Float, default=80.0)
+    critical_threshold: Mapped[float] = mapped_column(Float, default=70.0)
+    trend_drop_periods: Mapped[int] = mapped_column(Integer, default=3)
+    alert_muted_until: Mapped[date | None] = mapped_column(Date, nullable=True)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -135,6 +145,9 @@ class KPI(Base):
     work_items: Mapped[list["WorkItem"]] = relationship(back_populates="kpi")
     change_logs: Mapped[list["KPIChangeLog"]] = relationship(
         back_populates="kpi", cascade="all, delete-orphan"
+    )
+    period_metrics: Mapped[list["KPIPeriodMetric"]] = relationship(
+        back_populates="kpi", cascade="all, delete-orphan", order_by="KPIPeriodMetric.period_start"
     )
 
 
@@ -181,6 +194,31 @@ class WorkItem(Base):
     @property
     def kpi_name(self) -> str | None:
         return self.kpi.name if self.kpi else None
+
+
+class KPIPeriodMetric(Base):
+    """Metric ledger theo ky: giu target/actual snapshot de tinh trend dung."""
+
+    __tablename__ = "kpi_period_metrics"
+    __table_args__ = (UniqueConstraint("kpi_id", "period_key", name="uq_kpi_period_metric"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), default=1, index=True)
+    kpi_id: Mapped[int] = mapped_column(ForeignKey("kpis.id"), index=True)
+    period_type: Mapped[str] = mapped_column(String(20))
+    period_key: Mapped[str] = mapped_column(String(20), index=True)
+    period_start: Mapped[date] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date)
+    target_value: Mapped[float] = mapped_column(Float, default=100.0)
+    actual_value: Mapped[float] = mapped_column(Float, default=0.0)
+    attainment_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    source_type: Mapped[str] = mapped_column(String(20), default="manual")
+    source_ref: Mapped[str] = mapped_column(String(500), default="")
+    confirmed: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    kpi: Mapped["KPI"] = relationship(back_populates="period_metrics")
 
 
 class KPIChangeLog(Base):
@@ -315,6 +353,65 @@ class AgentCycleLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class AgentUserSettings(Base):
+    """Per-user Brain Layer controls for schedule, memory and feedback learning."""
+
+    __tablename__ = "agent_user_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    daily_check_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    daily_check_time: Mapped[str] = mapped_column(String(5), default="08:00")
+    weekly_digest_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    weekly_digest_weekday: Mapped[int] = mapped_column(Integer, default=0)
+    monthly_report_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    monthly_report_day: Mapped[int] = mapped_column(Integer, default=1)
+    retention_days: Mapped[int] = mapped_column(Integer, default=90)
+    feedback_learning_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    conflict_warning_score: Mapped[float] = mapped_column(Float, default=0.7)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class AgentFeedbackEvent(Base):
+    """Durable user feedback for proposals, alerts and insights."""
+
+    __tablename__ = "agent_feedback_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    event_type: Mapped[str] = mapped_column(String(40), index=True)
+    target_type: Mapped[str] = mapped_column(String(40), default="")
+    target_id: Mapped[str] = mapped_column(String(80), default="")
+    target_name: Mapped[str] = mapped_column(String(300), default="")
+    action: Mapped[str] = mapped_column(String(30), index=True)
+    signal: Mapped[float] = mapped_column(Float, default=0.0)
+    source: Mapped[str] = mapped_column(String(40), default="")
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AgentInsightSnapshot(Base):
+    """Saved AI insight snapshots for audit/history without changing KPI data."""
+
+    __tablename__ = "agent_insight_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    insight_type: Mapped[str] = mapped_column(String(40), index=True)
+    title: Mapped[str] = mapped_column(String(300), default="")
+    content: Mapped[str] = mapped_column(Text, default="")
+    data_signature: Mapped[str] = mapped_column(String(80), index=True, default="")
+    source: Mapped[str] = mapped_column(String(40), default="")
+    status: Mapped[str] = mapped_column(String(30), default="active")
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    kpi_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 # ---- D5: Share Report (read-only public link) ----
 
 class ShareLink(Base):
@@ -343,6 +440,8 @@ class UserNotificationSettings(Base):
     kpi_reminder_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     weekly_summary_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     sync_error_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    in_app_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    email_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     recipient_email: Mapped[str] = mapped_column(String(254), default="")  # override email, bo trong = dung account email
 
 
@@ -353,7 +452,7 @@ class NotificationLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    type: Mapped[str] = mapped_column(String(30))  # kpi_reminder | weekly_summary | sync_error
+    type: Mapped[str] = mapped_column(String(30))  # kpi_reminder | weekly_summary | sync_error | worklog_draft
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     status: Mapped[str] = mapped_column(String(20), default="sent")  # sent | failed
     error_msg: Mapped[str] = mapped_column(String(500), default="")

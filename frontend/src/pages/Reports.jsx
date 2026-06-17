@@ -3,7 +3,6 @@ import { marked } from 'marked'
 import Highcharts from 'highcharts'
 import { api } from '../api'
 import { useLang } from '../LangContext'
-import { useCycle } from '../CycleContext'
 import { prefs } from '../prefs'
 import { Modal, ConfirmModal } from '../components/Modal'
 import { useToast } from '../components/Toast'
@@ -127,7 +126,6 @@ function CycleCompareChart({ tr }) {
 
 export default function Reports() {
   const { tr } = useLang()
-  const { activeCycleId } = useCycle()
   const toast = useToast()
 
   const PERIODS = [
@@ -151,7 +149,6 @@ export default function Reports() {
   const [error, setError] = useState('')
 
   // Modal states
-  const [showExportConfirm, setShowExportConfirm] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   const [showSendModal, setShowSendModal] = useState(false)
   const [previewContent, setPreviewContent] = useState('')
@@ -228,18 +225,6 @@ export default function Reports() {
   const copy = () => {
     navigator.clipboard.writeText(viewing.content)
       .then(() => toast.success(tr('reports.copy_success')))
-  }
-
-  const doExport = () => {
-    setShowExportConfirm(true)
-  }
-
-  const confirmExport = async () => {
-    setShowExportConfirm(false)
-    setBusy(true)
-    try {
-      await api.exportEvaluation(activeCycleId)
-    } catch (e) { setError(e.message) } finally { setBusy(false) }
   }
 
   // Step 1: Open edit modal
@@ -324,9 +309,6 @@ export default function Reports() {
           <h1 className="page-title-with-icon"><UiIcon name="fileText" /> {cleanIconLabel(tr('reports.title'))}</h1>
           <p>{tr('reports.subtitle')}</p>
         </div>
-        <button className="btn" onClick={doExport} disabled={busy}>
-          <UiIcon name="download" />{cleanIconLabel(tr('reports.export'))}
-        </button>
       </header>
 
       <div className="card report-controls">
@@ -416,16 +398,19 @@ export default function Reports() {
           {viewing ? (
             <>
               <div className="report-view-head">
-                <span className="muted">{tr('reports.updated_at', { time: viewing.created_at?.slice(0, 16).replace('T', ' ') })}</span>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  {viewing.period_type === 'self_review' && (
-                    <button className="btn small" onClick={() => exportReport('pdf')}
-                      disabled={exportingFormat !== null}
-                      title={tr('reports.export_pdf_title')}>
-                      <UiIcon name="fileText" />{exportingFormat === 'pdf' ? '...' : tr('reports.export_pdf_btn')}
-                    </button>
-                  )}
-                  <button className="btn small primary" onClick={openEditModal}>
+                <div className="report-view-meta">
+                  <b>{viewing.period_label}</b>
+                  <span className="muted">{tr('reports.updated_at', { time: viewing.created_at?.slice(0, 16).replace('T', ' ') })}</span>
+                </div>
+                <div className="report-actions">
+                  <button className="btn small primary report-export-btn" onClick={() => exportReport('pdf')}
+                    disabled={exportingFormat !== null}
+                    title={tr('reports.export_pdf_title')}>
+                    <UiIcon name="download" />
+                    <span>{exportingFormat === 'pdf' ? tr('reports.exporting_pdf') : cleanIconLabel(tr('reports.export'))}</span>
+                    <span className="report-format-chip">PDF</span>
+                  </button>
+                  <button className="btn small" onClick={openEditModal}>
                     <UiIcon name="edit" />{cleanIconLabel(tr('reports.edit_send'))}
                   </button>
                   <button className="btn small" onClick={regenerate} disabled={busy}
@@ -444,21 +429,6 @@ export default function Reports() {
           )}
         </div>
       </div>
-
-      {/* Export confirmation modal */}
-      <Modal
-        open={showExportConfirm}
-        title={tr('reports.export_confirm')}
-        onClose={() => setShowExportConfirm(false)}
-        actions={
-          <>
-            <button className="btn" onClick={() => setShowExportConfirm(false)}>{tr('common.cancel')}</button>
-            <button className="btn primary" onClick={confirmExport}><UiIcon name="download" />{cleanIconLabel(tr('reports.export'))}</button>
-          </>
-        }
-      >
-        <p>{tr('reports.export_confirm_msg')}</p>
-      </Modal>
 
       {/* Step 1: Edit content */}
       <Modal

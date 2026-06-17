@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { marked } from 'marked'
 import { api } from '../api'
 import { useLang } from '../LangContext'
@@ -8,10 +9,15 @@ import { ConfirmModal } from '../components/Modal'
 import { UiIcon, cleanIconLabel } from '../components/UiIcon'
 
 const MAX_CHAT_ATTACHMENTS = 5
+const HIDDEN_CHAT_SESSION_TITLES = new Set(['Agent tự chủ'])
 const CHAT_ATTACHMENT_ACCEPT = [
     'image/png', 'image/jpeg', 'image/webp', 'image/gif',
     '.txt', '.md', '.csv', '.json', '.log', '.xlsx', '.xlsm', '.docx', '.pdf',
 ].join(',')
+
+function visibleChatSessions(list = []) {
+    return list.filter((session) => !HIDDEN_CHAT_SESSION_TITLES.has(session.title))
+}
 
 function formatBytes(size = 0) {
     if (!size) return '0 B'
@@ -192,6 +198,7 @@ function Thinking({ tr }) {
 
 export default function Chat() {
     const { tr, lang } = useLang()
+    const location = useLocation()
     const [deleteConfirm, setDeleteConfirm] = useState(null)
     const SUGGESTIONS = [
         tr('chat.sug_1'),
@@ -212,7 +219,7 @@ export default function Chat() {
     const fileRef = useRef(null)
     const abortRef = useRef(null)
 
-    const loadSessions = () => api.chatSessions().then(setSessions).catch(() => {})
+    const loadSessions = () => api.chatSessions().then((list) => setSessions(visibleChatSessions(list))).catch(() => {})
     useEffect(() => { loadSessions() }, [])
 
     const openSession = async (id) => {
@@ -243,11 +250,14 @@ export default function Chat() {
 
     useEffect(() => {
         api.chatSessions().then((list) => {
-            setSessions(list)
-            if (list.length > 0) openSession(list[0].id)
+            const visible = visibleChatSessions(list)
+            setSessions(visible)
+            const queryId = Number(new URLSearchParams(location.search).get('session_id') || 0)
+            const target = visible.find((s) => s.id === queryId) || visible[0]
+            if (target) openSession(target.id)
         }).catch(() => {})
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [])
+    }, [location.search])
 
     useEffect(() => {
         bottomRef.current?.scrollIntoView({ behavior: 'smooth' })

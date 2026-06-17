@@ -68,20 +68,20 @@ DANH SÁCH KPI CỦA NGƯỜI DÙNG:
 NHIỆM VỤ: Tách văn bản thành từng đầu việc riêng biệt. Với mỗi đầu việc, xác định:
 1. "title": tên đầu việc ngắn gọn (tiếng Việt)
 2. "detail": chi tiết bổ sung nếu có, không thì để ""
-3. "status": MỘT trong 5 giá trị:
-   - "da_lam": việc đã hoàn thành
-   - "dang_lam": việc đang xử lý, chưa xong
-   - "se_lam": việc dự kiến/kế hoạch sẽ làm
-   - "phat_sinh": việc NGOÀI kế hoạch KPI, đột xuất, hỗ trợ thêm
-   - "loai_bo": việc người dùng nói bỏ/hủy/không làm nữa
+3. "status": MỘT trong 5 giá trị nội bộ dưới đây. Phân loại theo tên trạng thái người dùng thấy trên UI:
+   - "da_lam" = Done / Hoàn thành: việc đã hoàn thành, có bằng chứng kết quả
+   - "dang_lam" = In Progress / Đang thực hiện: việc đang xử lý, chưa xong
+   - "se_lam" = Planned / Đã lên kế hoạch: việc đã lên lịch/kế hoạch, chưa bắt đầu hoặc chưa có kết quả
+   - "phat_sinh" = Newly Added / Phát sinh ngoài kế hoạch ban đầu: việc mới xuất hiện ngoài kế hoạch ban đầu, đột xuất, hỗ trợ thêm
+   - "loai_bo" = Removed / Hủy bỏ: việc người dùng nói bỏ/hủy/không làm nữa
 4. "kpi_id": id của KPI phù hợp nhất trong danh sách trên (số nguyên), hoặc null nếu không khớp KPI nào (thường là việc phát sinh)
 5. "value_delta": lượng CỘNG THÊM vào thực đạt của KPI, tính theo ĐƠN VỊ ĐO của KPI đó
    (xem cột "đơn vị đo" trong danh sách KPI). Quy tắc:
    - KPI đếm số lượng (báo cáo, khóa học, đợt audit...): hoàn thành 1 cái → value_delta = 1.
      "Hoàn thành báo cáo ITGC quý 2" với KPI đơn vị "báo cáo" → value_delta = 1.
    - KPI đơn vị "%": ước lượng % cộng thêm — việc lớn đã xong 10-30, đang làm 5-15.
-   - "se_lam", "loai_bo": 0. "dang_lam" với KPI đếm số lượng: 0 (chưa xong thì chưa đếm).
-   - "phat_sinh": 0, trừ khi gán được vào 1 KPI.
+   - Planned ("se_lam") và Removed ("loai_bo"): 0. In Progress ("dang_lam") với KPI đếm số lượng: 0 (chưa xong thì chưa đếm).
+   - Newly Added ("phat_sinh"): 0, trừ khi gán được vào 1 KPI và có kết quả đo được.
    Nếu người dùng nói rõ con số thì dùng đúng con số đó.
 5b. "value_set": CHỈ dùng khi người dùng nêu mức THỰC ĐẠT TÍCH LŨY hiện tại của cả KPI,
    theo đơn vị KPI. Ví dụ: "đã học xong 2 khóa" (KPI đơn vị khóa học) → value_set = 2;
@@ -94,10 +94,10 @@ NHIỆM VỤ: Tách văn bản thành từng đầu việc riêng biệt. Với 
 
 LƯU Ý:
 - Một câu có thể chứa NHIỀU đầu việc — tách hết.
-- Việc "hỗ trợ", "đột xuất", "ngoài kế hoạch" → "phat_sinh".
+- Việc "hỗ trợ", "đột xuất", "ngoài kế hoạch", "phát sinh mới", "newly added" → "phat_sinh".
 - Không bịa thêm việc không có trong văn bản.
 - Nếu một task có thể map vào nhiều KPI, KHÔNG chọn tùy tiện âm thầm: chọn KPI phù hợp nhất, hạ confidence xuống dưới 0.75, điền alternative_kpis và mapping_reason để người dùng quyết định trước khi lưu.
-- Nếu tin nhắn là lời ĐỒNG Ý ngắn ("đồng ý", "dạ lưu giúp tôi") → trích các đầu việc từ NGỮ CẢNH HỘI THOẠI TRƯỚC ĐÓ (phần trợ lý vừa đề xuất), thường là việc "se_lam".
+- Nếu tin nhắn là lời ĐỒNG Ý ngắn ("đồng ý", "dạ lưu giúp tôi") → trích các đầu việc từ NGỮ CẢNH HỘI THOẠI TRƯỚC ĐÓ (phần trợ lý vừa đề xuất), thường là việc Planned ("se_lam").
 
 Hôm nay là {today}.
 Chỉ trả lời JSON dạng: {{"items": [{{...}}, ...]}}"""
@@ -145,6 +145,7 @@ QUY TẮC:
 - Đây là bước rà soát THIẾT KẾ KPI theo năm. KHÔNG coi việc thiếu/chưa đủ 100% trọng số, KPI mới set up nhưng tiến độ 0%, hoặc chưa có work item là "xung đột"; các lỗi cấu trúc trọng số đã được kiểm tra bằng rule riêng.
 - Ưu tiên phát hiện trade-off chiến lược dài hạn giữa các KPI trong cùng chu kỳ, không biến panel thành cảnh báo vận hành hằng ngày.
 - "severity": "high" (gần như chắc chắn không thể đạt cả hai), "medium" (đánh đổi đáng kể, cần cân bằng chủ động), "low" (cần lưu ý).
+- "conflict_score": số 0..1 thể hiện độ mạnh của xung đột; >=0.7 là mức nên cảnh báo rõ trên UI.
 - ⚠️ GỌI TÊN KPI: trong "explanation" và "suggestion" LUÔN nhắc KPI bằng TÊN ĐẦY ĐỦ đặt trong ngoặc kép (vd: "Tăng số lượng bài viết blog"). TUYỆT ĐỐI KHÔNG viết "KPI [id]", "KPI số thứ tự", "KPI A/B" hay bất kỳ id/số thứ tự nào — người đọc KHÔNG biết id là gì.
 - "explanation": giải thích NGẮN GỌN, RÕ RÀNG cơ chế xung đột (vì sao đạt KPI này làm khó đạt KPI kia), bằng tiếng Việt, 2-3 câu.
 - "suggestion": gợi ý cân bằng CỤ THỂ, khả thi, NÊU ĐÍCH DANH tên KPI cần điều chỉnh và điều chỉnh thế nào: đặt ngưỡng sàn/trần (vd "giữ chi phí marketing ≤ X nhưng đo theo ROI thay vì cắt tuyệt đối"), tách pha theo quý, đổi chỉ tiêu sang chỉ số cân bằng (ratio/ROI/hiệu suất), hoặc điều chỉnh trọng số.
@@ -161,6 +162,7 @@ Chỉ trả lời JSON:
   {{"kpi_ids": [<id KPI hiện có liên quan>], "kpi_names": ["tên KPI 1", "tên KPI 2"],
     "type": "resource_tradeoff|speed_vs_quality|growth_vs_stability|time_overload|metric_overlap",
     "severity": "high|medium|low",
+    "conflict_score": 0.0,
     "explanation": "cơ chế xung đột...",
     "suggestion": "gợi ý cân bằng cụ thể..."}}
 ]}}"""
@@ -269,7 +271,7 @@ Khi trả lời:
 - Không bao giờ hiển thị id nội bộ như "KPI [id]", "KPI #id" hoặc "KPI id"; luôn dùng tên KPI trong ngoặc kép.
 - Nếu câu hỏi của người dùng chưa rõ ràng (thiếu thông tin cần thiết), HÃY HỎI LẠI người dùng thay vì đoán mò.
 - Nếu KPI chậm tiến độ (tiến độ thực < kỳ vọng), chủ động cảnh báo và gợi ý hành động.
-- Nếu được hỏi tổng kết tuần/tháng: cấu trúc theo "Đã làm / Đang làm / Kế hoạch tiếp theo / Việc phát sinh", đủ chi tiết để gửi thẳng cho quản lý.
+- Nếu được hỏi tổng kết tuần/tháng: cấu trúc theo "Hoàn thành / Đang thực hiện / Đã lên kế hoạch / Phát sinh ngoài kế hoạch", đủ chi tiết để gửi thẳng cho quản lý.
 - Trả lời ngắn gọn, có thể dùng markdown (danh sách, in đậm)."""
 
 CHITCHAT_SYSTEM = """Bạn là KPI Companion — AI Agent quản lý KPI cá nhân, nói tiếng Việt, thân thiện và ngắn gọn.
@@ -319,7 +321,7 @@ Cấu trúc bắt buộc (markdown):
 ### ✅ Đã hoàn thành
 ### 🔄 Đang thực hiện
 ### 📋 Kế hoạch tuần sau
-### ⚡ Việc phát sinh
+### ⚡ Phát sinh ngoài kế hoạch
 ### ⚠️ Cảnh báo tiến độ
 Mỗi mục gạch đầu dòng, kèm KPI liên quan trong ngoặc. Mục nào không có dữ liệu thì ghi "Không có"."""
 

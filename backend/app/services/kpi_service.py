@@ -9,6 +9,162 @@ from .. import models, schemas
 from ..agent import memory as agent_memory
 
 
+def normalize_cadence(cadence: str | None) -> str:
+    return cadence if cadence in schemas.KPI_CADENCES else "monthly"
+
+
+def period_window(day: date, cadence: str | None) -> tuple[str, str, date, date]:
+    period_type = normalize_cadence(cadence)
+    if period_type == "weekly":
+        iso = day.isocalendar()
+        start = day - timedelta(days=iso.weekday - 1)
+        end = start + timedelta(days=6)
+        return period_type, f"{iso.year}-W{iso.week:02d}", start, end
+    if period_type == "quarterly":
+        quarter = (day.month - 1) // 3 + 1
+        start_month = (quarter - 1) * 3 + 1
+        end_month = start_month + 2
+        start = date(day.year, start_month, 1)
+        end = date(day.year, end_month, calendar.monthrange(day.year, end_month)[1])
+        return period_type, f"{day.year}-Q{quarter}", start, end
+    start = date(day.year, day.month, 1)
+    end = date(day.year, day.month, calendar.monthrange(day.year, day.month)[1])
+    return "monthly", f"{day.year}-{day.month:02d}", start, end
+
+
+def period_window_from_key(period_type: str | None, period_key: str | None, fallback: date | None = None) -> tuple[str, str, date, date]:
+    fallback = fallback or date.today()
+    period_type = normalize_cadence(period_type)
+    key = (period_key or "").strip()
+    if not key:
+        return period_window(fallback, period_type)
+    try:
+        if period_type == "weekly":
+            year, week = key.split("-W", 1)
+            start = date.fromisocalendar(int(year), int(week), 1)
+            return period_type, f"{int(year)}-W{int(week):02d}", start, start + timedelta(days=6)
+        if period_type == "quarterly":
+            year, quarter = key.split("-Q", 1)
+            q = int(quarter)
+            start_month = (q - 1) * 3 + 1
+            end_month = start_month + 2
+            start = date(int(year), start_month, 1)
+            end = date(int(year), end_month, calendar.monthrange(int(year), end_month)[1])
+            return period_type, f"{int(year)}-Q{q}", start, end
+        year, month = key.split("-", 1)
+        start = date(int(year), int(month), 1)
+        end = date(int(year), int(month), calendar.monthrange(int(year), int(month))[1])
+        return "monthly", f"{int(year)}-{int(month):02d}", start, end
+    except Exception:
+        return period_window(fallback, period_type)
+
+
+def metric_source_from_work_source(source: str | None) -> str:
+    source = (source or "").strip().lower()
+    if source in {"gmail", "calendar", "sheets", "notion", "slack", "outlook"}:
+        return "api_sync"
+    if source in {"csv", "upload"}:
+        return "import"
+    if source in {"chat", "agent_loop"}:
+        return "agent_auto"
+    return "manual"
+
+
+def attainment_pct(actual_value: float, target_value: float) -> float:
+    if target_value <= 0:
+        return 0.0
+    return round(actual_value / target_value * 100, 1)
+
+
+def _period_metric(
+    db: Session,
+    kpi: models.KPI,
+    period_type: str,
+    period_key: str,
+    period_start: date,
+    period_end: date,
+) -> models.KPIPeriodMetric:
+    metric = db.scalars(
+        select(models.KPIPeriodMetric).where(
+            models.KPIPeriodMetric.kpi_id == kpi.id,
+            models.KPIPeriodMetric.period_key == period_key,
+        )
+    ).first()
+    if metric:
+        return metric
+    metric = models.KPIPeriodMetric(
+        user_id=kpi.user_id,
+        kpi_id=kpi.id,
+        period_type=period_type,
+        period_key=period_key,
+        period_start=period_start,
+        period_end=period_end,
+        target_value=kpi.target_value or 1.0,
+        actual_value=0.0,
+        attainment_pct=0.0,
+        source_type="manual",
+        confirmed=True,
+    )
+    db.add(metric)
+    return metric
+
+
+def record_period_delta(db: Session, kpi: models.KPI | None, work_item: models.WorkItem, delta: float | None = None) -> None:
+    if not kpi:
+        return
+    value = work_item.progress_delta if delta is None else delta
+    if not value:
+        return
+    ref_date = work_item.work_date or (work_item.created_at.date() if work_item.created_at else date.today())
+    period_type, period_key, start, end = period_window(ref_date, kpi.cadence)
+    metric = _period_metric(db, kpi, period_type, period_key, start, end)
+    metric.actual_value = max(0.0, round((metric.actual_value or 0.0) + value, 2))
+    if not metric.target_value:
+        metric.target_value = kpi.target_value or 1.0
+    metric.attainment_pct = attainment_pct(metric.actual_value, metric.target_value)
+    metric.source_type = metric_source_from_work_source(work_item.source)
+    if work_item.source_ref:
+        metric.source_ref = work_item.source_ref[:500]
+    metric.confirmed = True
+
+
+def list_period_metrics(db: Session, kpi: models.KPI) -> list[models.KPIPeriodMetric]:
+    return list(
+        db.scalars(
+            select(models.KPIPeriodMetric)
+            .where(models.KPIPeriodMetric.kpi_id == kpi.id)
+            .order_by(models.KPIPeriodMetric.period_start.desc())
+        )
+    )
+
+
+def upsert_period_metric(
+    db: Session,
+    kpi: models.KPI,
+    payload: schemas.KPIPeriodMetricUpsert,
+) -> models.KPIPeriodMetric:
+    period_type, period_key, start, end = period_window_from_key(
+        payload.period_type or kpi.cadence,
+        payload.period_key,
+    )
+    metric = _period_metric(db, kpi, period_type, period_key, start, end)
+    metric.period_type = period_type
+    metric.period_key = period_key
+    metric.period_start = start
+    metric.period_end = end
+    metric.target_value = payload.target_value
+    metric.actual_value = payload.actual_value
+    metric.attainment_pct = attainment_pct(metric.actual_value, metric.target_value)
+    # This endpoint is manual user input. Imported/API/agent sources are assigned by
+    # record_period_delta so users cannot manually rewrite provenance.
+    metric.source_type = "manual"
+    metric.source_ref = ""
+    metric.confirmed = payload.confirmed
+    db.commit()
+    db.refresh(metric)
+    return metric
+
+
 def expected_progress(kpi: models.KPI, today: date | None = None) -> float:
     """% tien do ky vong.
 
@@ -57,11 +213,18 @@ def expected_progress(kpi: models.KPI, today: date | None = None) -> float:
 def health_of(kpi: models.KPI, today: date | None = None) -> tuple[str, float]:
     exp = expected_progress(kpi, today)
     gap = round(kpi.progress - exp, 1)
-    if gap >= -5:
+    warning = float(getattr(kpi, "warning_threshold", 80.0) or 80.0)
+    critical = float(getattr(kpi, "critical_threshold", 70.0) or 70.0)
+    if critical > warning:
+        critical = warning
+    if exp <= 0:
         return "green", gap
-    if gap >= -15:
+    expected_attainment = kpi.progress / exp * 100
+    if expected_attainment < critical:
+        return "red", gap
+    if expected_attainment < warning:
         return "yellow", gap
-    return "red", gap
+    return "green", gap
 
 
 def get_active_kpis(
@@ -146,6 +309,267 @@ def overall_progress(
         kpis = get_active_kpis(db, user_id, cycle_id=cycle_id, category=category)
         return _group_progress(kpis, category=category) if kpis else 0.0
     return round(total / denom, 1)
+
+
+def _score_tone(score: float) -> str:
+    if score < 70:
+        return "red"
+    if score < 90:
+        return "yellow"
+    return "green"
+
+
+def _dashboard_period_label(period_type: str, period_key: str, period_start: date) -> str:
+    if period_type == "weekly":
+        return period_key.replace("-", " ")
+    if period_type == "quarterly":
+        return period_key.replace("-", " ")
+    return period_start.strftime("%b")
+
+
+def _dashboard_fallback_periods(
+    current_score: float,
+    limit: int = 6,
+) -> list[schemas.DashboardPerformancePoint]:
+    today = date.today()
+    base = max(0.0, current_score - 18.0)
+    out = []
+    prev_score: float | None = None
+    for i in range(limit - 1, -1, -1):
+        month = today.month - i
+        year = today.year
+        while month <= 0:
+            month += 12
+            year -= 1
+        start = date(year, month, 1)
+        progress = 0 if limit <= 1 else (limit - 1 - i) / (limit - 1)
+        score = round(max(0.0, min(100.0, base + (current_score - base) * progress)), 1)
+        delta = None if prev_score is None else round(score - prev_score, 1)
+        out.append(
+            schemas.DashboardPerformancePoint(
+                label=start.strftime("%b"),
+                period_key=f"{year}-{month:02d}",
+                actual=score,
+                target=100.0,
+                attainment_pct=score,
+                weighted_score=score,
+                delta_pct=delta,
+                severity=_score_tone(score),
+                is_estimated=True,
+            )
+        )
+        prev_score = score
+    return out
+
+
+def _dashboard_performance_periods(
+    db: Session,
+    kpis: list[models.KPI],
+    current_score: float,
+    limit: int = 6,
+) -> list[schemas.DashboardPerformancePoint]:
+    if not kpis:
+        return []
+    ids = [k.id for k in kpis]
+    weight_by_kpi = {k.id: (k.weight if k.weight > 0 else 1.0) for k in kpis}
+    rows = list(
+        db.scalars(
+            select(models.KPIPeriodMetric)
+            .where(
+                models.KPIPeriodMetric.kpi_id.in_(ids),
+                models.KPIPeriodMetric.confirmed == True,  # noqa: E712
+            )
+            .order_by(models.KPIPeriodMetric.period_start.asc())
+        )
+    )
+
+    if rows:
+        grouped: dict[str, list[models.KPIPeriodMetric]] = {}
+        meta: dict[str, tuple[str, str, date]] = {}
+        for m in rows:
+            key = f"{m.period_type}:{m.period_key}"
+            grouped.setdefault(key, []).append(m)
+            cur = meta.get(key)
+            if cur is None or m.period_start < cur[2]:
+                meta[key] = (m.period_type, m.period_key, m.period_start)
+
+        period_keys = sorted(grouped, key=lambda key: meta[key][2])[-limit:]
+        if len(period_keys) < 2:
+            return _dashboard_fallback_periods(current_score, limit)
+        out: list[schemas.DashboardPerformancePoint] = []
+        prev_score: float | None = None
+        for key in period_keys:
+            items = grouped[key]
+            denom = sum(weight_by_kpi.get(m.kpi_id, 1.0) for m in items) or len(items) or 1.0
+            score = round(
+                sum((m.attainment_pct or 0.0) * weight_by_kpi.get(m.kpi_id, 1.0) for m in items) / denom,
+                1,
+            )
+            period_type, period_key, start = meta[key]
+            delta = None if prev_score is None else round(score - prev_score, 1)
+            out.append(
+                schemas.DashboardPerformancePoint(
+                    label=_dashboard_period_label(period_type, period_key, start),
+                    period_key=period_key,
+                    actual=score,
+                    target=100.0,
+                    attainment_pct=score,
+                    weighted_score=score,
+                    delta_pct=delta,
+                    severity=_score_tone(score),
+                )
+            )
+            prev_score = score
+        return out
+
+    # Honest fallback for first-time users without enough period ledger yet.
+    return _dashboard_fallback_periods(current_score, limit)
+
+
+def _dashboard_output_metrics(
+    statuses: list[schemas.KPIStatus],
+    current_score: float,
+    periods: list[schemas.DashboardPerformancePoint],
+) -> list[schemas.DashboardMetricCard]:
+    total = len(statuses)
+    on_track = len([s for s in statuses if s.health == "green"])
+    target_hits = len([s for s in statuses if s.kpi.progress >= 100])
+    at_risk = len([s for s in statuses if s.health in {"yellow", "red"}])
+    prev = periods[-2].weighted_score if len(periods) >= 2 else None
+    delta = None if prev is None else round(current_score - prev, 1)
+    on_track_pct = round(on_track / total * 100, 1) if total else 0.0
+    target_achievement = round(target_hits / total * 100, 1) if total else 0.0
+    at_risk_pct = round(at_risk / total * 100, 1) if total else 0.0
+    return [
+        schemas.DashboardMetricCard(
+            key="overall_score",
+            value=current_score,
+            value_text=f"{current_score:g}%",
+            unit="%",
+            delta_pct=delta,
+            tone=_score_tone(current_score),
+            detail="weighted_attainment",
+            action="reports",
+        ),
+        schemas.DashboardMetricCard(
+            key="on_track",
+            value=on_track_pct,
+            value_text=f"{on_track}/{total}",
+            unit="kpis",
+            delta_pct=None,
+            tone="green" if on_track_pct >= 70 else "yellow" if on_track_pct >= 45 else "red",
+            detail="on_track_count",
+            action="filter_on_track",
+        ),
+        schemas.DashboardMetricCard(
+            key="target_achievement",
+            value=target_achievement,
+            value_text=f"{target_achievement:g}%",
+            unit="%",
+            delta_pct=None,
+            tone=_score_tone(target_achievement),
+            detail="target_hits",
+            action="kpis",
+        ),
+        schemas.DashboardMetricCard(
+            key="at_risk",
+            value=at_risk_pct,
+            value_text=f"{at_risk}",
+            unit="kpis",
+            delta_pct=None,
+            tone="red" if at_risk else "green",
+            detail="at_risk_count",
+            action="open_risks",
+        ),
+    ]
+
+
+def _dashboard_category_progress(
+    objectives: list[schemas.ObjectiveOut],
+    statuses: list[schemas.KPIStatus],
+) -> list[schemas.DashboardCategoryPoint]:
+    rows: list[schemas.DashboardCategoryPoint] = []
+    for o in objectives:
+        kids = [s for s in statuses if s.kpi.objective_id == o.id]
+        risk_count = len([s for s in kids if s.health in {"yellow", "red"}])
+        rows.append(
+            schemas.DashboardCategoryPoint(
+                key=f"objective:{o.id}",
+                name=o.name,
+                attainment_pct=round(o.progress or 0.0, 1),
+                kpi_count=len(kids),
+                at_risk_count=risk_count,
+                tone=_score_tone(o.progress or 0.0),
+                objective_id=o.id,
+            )
+        )
+    if not rows and statuses:
+        avg = round(sum(s.kpi.progress_capped for s in statuses) / len(statuses), 1)
+        rows.append(
+            schemas.DashboardCategoryPoint(
+                key="all",
+                name="All KPIs",
+                attainment_pct=avg,
+                kpi_count=len(statuses),
+                at_risk_count=len([s for s in statuses if s.health in {"yellow", "red"}]),
+                tone=_score_tone(avg),
+                objective_id=None,
+            )
+        )
+    return sorted(rows, key=lambda r: (r.attainment_pct, -r.at_risk_count))[:6]
+
+
+def _dashboard_at_risk_items(
+    db: Session,
+    statuses: list[schemas.KPIStatus],
+) -> list[schemas.DashboardRiskItem]:
+    risk_statuses = [
+        s for s in statuses
+        if s.health in {"yellow", "red"} or s.gap < 0
+    ]
+    risk_statuses.sort(
+        key=lambda s: (
+            {"red": 0, "yellow": 1, "green": 2}.get(s.health, 3),
+            -abs(s.gap) * max(1.0, s.kpi.weight or 0.0),
+        )
+    )
+    ids = [s.kpi.id for s in risk_statuses]
+    metric_by_kpi: dict[int, list[models.KPIPeriodMetric]] = {}
+    if ids:
+        for m in db.scalars(
+            select(models.KPIPeriodMetric)
+            .where(
+                models.KPIPeriodMetric.kpi_id.in_(ids),
+                models.KPIPeriodMetric.confirmed == True,  # noqa: E712
+            )
+            .order_by(models.KPIPeriodMetric.period_start.asc())
+        ):
+            metric_by_kpi.setdefault(m.kpi_id, []).append(m)
+
+    out: list[schemas.DashboardRiskItem] = []
+    for s in risk_statuses[:8]:
+        history = metric_by_kpi.get(s.kpi.id, [])
+        if len(history) >= 2:
+            velocity = round((history[-1].attainment_pct or 0.0) - (history[-2].attainment_pct or 0.0), 1)
+        else:
+            velocity = round(s.kpi.progress - s.expected_progress, 1)
+        projected = round(max(0.0, min(200.0, s.kpi.progress + velocity)), 1)
+        out.append(
+            schemas.DashboardRiskItem(
+                kpi_id=s.kpi.id,
+                name=s.kpi.name,
+                objective_name=s.kpi.objective_name or "",
+                attainment_pct=round(s.kpi.progress, 1),
+                expected_progress=round(s.expected_progress, 1),
+                gap=round(s.gap, 1),
+                velocity_pct=velocity,
+                projected_progress=projected,
+                conflict_score=None,
+                deadline=s.kpi.deadline,
+                severity=s.health,
+            )
+        )
+    return out
 
 
 def build_dashboard(
@@ -244,20 +668,30 @@ def build_dashboard(
         weekly.append({"label": wk_start.strftime("%d/%m"), "count": count})
 
     statuses.sort(key=lambda s: {"red": 0, "yellow": 1, "green": 2}[s.health])
+    overall = overall_progress(db, user_id, cycle_id=cycle_id, category=category)
+    objectives = objectives_with_progress(db, user_id, cycle_id=cycle_id, category=category)
+    performance_periods = _dashboard_performance_periods(db, kpis, overall)
+    output_metrics = _dashboard_output_metrics(statuses, overall, performance_periods)
+    category_progress = _dashboard_category_progress(objectives, statuses)
+    at_risk_items = _dashboard_at_risk_items(db, statuses)
     return schemas.DashboardOut(
         year=(
             cycle.start_date.year
             if cycle and cycle.start_date
             else (kpis[0].year if kpis else today.year)
         ),
-        overall_progress=overall_progress(db, user_id, cycle_id=cycle_id, category=category),
-        objectives=objectives_with_progress(db, user_id, cycle_id=cycle_id, category=category),
+        overall_progress=overall,
+        objectives=objectives,
         kpi_statuses=statuses,
         warnings=warnings,
         counts_by_status=counts,
         recent_items=[schemas.WorkItemOut.model_validate(w) for w in recent],
         todo_items=[schemas.WorkItemOut.model_validate(w) for w in todos],
         weekly_activity=weekly,
+        output_metrics=output_metrics,
+        performance_periods=performance_periods,
+        category_progress=category_progress,
+        at_risk_items=at_risk_items,
     )
 
 
@@ -366,47 +800,147 @@ def forecast_kpi(
     )
 
 
+def _valid_user_kpi(db: Session, kpi_id: int | None, user_id: int) -> models.KPI | None:
+    if not kpi_id:
+        return None
+    candidate = db.get(models.KPI, kpi_id)
+    if candidate and candidate.user_id == user_id and not candidate.archived:
+        return candidate
+    return None
+
+
+def _alternative_kpis_payload(item: schemas.ProposedWorkItem) -> list[dict] | None:
+    if not item.alternative_kpis:
+        return None
+    return [a.model_dump() for a in item.alternative_kpis]
+
+
+def _status_or_default(status: str | None) -> str:
+    return status if status in schemas.WORK_STATUSES else "da_lam"
+
+
+def _apply_progress_from_work_item(db: Session, work_item: models.WorkItem, kpi: models.KPI | None):
+    if not kpi or not work_item.progress_delta:
+        return
+    old_value = kpi.current_value
+    new_value = max(0.0, round(kpi.current_value + work_item.progress_delta, 2))
+    kpi.current_value = new_value
+    db.add(
+        models.KPIChangeLog(
+            kpi_id=kpi.id,
+            field="current_value",
+            old_value=str(old_value),
+            new_value=str(new_value),
+            reason=f'Ghi nhận đầu việc "{work_item.title}"',
+        )
+    )
+    record_period_delta(db, kpi, work_item)
+
+
+def _work_item_from_proposed(
+    db: Session,
+    item: schemas.ProposedWorkItem,
+    user_id: int,
+    confirmed: bool,
+) -> models.WorkItem:
+    kpi = _valid_user_kpi(db, item.kpi_id, user_id)
+    return models.WorkItem(
+        user_id=user_id,
+        kpi_id=kpi.id if kpi else None,
+        title=item.title,
+        detail=item.detail,
+        status=_status_or_default(item.status),
+        progress_delta=item.value_delta,
+        source=item.source,
+        source_ref=item.source_ref,
+        work_date=item.work_date,
+        mapping_reason=item.mapping_reason or "",
+        confidence=item.confidence,
+        alternative_kpis=_alternative_kpis_payload(item),
+        confirmed=confirmed,
+    )
+
+
+def create_draft_items(
+    db: Session,
+    items: list[schemas.ProposedWorkItem],
+    user_id: int = 1,
+    commit: bool = True,
+) -> list[models.WorkItem]:
+    """Luu nhap Work Journal tu agent/connector, chua cong tien do KPI."""
+    saved: list[models.WorkItem] = []
+    for item in items:
+        wi = _work_item_from_proposed(db, item, user_id, confirmed=False)
+        db.add(wi)
+        saved.append(wi)
+    if commit:
+        db.commit()
+        for wi in saved:
+            db.refresh(wi)
+    else:
+        db.flush()
+    return saved
+
+
+def update_draft_item_from_proposed(
+    db: Session,
+    work_item: models.WorkItem,
+    item: schemas.ProposedWorkItem,
+    user_id: int = 1,
+    commit: bool = True,
+) -> models.WorkItem:
+    """Cap nhat nhap truoc khi nguoi dung xac nhan."""
+    kpi = _valid_user_kpi(db, item.kpi_id, user_id)
+    work_item.kpi_id = kpi.id if kpi else None
+    work_item.title = item.title
+    work_item.detail = item.detail
+    work_item.status = _status_or_default(item.status)
+    work_item.progress_delta = item.value_delta
+    work_item.source = item.source
+    work_item.source_ref = item.source_ref
+    work_item.work_date = item.work_date
+    work_item.mapping_reason = item.mapping_reason or ""
+    work_item.confidence = item.confidence
+    work_item.alternative_kpis = _alternative_kpis_payload(item)
+    if commit:
+        db.commit()
+        db.refresh(work_item)
+    else:
+        db.flush()
+    return work_item
+
+
+def confirm_draft_item(
+    db: Session,
+    work_item: models.WorkItem,
+    user_id: int = 1,
+    commit: bool = True,
+) -> models.WorkItem:
+    """Chuyen nhap Journal thanh bang chung chinh thuc va cong tien do KPI."""
+    kpi = _valid_user_kpi(db, work_item.kpi_id, user_id)
+    if kpi is None:
+        work_item.kpi_id = None
+    work_item.confirmed = True
+    work_item.status = _status_or_default(work_item.status)
+    _apply_progress_from_work_item(db, work_item, kpi)
+    if commit:
+        db.commit()
+        db.refresh(work_item)
+    else:
+        db.flush()
+    return work_item
+
+
 def confirm_items(
         db: Session, items: list[schemas.ProposedWorkItem], user_id: int = 1
 ) -> list[models.WorkItem]:
     """Luu dau viec da xac nhan va cong tien do vao KPI tuong ung."""
     saved: list[models.WorkItem] = []
     for it in items:
-        kpi = None
-        if it.kpi_id:
-            candidate = db.get(models.KPI, it.kpi_id)
-            if candidate and candidate.user_id == user_id and not candidate.archived:
-                kpi = candidate
-        wi = models.WorkItem(
-            user_id=user_id,
-            kpi_id=kpi.id if kpi else None,
-            title=it.title,
-            detail=it.detail,
-            status=it.status if it.status in schemas.WORK_STATUSES else "da_lam",
-            progress_delta=it.value_delta,  # luu theo don vi cua KPI
-            source=it.source,
-            source_ref=it.source_ref,
-            work_date=it.work_date,
-            mapping_reason=it.mapping_reason or "",
-            confidence=it.confidence,
-            alternative_kpis=[a.model_dump() for a in it.alternative_kpis] if it.alternative_kpis else None,
-            confirmed=True,
-        )
+        kpi = _valid_user_kpi(db, it.kpi_id, user_id)
+        wi = _work_item_from_proposed(db, it, user_id, confirmed=True)
         db.add(wi)
-        if kpi and it.value_delta:
-            # cong vao THUC DAT theo don vi; cho phep vuot chi tieu (>100%)
-            old_value = kpi.current_value
-            new_value = max(0.0, round(kpi.current_value + it.value_delta, 2))
-            kpi.current_value = new_value
-            db.add(
-                models.KPIChangeLog(
-                    kpi_id=kpi.id,
-                    field="current_value",
-                    old_value=str(old_value),
-                    new_value=str(new_value),
-                    reason=f'Ghi nhận đầu việc "{it.title}"',
-                )
-            )
+        _apply_progress_from_work_item(db, wi, kpi)
         if it.original_kpi_id is not None and it.original_kpi_id != (kpi.id if kpi else None):
             old = db.get(models.KPI, it.original_kpi_id)
             old_name = old.name if old else "khong gan KPI"

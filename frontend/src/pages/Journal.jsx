@@ -32,6 +32,7 @@ function EvidenceTab() {
   const SRC = sourceLabels()
 
   const [items, setItems] = useState([])
+  const [drafts, setDrafts] = useState([])
   const [kpis, setKpis] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -43,6 +44,8 @@ function EvidenceTab() {
   const [deletePending, setDeletePending] = useState(null)
   const [error, setError] = useState('')
   const [savingManual, setSavingManual] = useState(false)
+  const [draftBusy, setDraftBusy] = useState('')
+  const [expandedDraftId, setExpandedDraftId] = useState(null)
   const [manual, setManual] = useState(() => ({
     kpi_id: '',
     title: '',
@@ -64,12 +67,23 @@ function EvidenceTab() {
     if (search.trim()) p.set('search', search.trim())
     if (dateFrom) p.set('date_from', dateFrom)
     if (dateTo) p.set('date_to', dateTo)
-    api.listWorkItems(`?${p}`)
+    return api.listWorkItems(`?${p}`)
       .then((res) => { setItems(res.items || []); setTotal(res.total || 0) })
       .catch((e) => setError(e.message))
   }
 
+  const loadDrafts = () =>
+    api.listWorkItemDrafts()
+      .then((res) => setDrafts(res || []))
+      .catch((e) => setError(e.message))
+
   useEffect(() => { load() }, [page, status, source, search, dateFrom, dateTo]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadDrafts() }, [activeCycleId]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (expandedDraftId && !drafts.some((d) => d.id === expandedDraftId)) {
+      setExpandedDraftId(null)
+    }
+  }, [drafts, expandedDraftId])
   useEffect(() => {
     api.listKpis(activeCycleId)
       .then((res) => setKpis(res || []))
@@ -81,6 +95,10 @@ function EvidenceTab() {
     fn()
   }
 
+  const exportEvidence = () => {
+    api.exportData(['xlsx'], ['work_items']).catch((e) => toast.error(e.message))
+  }
+
   const doDelete = async () => {
     if (!deletePending) return
     try {
@@ -89,6 +107,90 @@ function EvidenceTab() {
       setDeletePending(null)
       load()
     } catch (e) { setError(e.message) }
+  }
+
+  const updateDraftLocal = (id, patch) => {
+    setDrafts((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)))
+  }
+
+  const buildDraftPayload = (draft) => {
+    const kpi = kpis.find((k) => String(k.id) === String(draft.kpi_id))
+    return {
+      title: String(draft.title || '').trim(),
+      detail: draft.detail || '',
+      status: draft.status || 'da_lam',
+      kpi_id: draft.kpi_id ? Number(draft.kpi_id) : null,
+      kpi_name: kpi?.name || draft.kpi_name || '',
+      kpi_unit: kpi?.unit || '',
+      value_delta: Number(draft.progress_delta) || 0,
+      source: draft.source || 'agent_loop',
+      source_ref: draft.source_ref || '',
+      work_date: draft.work_date || null,
+      mapping_reason: draft.mapping_reason || '',
+      confidence: draft.confidence ?? null,
+      alternative_kpis: draft.alternative_kpis || [],
+    }
+  }
+
+  const saveDraft = async (draft) => {
+    if (!draft.kpi_id) {
+      setError(tr('journal.manual_kpi_required'))
+      return null
+    }
+    if (!String(draft.title || '').trim()) {
+      setError(tr('journal.manual_title_required'))
+      return null
+    }
+    setDraftBusy(`${draft.id}:save`)
+    setError('')
+    try {
+      const saved = await api.updateWorkItemDraft(draft.id, buildDraftPayload(draft))
+      setDrafts((prev) => prev.map((d) => (d.id === draft.id ? saved : d)))
+      toast.success(tr('journal.draft_saved'))
+      return saved
+    } catch (e) {
+      setError(e.message)
+      return null
+    } finally {
+      setDraftBusy('')
+    }
+  }
+
+  const confirmDraft = async (draft) => {
+    if (!draft.kpi_id) {
+      setError(tr('journal.manual_kpi_required'))
+      return
+    }
+    if (!String(draft.title || '').trim()) {
+      setError(tr('journal.manual_title_required'))
+      return
+    }
+    setDraftBusy(`${draft.id}:confirm`)
+    setError('')
+    try {
+      await api.updateWorkItemDraft(draft.id, buildDraftPayload(draft))
+      await api.confirmWorkItemDraft(draft.id)
+      toast.success(tr('journal.draft_confirmed'))
+      await Promise.all([loadDrafts(), load()])
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setDraftBusy('')
+    }
+  }
+
+  const dismissDraft = async (draft) => {
+    setDraftBusy(`${draft.id}:dismiss`)
+    setError('')
+    try {
+      await api.deleteWorkItemDraft(draft.id)
+      toast.success(tr('journal.draft_dismissed'))
+      setDrafts((prev) => prev.filter((d) => d.id !== draft.id))
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setDraftBusy('')
+    }
   }
 
   const saveManual = async () => {
@@ -136,6 +238,158 @@ function EvidenceTab() {
   return (
     <>
       {error && <div className="error-text"><UiIcon name="warning" /> {error}</div>}
+      {drafts.length > 0 && (
+        <section className="card journal-drafts-card">
+          <div className="journal-manual-head">
+            <div>
+              <h3 className="icon-heading"><UiIcon name="sparkles" /> {cleanIconLabel(tr('journal.drafts_title'))}</h3>
+              <p>{tr('journal.drafts_subtitle')}</p>
+            </div>
+            <span className="source-badge">{tr('journal.drafts_count', { count: drafts.length })}</span>
+          </div>
+          <div className="journal-draft-list">
+            {drafts.map((draft) => {
+              const draftKpi = kpis.find((k) => String(k.id) === String(draft.kpi_id))
+              const busy = draftBusy.startsWith(`${draft.id}:`)
+              const confidence = draft.confidence == null ? null : Math.round(Number(draft.confidence || 0) * 100)
+              const draftStatus = draft.status || 'da_lam'
+              const sourceLabel = SRC[draft.source] ?? draft.source ?? tr('source.agent_loop')
+              const kpiLabel = draftKpi?.name || draft.kpi_name || tr('journal.manual_no_kpi')
+              const delta = Number(draft.progress_delta) || 0
+              const isOpen = expandedDraftId === draft.id
+              return (
+                <div className={`journal-draft-card${isOpen ? ' expanded' : ''}`} key={draft.id}>
+                  <div className="journal-draft-summary-row">
+                    <div
+                      className="journal-draft-summary-main"
+                    >
+                      <span className="journal-draft-toggle-icon"><UiIcon name="fileText" /></span>
+                      <span className="journal-draft-title-wrap">
+                        <strong>{draft.title || tr('journal.manual_title_label')}</strong>
+                        <span>{kpiLabel}</span>
+                      </span>
+                    </div>
+                    <div className="journal-draft-summary-meta">
+                      <span className="source-badge">{sourceLabel}</span>
+                      <span className="status-chip" style={{ color: STATUS_COLORS[draftStatus] }}>{SL[draftStatus] ?? draftStatus}</span>
+                      {delta ? <span className="journal-draft-delta">{delta > 0 ? '+' : ''}{delta}{draftKpi?.unit ? ` ${draftKpi.unit}` : ''}</span> : null}
+                      {confidence !== null && <span className="journal-confidence">{tr('journal.draft_confidence', { value: confidence })}</span>}
+                    </div>
+                    <div className="journal-draft-actions journal-draft-actions-compact">
+                      <button
+                        className="btn small ghost"
+                        type="button"
+                        onClick={() => setExpandedDraftId(isOpen ? null : draft.id)}
+                        disabled={busy}
+                        title={isOpen ? tr('journal.draft_collapse') : tr('journal.draft_review')}
+                        aria-label={isOpen ? tr('journal.draft_collapse') : tr('journal.draft_review')}
+                      >
+                        <UiIcon name={isOpen ? 'eyeOff' : 'edit'} /><span className="btn-label">{isOpen ? tr('journal.draft_collapse') : tr('journal.draft_review')}</span>
+                      </button>
+                      <button
+                        className="btn small primary"
+                        type="button"
+                        onClick={() => confirmDraft(draft)}
+                        disabled={busy}
+                        title={tr('journal.draft_confirm')}
+                        aria-label={tr('journal.draft_confirm')}
+                      >
+                        <UiIcon name="check" /><span className="btn-label">{tr('journal.draft_confirm')}</span>
+                      </button>
+                      <button
+                        className="btn small danger ghost"
+                        type="button"
+                        onClick={() => dismissDraft(draft)}
+                        disabled={busy}
+                        title={tr('journal.draft_dismiss')}
+                        aria-label={tr('journal.draft_dismiss')}
+                      >
+                        <UiIcon name="x" /><span className="btn-label">{tr('journal.draft_dismiss')}</span>
+                      </button>
+                    </div>
+                  </div>
+                  {isOpen && (
+                    <div className="journal-draft-detail">
+                      <div className="journal-draft-top">
+                        <span className="source-badge">{sourceLabel}</span>
+                        {draft.source_ref && <span className="muted">{draft.source_ref}</span>}
+                        {confidence !== null && <span className="journal-confidence">{tr('journal.draft_confidence', { value: confidence })}</span>}
+                      </div>
+                      <div className="journal-manual-grid journal-draft-grid">
+                        <label className="journal-field span-2">{tr('journal.manual_kpi')}
+                          <select value={draft.kpi_id || ''} onChange={(e) => updateDraftLocal(draft.id, { kpi_id: e.target.value })}>
+                            <option value="">{tr('journal.manual_kpi_placeholder')}</option>
+                            {kpis.map((k) => (
+                              <option key={k.id} value={k.id}>{k.name}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="journal-field span-2">{tr('journal.manual_title_label')}
+                          <input
+                            value={draft.title || ''}
+                            onChange={(e) => updateDraftLocal(draft.id, { title: e.target.value })}
+                          />
+                        </label>
+                        <label className="journal-field">{tr('journal.filter_status')}
+                          <select value={draftStatus} onChange={(e) => updateDraftLocal(draft.id, { status: e.target.value })}>
+                            {Object.entries(SL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                          </select>
+                        </label>
+                        <label className="journal-field">{tr('journal.manual_delta')}{draftKpi?.unit ? ` (${draftKpi.unit})` : ''}
+                          <input
+                            type="number"
+                            step="any"
+                            value={draft.progress_delta ?? ''}
+                            placeholder="0"
+                            onChange={(e) => updateDraftLocal(draft.id, { progress_delta: e.target.value })}
+                          />
+                        </label>
+                        <label className="journal-field">{tr('journal.manual_date')}
+                          <input
+                            type="date"
+                            value={draft.work_date || ''}
+                            onChange={(e) => updateDraftLocal(draft.id, { work_date: e.target.value })}
+                          />
+                        </label>
+                        <div className="journal-manual-kpi">
+                          <span>{tr('journal.manual_selected')}</span>
+                          <b>{draftKpi ? `${draftKpi.current_value}/${draftKpi.target_value} ${draftKpi.unit || ''}`.trim() : tr('journal.manual_no_kpi')}</b>
+                        </div>
+                        <label className="journal-field full">{tr('journal.manual_detail')}
+                          <textarea
+                            rows={2}
+                            value={draft.detail || ''}
+                            onChange={(e) => updateDraftLocal(draft.id, { detail: e.target.value })}
+                          />
+                        </label>
+                      </div>
+                      {(draft.mapping_reason || draft.alternative_kpis?.length > 0) && (
+                        <div className="journal-draft-reason">
+                          {draft.mapping_reason && <span>{draft.mapping_reason}</span>}
+                          {draft.alternative_kpis?.length > 0 && (
+                            <span>{tr('journal.draft_alternatives')}: {draft.alternative_kpis.map((k) => k.kpi_name).join(', ')}</span>
+                          )}
+                        </div>
+                      )}
+                      <div className="journal-draft-actions">
+                        <button className="btn small ghost" onClick={() => saveDraft(draft)} disabled={busy}>
+                          <UiIcon name="check" />{tr('journal.draft_save')}
+                        </button>
+                        <button className="btn small primary" onClick={() => confirmDraft(draft)} disabled={busy}>
+                          <UiIcon name="check" />{tr('journal.draft_confirm')}
+                        </button>
+                        <button className="btn small danger ghost" onClick={() => dismissDraft(draft)} disabled={busy}>
+                          <UiIcon name="x" />{tr('journal.draft_dismiss')}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      )}
       <section className="card journal-manual-card">
         <div className="journal-manual-head">
           <div>
@@ -219,7 +473,12 @@ function EvidenceTab() {
         <label className="journal-search">{tr('journal.filter_search')}
           <input placeholder={tr('journal.search_placeholder')} value={search} onChange={(e) => resetPage(() => setSearch(e.target.value))} />
         </label>
+      </div>
+      <div className="journal-tab-tools">
         <span className="muted">{tr('journal.count', { filtered: items.length, total })}</span>
+        <button className="btn small" type="button" onClick={exportEvidence}>
+          <UiIcon name="download" /><span className="btn-label">{tr('journal.export_evidence')}</span>
+        </button>
       </div>
       <div className="card">
         {items.length === 0 ? <p className="muted">{tr('journal.no_match')}</p> : (
@@ -321,6 +580,10 @@ function HistoryTab() {
     fn()
   }
 
+  const exportHistory = () => {
+    api.exportData(['xlsx'], ['changelog']).catch((e) => toast.error(e.message))
+  }
+
   const doRestore = async () => {
     if (!restorePending) return
     try {
@@ -374,7 +637,12 @@ function HistoryTab() {
         <label className="journal-search">{tr('journal.filter_search')}
           <input placeholder={tr('journal.history_search_placeholder')} value={search} onChange={(e) => resetPage(() => setSearch(e.target.value))} />
         </label>
+      </div>
+      <div className="journal-tab-tools">
         <span className="muted">{tr('journal.history_count', { filtered: logs.length, total: totalLogs })}</span>
+        <button className="btn small" type="button" onClick={exportHistory}>
+          <UiIcon name="download" /><span className="btn-label">{tr('journal.export_history')}</span>
+        </button>
       </div>
 
       <div className="card">
@@ -431,8 +699,6 @@ function HistoryTab() {
 
 export default function Journal() {
   const { tr } = useLang()
-  const toast = useToast()
-  const [tab, setTab] = useState('evidence')
   return (
     <div className="page journal-page">
       <header className="page-header row">
@@ -440,19 +706,8 @@ export default function Journal() {
           <h1 className="page-title-with-icon"><UiIcon name="bookOpen" /> {cleanIconLabel(tr('journal.title'))}</h1>
           <p>{tr('journal.subtitle')}</p>
         </div>
-        <button className="btn" onClick={() => api.exportData(['xlsx'], ['work_items', 'changelog']).catch((e) => toast.error(e.message))}>
-          <UiIcon name="download" />{cleanIconLabel(tr('journal.export'))}
-        </button>
       </header>
-      <div className="period-tabs">
-        <button className={`period-tab ${tab === 'evidence' ? 'active' : ''}`} onClick={() => setTab('evidence')}>
-          <UiIcon name="clipboardList" />{cleanIconLabel(tr('journal.tab_evidence'))}
-        </button>
-        <button className={`period-tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
-          <UiIcon name="clock" />{cleanIconLabel(tr('journal.tab_history'))}
-        </button>
-      </div>
-      {tab === 'evidence' ? <EvidenceTab /> : <HistoryTab />}
+      <EvidenceTab />
     </div>
   )
 }

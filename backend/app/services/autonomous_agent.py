@@ -3,10 +3,10 @@
 The loop is deliberately conservative:
 - It observes KPI/work-item state on a timer.
 - It reasons deterministically about the most urgent next nudge.
-- It acts by writing a chat insight/proposal only.
+- It acts by writing a chat insight/proposal or an unconfirmed Journal draft.
 - It remembers the cycle in AgentCycleLog to avoid repeating the same nudge.
 
-It never confirms proposals or mutates KPI/objective/work-item data directly.
+It never confirms proposals, creates official work evidence, or mutates KPI/objective progress directly.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from ..agent.llm import call_json
 from ..config import settings
 from ..connectors import fetch_activities
 from ..database import SessionLocal
-from . import kpi_service, oauth_service
+from . import brain_layer, kpi_service, notification_email, oauth_service
 
 logger = logging.getLogger(__name__)
 
@@ -295,7 +295,6 @@ def _already_has_source_item(
             select(models.WorkItem)
             .where(
                 models.WorkItem.user_id == user_id,
-                models.WorkItem.confirmed == True,  # noqa: E712
                 models.WorkItem.source == source,
                 models.WorkItem.source_ref == ref,
             )
@@ -306,7 +305,6 @@ def _already_has_source_item(
         select(models.WorkItem)
         .where(
             models.WorkItem.user_id == user_id,
-            models.WorkItem.confirmed == True,  # noqa: E712
             models.WorkItem.source == source,
             models.WorkItem.title == item.title,
             models.WorkItem.work_date == item.work_date,
@@ -439,7 +437,7 @@ def _daily_source_scan_event(
             "chỉ là kế hoạch, hoặc độ tin cậy thấp."
         ),
         act=(
-            "Mình đã tạo các thẻ nhật ký nháp kèm nguồn, lý do gán KPI và độ tin cậy để bạn rà lại."
+            "Mình đã tạo các nháp trong Nhật ký công việc kèm nguồn, lý do gán KPI và độ tin cậy để bạn rà lại."
         ),
         remember="Đã ghi nhận lần quét nguồn hôm nay để tránh nhắc lặp cùng một loạt dữ liệu.",
         proposed_items=proposed,
@@ -447,13 +445,154 @@ def _daily_source_scan_event(
     )
 
 
+def _schedule_time_reached(settings_obj: models.AgentUserSettings) -> bool:
+    value = (settings_obj.daily_check_time or "08:00").strip()
+    if len(value) != 5 or ":" not in value:
+        value = "08:00"
+    return datetime.now().strftime("%H:%M") >= value
+
+
+def _status_counts(kpis: list[models.KPI], today: date) -> dict[str, int]:
+    counts = {"green": 0, "yellow": 0, "red": 0}
+    for kpi in kpis:
+        health, _gap = kpi_service.health_of(kpi, today)
+        counts[health] = counts.get(health, 0) + 1
+    return counts
+
+
+def _weekly_digest_event(
+    db: Session,
+    user_id: int,
+    kpis: list[models.KPI],
+    today: date,
+    settings_obj: models.AgentUserSettings,
+) -> AutonomousEvent | None:
+    if not settings_obj.weekly_digest_enabled:
+        return None
+    if today.weekday() != int(settings_obj.weekly_digest_weekday or 0):
+        return None
+    if not _schedule_time_reached(settings_obj):
+        return None
+    iso = today.isocalendar()
+    fingerprint = f"weekly_digest:{user_id}:{iso.year}-W{iso.week:02d}"
+    if _already_checked(db, user_id, fingerprint):
+        return None
+    counts = _status_counts(kpis, today)
+    risk = counts.get("red", 0) + counts.get("yellow", 0)
+    summary = {
+        "green": counts.get("green", 0),
+        "yellow": counts.get("yellow", 0),
+        "red": counts.get("red", 0),
+        "kpi_count": len(kpis),
+        "week": f"{iso.year}-W{iso.week:02d}",
+    }
+    return AutonomousEvent(
+        event_type="weekly_digest",
+        fingerprint=fingerprint,
+        priority=68,
+        title=f"tổng hợp tuần {summary['week']}",
+        perceive=f"Tuần này có {len(kpis)} KPI đang hoạt động: {counts.get('green', 0)} xanh, {counts.get('yellow', 0)} vàng, {counts.get('red', 0)} đỏ.",
+        reason=(
+            "Đây là nhịp kiểm tra định kỳ để giữ bức tranh KPI không bị trôi khỏi kế hoạch."
+            if risk
+            else "Dữ liệu tuần này tương đối ổn định; vẫn nên giữ thói quen ghi nhận bằng chứng đều."
+        ),
+        act="Mình đã chuẩn bị digest ngắn để bạn xem lại, xác nhận là hữu ích hoặc bỏ qua để Agent học ngưỡng nhắc phù hợp hơn.",
+        remember="Đã ghi nhận weekly digest của tuần này để không tạo lặp.",
+        scan_summary=summary,
+    )
+
+
+def _monthly_report_event(
+    db: Session,
+    user_id: int,
+    kpis: list[models.KPI],
+    today: date,
+    settings_obj: models.AgentUserSettings,
+) -> AutonomousEvent | None:
+    if not settings_obj.monthly_report_enabled:
+        return None
+    if today.day != int(settings_obj.monthly_report_day or 1):
+        return None
+    if not _schedule_time_reached(settings_obj):
+        return None
+    fingerprint = f"monthly_report:{user_id}:{today.year}-{today.month:02d}"
+    if _already_checked(db, user_id, fingerprint):
+        return None
+    counts = _status_counts(kpis, today)
+    summary = {
+        "green": counts.get("green", 0),
+        "yellow": counts.get("yellow", 0),
+        "red": counts.get("red", 0),
+        "kpi_count": len(kpis),
+        "month": f"{today.year}-{today.month:02d}",
+    }
+    return AutonomousEvent(
+        event_type="monthly_report",
+        fingerprint=fingerprint,
+        priority=67,
+        title=f"báo cáo tháng {summary['month']}",
+        perceive=f"Đầu tháng, Agent đã rà {len(kpis)} KPI để chuẩn bị nhịp báo cáo mới.",
+        reason=f"Tình trạng hiện tại: {counts.get('green', 0)} xanh, {counts.get('yellow', 0)} vàng, {counts.get('red', 0)} đỏ.",
+        act="Mình đã lưu lại insight tháng này; bạn có thể tạo báo cáo đầy đủ ở mục Báo cáo khi cần gửi đi.",
+        remember="Đã ghi nhận monthly report check của tháng này để không tạo lặp.",
+        scan_summary=summary,
+    )
+
+
+def _trend_velocity_event(
+    db: Session,
+    user_id: int,
+    kpis: list[models.KPI],
+    today: date,
+    settings_obj: models.AgentUserSettings,
+) -> AutonomousEvent | None:
+    if not settings_obj.weekly_digest_enabled:
+        return None
+    if today.weekday() != int(settings_obj.weekly_digest_weekday or 0):
+        return None
+    if not _schedule_time_reached(settings_obj):
+        return None
+    iso = today.isocalendar()
+    fingerprint = f"trend_velocity:{user_id}:{iso.year}-W{iso.week:02d}"
+    if _already_checked(db, user_id, fingerprint):
+        return None
+    watched = []
+    for kpi in kpis:
+        try:
+            forecast = kpi_service.forecast_kpi(db, kpi, today)
+        except Exception:
+            continue
+        if forecast.has_history and not forecast.on_track:
+            watched.append((kpi, forecast))
+    if not watched:
+        return None
+    kpi, forecast = sorted(watched, key=lambda item: item[1].forecast_progress)[0]
+    return AutonomousEvent(
+        event_type="trend_velocity",
+        fingerprint=fingerprint,
+        priority=82,
+        title=f'KPI "{kpi.name}" có vận tốc chưa đủ',
+        perceive=f'KPI "{kpi.name}" được dự báo đạt khoảng {forecast.forecast_progress:.0f}% nếu giữ nhịp hiện tại.',
+        reason="Dự báo dùng lịch sử đầu việc đã xác nhận, nên đây là tín hiệu tốt để rà lại nhịp thực thi của tuần tới.",
+        act="Mình chuẩn bị insight vận tốc để bạn quyết định có cần tách thêm việc nhỏ hay điều chỉnh ngưỡng theo kỳ.",
+        remember="Đã ghi nhận trend & velocity check của tuần này để không nhắc lặp.",
+        kpi=kpi,
+        scan_summary={
+            "forecast_progress": forecast.forecast_progress,
+            "daily_velocity": forecast.daily_velocity,
+            "week": f"{iso.year}-W{iso.week:02d}",
+        },
+    )
+
+
 def _work_status_label(status: str) -> str:
     labels = {
-        "se_lam": "chưa bắt đầu",
+        "se_lam": "đã lên kế hoạch",
         "dang_lam": "đang thực hiện",
-        "da_lam": "đã hoàn tất",
-        "phat_sinh": "mới phát sinh",
-        "loai_bo": "đã loại bỏ",
+        "da_lam": "hoàn thành",
+        "phat_sinh": "phát sinh ngoài kế hoạch",
+        "loai_bo": "đã hủy bỏ",
     }
     return labels.get(status, "cần rà soát")
 
@@ -637,15 +776,22 @@ def _event_message(event: AutonomousEvent, proposed: list[schemas.ProposedWorkIt
         ignored = scan.get("ignored") or {}
         ignored_count = sum(int(v or 0) for v in ignored.values()) if isinstance(ignored, dict) else 0
         action_note = (
-            "Mình đã chuẩn bị các thẻ nhật ký công việc bên dưới kèm nguồn, lý do gán KPI và độ tin cậy. "
-            "Bạn có thể chỉnh lại KPI, trạng thái hoặc số tiến độ trước khi xác nhận."
+            "Mình đã tạo nháp trong Nhật ký công việc kèm nguồn, lý do gán KPI và độ tin cậy. "
+            "Bạn có thể vào Nhật ký để chỉnh lại KPI, trạng thái hoặc số tiến độ trước khi xác nhận."
         )
         return (
             f"**Mình vừa nhận thấy {event.title}.**\n\n"
             f"{event.perceive} {event.reason}\n\n"
             f"{event.act} {action_note} "
             f"Mình đã bỏ qua {ignored_count} mục chưa đủ liên quan hoặc chưa đủ tin cậy. "
-            "Chưa có dữ liệu nào được ghi vào nhật ký chính thức; tiến độ KPI chỉ được cộng sau khi bạn xác nhận."
+            "Chưa có dữ liệu nào được ghi vào nhật ký chính thức; tiến độ KPI chỉ được cộng sau khi bạn xác nhận trong Nhật ký."
+        )
+    if event.event_type in {"weekly_digest", "monthly_report", "trend_velocity"}:
+        return (
+            f"**Mình vừa chuẩn bị {event.title}.**\n\n"
+            f"{event.perceive} {event.reason}\n\n"
+            f"{event.act} Đây chỉ là insight phân tích; mình không tự ghi thay đổi nào vào KPI. "
+            "Bạn có thể xác nhận là hữu ích hoặc bỏ qua để Agent học cách nhắc phù hợp hơn."
         )
     if event.category_suggestion:
         action_note = (
@@ -684,7 +830,7 @@ def _get_or_create_session(db: Session, user_id: int) -> models.ChatSession:
     return session
 
 
-def _choose_event(db: Session, user_id: int, today: date) -> AutonomousEvent | None:
+def _choose_event(db: Session, user_id: int, today: date, force: bool = False) -> AutonomousEvent | None:
     all_kpis = kpi_service.get_active_kpis(db, user_id)
     kpis = [k for k in all_kpis if (k.category or "Work") == "Work"]
     if not all_kpis:
@@ -700,6 +846,24 @@ def _choose_event(db: Session, user_id: int, today: date) -> AutonomousEvent | N
         )
 
     events: list[AutonomousEvent] = []
+    agent_settings = brain_layer.get_or_create_settings(db, user_id)
+
+    for scheduled in (
+        _weekly_digest_event(db, user_id, all_kpis, today, agent_settings),
+        _monthly_report_event(db, user_id, all_kpis, today, agent_settings),
+        _trend_velocity_event(db, user_id, all_kpis, today, agent_settings),
+    ):
+        if scheduled:
+            events.append(scheduled)
+
+    daily_ready = force or (
+        bool(agent_settings.daily_check_enabled) and _schedule_time_reached(agent_settings)
+    )
+    if not daily_ready:
+        if events:
+            events.sort(key=lambda e: e.priority, reverse=True)
+            return events[0]
+        return None
 
     source_scan_event = _daily_source_scan_event(db, user_id, all_kpis, today)
     if source_scan_event:
@@ -824,6 +988,13 @@ def _save_event(db: Session, user_id: int, event: AutonomousEvent, today: date) 
         proposed = []
     else:
         proposed = _proposal_for_event(event, today)
+    draft_count = 0
+    inbox_proposed = proposed
+    insight_only = event.event_type in {"weekly_digest", "monthly_report", "trend_velocity"}
+    if event.event_type == "source_scan" and proposed:
+        drafts = kpi_service.create_draft_items(db, proposed, user_id=user_id, commit=False)
+        draft_count = len(drafts)
+        inbox_proposed = []
     category_suggestions = [event.category_suggestion] if event.category_suggestion else []
     session = _get_or_create_session(db, user_id)
     message = models.ChatMessage(
@@ -839,16 +1010,28 @@ def _save_event(db: Session, user_id: int, event: AutonomousEvent, today: date) 
                 "summary": event.title,
                 "source_scan": event.scan_summary,
             },
-            "proposed_items": [p.model_dump(mode="json") for p in proposed],
+            "proposed_items": [p.model_dump(mode="json") for p in inbox_proposed],
             "category_suggestions": category_suggestions,
             "proposed_objectives": [],
             "proposed_kpis": [],
             "weight_changes": [],
             "delete_proposal": None,
-            "proposal_status": "pending" if (proposed or category_suggestions) else None,
+            "proposal_status": "pending" if (inbox_proposed or category_suggestions or insight_only) else None,
         },
     )
     db.add(message)
+    if insight_only:
+        brain_layer.save_insight_snapshot(
+            db,
+            user_id,
+            insight_type=event.event_type,
+            title=event.title,
+            content=f"{event.perceive} {event.reason}",
+            source="autonomous",
+            data_signature=event.fingerprint,
+            kpi_id=event.kpi.id if event.kpi else None,
+            meta={"event_type": event.event_type, "summary": event.scan_summary or {}},
+        )
     log = models.AgentCycleLog(
         user_id=user_id,
         cycle_key=f"autonomous:{today.isoformat()}",
@@ -859,7 +1042,8 @@ def _save_event(db: Session, user_id: int, event: AutonomousEvent, today: date) 
         meta={
             "event_type": event.event_type,
             "message_session_id": session.id,
-            "proposed_items": len(proposed),
+            "proposed_items": len(inbox_proposed),
+            "journal_drafts": draft_count,
             "category_suggestions": len(category_suggestions),
             "source_scan": event.scan_summary,
         },
@@ -867,6 +1051,11 @@ def _save_event(db: Session, user_id: int, event: AutonomousEvent, today: date) 
     db.add(log)
     db.commit()
     db.refresh(log)
+    if draft_count:
+        try:
+            notification_email.send_worklog_draft_email(db, user_id, draft_count)
+        except Exception:
+            logger.exception("Worklog draft email failed for user_id=%s", user_id)
     return log
 
 
@@ -892,7 +1081,7 @@ def run_category_guard_for_kpis(
 
 def run_once_for_user(db: Session, user_id: int, force: bool = False) -> models.AgentCycleLog | None:
     today = date.today()
-    event = _choose_event(db, user_id, today)
+    event = _choose_event(db, user_id, today, force=force)
     if not event:
         return None
     if not force and _already_remembered(db, user_id, event.fingerprint):

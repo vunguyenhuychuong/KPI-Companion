@@ -88,6 +88,18 @@ const PATHS = {
       <path d="m12 5 7 7-7 7" />
     </>
   ),
+  arrowUp: (
+    <>
+      <path d="M12 19V5" />
+      <path d="m5 12 7-7 7 7" />
+    </>
+  ),
+  arrowDown: (
+    <>
+      <path d="M12 5v14" />
+      <path d="m19 12-7 7-7-7" />
+    </>
+  ),
   share: (
     <>
       <circle cx="18" cy="5" r="3" />

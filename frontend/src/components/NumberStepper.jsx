@@ -43,6 +43,19 @@ export default function NumberStepper({
     const next = clamp(base + direction * stepNum, minNum, maxNum)
     emit(cleanNumber(next))
   }
+  const handleFocus = (event) => {
+    inputProps.onFocus?.(event)
+    if (event.defaultPrevented) return
+    requestAnimationFrame(() => {
+      if (document.activeElement === event.target) event.target.select()
+    })
+  }
+  const handleMouseUp = (event) => {
+    inputProps.onMouseUp?.(event)
+    if (event.defaultPrevented) return
+    event.preventDefault()
+    event.currentTarget.select()
+  }
 
   return (
     <span className={`number-stepper ${className}`.trim()} style={style}>
@@ -51,6 +64,7 @@ export default function NumberStepper({
         className="number-stepper-btn minus"
         onClick={() => nudge(-1)}
         disabled={atMin}
+        tabIndex={-1}
         aria-label={tr('number_stepper.decrease')}
         title={tr('number_stepper.decrease')}
       >
@@ -59,19 +73,25 @@ export default function NumberStepper({
       <input
         {...inputProps}
         className={`number-stepper-input ${inputProps.className || ''}`.trim()}
-        type="number"
-        min={Number.isFinite(minNum) ? min : undefined}
-        max={Number.isFinite(maxNum) ? max : undefined}
-        step={step}
+        type="text"
+        inputMode={step === 'any' ? 'decimal' : 'numeric'}
+        role="spinbutton"
+        aria-valuemin={Number.isFinite(minNum) ? minNum : undefined}
+        aria-valuemax={Number.isFinite(maxNum) ? maxNum : undefined}
+        aria-valuenow={current ?? undefined}
+        autoComplete="off"
         value={value}
         disabled={disabled}
         onChange={(e) => onChange?.(e.target.value)}
+        onFocus={handleFocus}
+        onMouseUp={handleMouseUp}
       />
       <button
         type="button"
         className="number-stepper-btn plus"
         onClick={() => nudge(1)}
         disabled={atMax}
+        tabIndex={-1}
         aria-label={tr('number_stepper.increase')}
         title={tr('number_stepper.increase')}
       >

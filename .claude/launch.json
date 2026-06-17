@@ -4,9 +4,9 @@
     {
       "name": "frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--port", "5174"],
-      "port": 5174,
-      "cwd": "D:\KPI-Companion\frontend"
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173,
+      "cwd": "D:\\ChuongVNH\\KPI-Companion\\frontend"
     }
   ]
 }

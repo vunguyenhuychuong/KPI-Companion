@@ -1,22 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { marked } from 'marked'
-import { api, STATUS_COLORS, SOURCE_LABELS } from '../api'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { useNavigate } from 'react-router-dom'
+import { api } from '../api'
 import { useLang } from '../LangContext'
 import { useView, matchView } from '../ViewContext'
 import { useCycle } from '../CycleContext'
 import ViewModeSwitch from '../components/ViewModeSwitch'
-import { useToast } from '../components/Toast'
 import KpiDetailDrawer from '../components/KpiDetailDrawer'
-import NumberStepper from '../components/NumberStepper'
 import { UiIcon, cleanIconLabel } from '../components/UiIcon'
 
 const HC = { green: '#22c55e', yellow: '#eab308', red: '#ef4444' }
-const RISK_C = { safe: '#22c55e', warning: '#eab308', danger: '#ef4444' }
-const healthLabels = (tr) => ({
-    green: tr('dashboard.health_green'),
-    yellow: tr('dashboard.health_yellow'),
-    red: tr('dashboard.health_red'),
-})
 
 /* ─── CSS injected (scoped to .ddb- prefix) ─────────────────────────────── */
 const DASH_CSS = `
@@ -52,6 +45,395 @@ const DASH_CSS = `
   .ddb-topbar {
     display:flex; align-items:center; gap:10px; flex-wrap:wrap;
     padding:4px 0 2px;
+  }
+
+  /* Output cockpit */
+  .ddb-output-cockpit {
+    position:relative; overflow:visible; isolation:isolate;
+    border:1px solid color-mix(in srgb,#06b6d4 28%,var(--border)); border-radius:16px;
+    padding:16px; display:flex; flex-direction:column;
+    gap:14px;
+    background:
+      linear-gradient(135deg,rgba(124,92,255,.055),rgba(6,182,212,.045) 52%,rgba(20,184,166,.05)),
+      var(--surface);
+    box-shadow:var(--shadow-hover),0 0 0 1px rgba(255,255,255,.03) inset;
+    animation:ddb-up .36s ease both;
+  }
+  .ddb-output-cockpit.draft {
+    overflow:hidden;
+    display:grid;
+    grid-template-columns:minmax(250px,.86fr) minmax(0,1.58fr);
+    grid-template-areas:
+      "hero metrics"
+      "hero insight"
+      "charts charts";
+    align-items:stretch;
+    padding:14px;
+    gap:14px;
+  }
+  .ddb-output-draft-hero {
+    grid-area:hero;
+    position:relative; overflow:hidden; min-height:246px;
+    padding:18px; border-radius:14px;
+    border:1px solid color-mix(in srgb,var(--primary) 24%,var(--border));
+    background:
+      radial-gradient(280px 180px at 18% 5%, rgba(124,92,255,.14), transparent 60%),
+      radial-gradient(240px 180px at 92% 88%, rgba(20,184,166,.14), transparent 62%),
+      color-mix(in srgb,var(--surface) 82%,transparent);
+    display:flex; flex-direction:column; justify-content:space-between; gap:14px;
+    box-shadow:0 0 0 1px rgba(255,255,255,.025) inset;
+  }
+  [data-theme="dark"] .ddb-output-draft-hero {
+    background:
+      radial-gradient(300px 190px at 16% 8%, rgba(124,92,255,.20), transparent 62%),
+      radial-gradient(270px 190px at 88% 92%, rgba(20,184,166,.16), transparent 64%),
+      rgba(255,255,255,.045);
+  }
+  .ddb-output-draft-hero::after {
+    content:''; position:absolute; right:-44px; bottom:-48px; width:168px; height:168px;
+    border-radius:50%; border:1px solid rgba(20,184,166,.18); pointer-events:none; z-index:0;
+  }
+  .ddb-output-draft-copy { position:relative; z-index:2; max-width:260px; }
+  .ddb-output-draft-kicker {
+    display:inline-flex; align-items:center; gap:7px;
+    color:#67e8f9; font-size:10.5px; font-weight:850; text-transform:uppercase; letter-spacing:.08em;
+    padding:5px 9px; border:1px solid rgba(6,182,212,.28); border-radius:999px;
+    background:rgba(6,182,212,.08);
+  }
+  .ddb-output-draft-kicker .ui-icon { width:14px; height:14px; }
+  .ddb-output-draft-title {
+    margin:10px 0 7px; color:var(--text); font-size:clamp(28px,3.4vw,46px);
+    line-height:.98; font-weight:900; letter-spacing:0;
+  }
+  .ddb-output-draft-sub { color:var(--muted); font-size:12.5px; line-height:1.45; margin:0; }
+  .ddb-output-draft-orbit {
+    --v:0%;
+    position:absolute; right:-18px; bottom:-36px; width:148px; height:148px;
+    border-radius:50%;
+    background:
+      conic-gradient(from -90deg,#7c5cff var(--v),rgba(124,92,255,.13) 0),
+      radial-gradient(circle at 30% 18%,rgba(34,211,238,.52),transparent 34%);
+    display:grid; place-items:center;
+    filter:drop-shadow(0 0 18px rgba(20,184,166,.18));
+    animation:ddb-ring-pulse 3.6s ease-in-out infinite;
+    z-index:1;
+  }
+  .ddb-output-draft-orbit::after {
+    content:''; position:absolute; inset:28px; border-radius:50%;
+    background:var(--surface);
+    box-shadow:inset 0 0 0 1px var(--border);
+  }
+  .ddb-output-draft-orbit span {
+    position:relative; z-index:1; display:flex; flex-direction:column; align-items:center; gap:2px;
+    color:var(--text); font-size:22px; line-height:1; font-weight:900;
+  }
+  .ddb-output-draft-orbit small {
+    color:var(--muted); font-size:9px; font-weight:850; text-transform:uppercase; letter-spacing:.04em;
+  }
+  .ddb-output-draft-actions {
+    position:relative; z-index:3; display:flex; gap:8px; flex-wrap:wrap; max-width:198px;
+  }
+  .ddb-output-draft-actions .btn { flex:1 1 calc(50% - 4px); justify-content:center; min-width:0; }
+  .ddb-output-draft-actions .btn.primary {
+    flex-basis:100%;
+    box-shadow:0 10px 24px rgba(20,184,166,.22),0 6px 16px rgba(124,92,255,.20);
+  }
+  .ddb-output-draft-next {
+    grid-area:insight;
+    min-height:82px;
+    align-self:stretch;
+  }
+  .ddb-output-cockpit.draft .ddb-output-metrics { grid-area:metrics; }
+  .ddb-output-cockpit.draft .ddb-cockpit-side { grid-area:charts; }
+  [data-theme="dark"] .ddb-output-cockpit {
+    background:
+      linear-gradient(135deg,rgba(8,13,31,.96),rgba(13,23,48,.94) 48%,rgba(7,35,46,.82)),
+      var(--surface);
+    border-color:rgba(6,182,212,.34);
+    box-shadow:0 20px 58px rgba(2,6,23,.32),0 0 0 1px rgba(124,92,255,.10) inset;
+  }
+  .ddb-output-cockpit::before {
+    content:''; position:absolute; inset:0; z-index:-1; pointer-events:none;
+    background:
+      linear-gradient(110deg,transparent 0%,rgba(6,182,212,.08) 40%,transparent 64%),
+      linear-gradient(180deg,rgba(255,255,255,.035),transparent 44%),
+      repeating-linear-gradient(90deg,rgba(148,163,184,.055) 0 1px,transparent 1px 80px);
+    border-radius:inherit;
+    opacity:.72;
+  }
+  .ddb-output-cockpit::after {
+    content:''; position:absolute; left:16px; right:16px; top:-1px; height:1px; pointer-events:none;
+    background:linear-gradient(90deg,transparent,#8b5cf6,#06b6d4,transparent);
+    opacity:.86;
+  }
+  .ddb-cockpit-main { min-width:0; display:flex; flex-direction:column; gap:12px; }
+  .ddb-cockpit-head { display:flex; align-items:center; justify-content:space-between; gap:14px; }
+  .ddb-cockpit-kicker {
+    display:inline-flex; align-items:center; gap:7px; width:max-content;
+    color:#67e8f9; font-size:10.5px; font-weight:850; text-transform:uppercase; letter-spacing:.08em;
+    padding:5px 9px; border:1px solid rgba(6,182,212,.28); border-radius:999px;
+    background:rgba(6,182,212,.08);
+  }
+  .ddb-cockpit-kicker .ui-icon { width:14px; height:14px; }
+  .ddb-cockpit-title {
+    margin-top:7px; color:var(--text); font-weight:900; line-height:1.08;
+    font-size:clamp(22px,2.2vw,30px); letter-spacing:0;
+  }
+  .ddb-cockpit-sub { margin-top:6px; color:var(--muted); font-size:12.5px; line-height:1.45; max-width:780px; }
+  .ddb-cockpit-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; flex-shrink:0; }
+  .ddb-output-metrics {
+    display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; overflow:visible;
+  }
+  .ddb-output-metric {
+    --metric-color:#14b8a6;
+    position:relative; min-width:0; min-height:146px;
+    border:1px solid color-mix(in srgb,var(--metric-color) 28%,var(--border));
+    border-radius:12px; padding:12px 13px;
+    background:
+      linear-gradient(180deg,color-mix(in srgb,var(--metric-color) 9%,transparent),rgba(255,255,255,.025)),
+      color-mix(in srgb,var(--surface) 88%,transparent);
+    display:flex; flex-direction:column; align-items:center; justify-content:space-between; gap:8px;
+    box-shadow:0 0 0 1px rgba(255,255,255,.025) inset;
+    transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease;
+    animation:ddb-pop .34s ease both;
+    font:inherit; color:inherit; text-align:left; appearance:none;
+  }
+  .ddb-output-metric.clickable { cursor:pointer; }
+  .ddb-output-metric::after {
+    content:''; position:absolute; inset:0; pointer-events:none; border-radius:inherit; z-index:2;
+    background:linear-gradient(115deg,transparent 25%,rgba(255,255,255,.18) 50%,transparent 75%);
+    transform:translateX(-110%); transition:transform 0s;
+  }
+  .ddb-output-metric:hover::after { transform:translateX(110%); transition:transform .52s cubic-bezier(.4,0,.2,1); }
+  .ddb-output-metric:hover,
+  .ddb-output-metric:focus-visible {
+    transform:translateY(-3px) scale(1.012);
+    border-color:color-mix(in srgb,var(--metric-color) 58%,white);
+    box-shadow:0 16px 36px color-mix(in srgb,var(--metric-color) 18%,transparent),0 0 22px color-mix(in srgb,var(--metric-color) 16%,transparent);
+    outline:none;
+    z-index:30;
+  }
+  .ddb-output-metric:nth-child(2){ animation-delay:.05s }
+  .ddb-output-metric:nth-child(3){ animation-delay:.10s }
+  .ddb-output-metric:nth-child(4){ animation-delay:.15s }
+  .ddb-output-metric-top { width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .ddb-output-metric-icon {
+    width:28px; height:28px; display:grid; place-items:center; border-radius:9px;
+    color:var(--metric-color); background:color-mix(in srgb,var(--metric-color) 13%,transparent);
+  }
+  .ddb-output-metric-icon .ui-icon { width:16px; height:16px; }
+  .ddb-output-metric-label {
+    flex:1; min-width:0; color:var(--muted); font-size:10.5px; font-weight:850;
+    text-transform:uppercase; letter-spacing:0; line-height:1.22;
+  }
+  .ddb-output-ring { position:relative; width:86px; height:86px; flex-shrink:0; }
+  .ddb-output-ring svg { width:86px; height:86px; transform:rotate(-90deg); overflow:visible; }
+  .ddb-output-ring-track { fill:none; stroke:rgba(148,163,184,.18); stroke-width:10; }
+  .ddb-output-ring-value {
+    fill:none; stroke:var(--metric-color); stroke-width:10; stroke-linecap:round;
+    filter:drop-shadow(0 0 8px color-mix(in srgb,var(--metric-color) 38%,transparent));
+    transition:stroke-dasharray .72s cubic-bezier(.34,1.18,.64,1);
+    animation:ddb-ring-pulse 4s ease-in-out infinite;
+  }
+  .ddb-output-ring-center {
+    position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    text-align:center; padding:0 8px;
+  }
+  .ddb-output-ring-value-text { color:var(--text); font-size:21px; font-weight:900; line-height:1; overflow-wrap:anywhere; }
+  .ddb-output-ring-unit { margin-top:3px; color:var(--muted); font-size:9px; font-weight:800; text-transform:uppercase; }
+  .ddb-output-metric-delta {
+    display:inline-flex; align-items:center; gap:4px; min-height:20px;
+    color:var(--metric-color); font-size:11px; font-weight:850;
+  }
+  .ddb-output-metric-delta .ui-icon { width:13px; height:13px; }
+  .ddb-output-metric-tip {
+    position:absolute; left:10px; right:10px; top:calc(100% + 8px); z-index:80;
+    padding:10px 11px; border-radius:10px; border:1px solid var(--border);
+    background:var(--surface-2); color:var(--text); box-shadow:var(--shadow-hover);
+    font-size:12px; line-height:1.45; opacity:0; pointer-events:none;
+    transform:translateY(-4px); transition:opacity .15s ease,transform .15s ease;
+  }
+  .ddb-formula-line {
+    display:block; margin-top:7px; padding:5px 8px; border-radius:7px;
+    background:color-mix(in srgb,var(--metric-color) 9%,var(--surface-3));
+    border:1px solid color-mix(in srgb,var(--metric-color) 16%,var(--border));
+    color:var(--metric-color); font-size:10.5px;
+    font-family:ui-monospace,'Cascadia Code',monospace;
+    letter-spacing:0; line-height:1.5; word-break:break-all;
+  }
+  .ddb-output-metric:hover .ddb-output-metric-tip,
+  .ddb-output-metric:focus-visible .ddb-output-metric-tip { opacity:1; transform:translateY(0); }
+  .ddb-output-cockpit.draft .ddb-output-metric {
+    min-height:124px;
+    align-items:flex-start;
+    justify-content:flex-start;
+    padding:12px;
+    background:
+      linear-gradient(135deg,rgba(124,92,255,.075),rgba(20,184,166,.045)),
+      color-mix(in srgb,var(--surface) 82%,transparent);
+    border-color:color-mix(in srgb,var(--primary) 20%,var(--border));
+  }
+  .ddb-output-cockpit.draft .ddb-output-metric:hover,
+  .ddb-output-cockpit.draft .ddb-output-metric:focus-visible {
+    border-color:color-mix(in srgb,var(--metric-color) 42%,var(--accent));
+    box-shadow:0 12px 30px rgba(2,6,23,.10),0 0 22px color-mix(in srgb,var(--metric-color) 12%,transparent);
+  }
+  [data-theme="dark"] .ddb-output-cockpit.draft .ddb-output-metric {
+    background:rgba(255,255,255,.045);
+  }
+  .ddb-output-cockpit.draft .ddb-output-metric-top { align-items:flex-start; min-height:34px; }
+  .ddb-output-cockpit.draft .ddb-output-metric-icon {
+    color:var(--metric-color);
+    background:color-mix(in srgb,var(--metric-color) 14%,transparent);
+  }
+  .ddb-output-cockpit.draft .ddb-output-ring {
+    width:64px; height:64px; margin-top:6px;
+  }
+  .ddb-output-cockpit.draft .ddb-output-ring svg { width:64px; height:64px; }
+  .ddb-output-cockpit.draft .ddb-output-ring-track,
+  .ddb-output-cockpit.draft .ddb-output-ring-value { stroke-width:9; }
+  .ddb-output-cockpit.draft .ddb-output-ring-value-text { font-size:16px; }
+  .ddb-output-cockpit.draft .ddb-output-ring-unit { font-size:8px; }
+  .ddb-output-cockpit.draft .ddb-output-metric-delta {
+    position:absolute; right:12px; bottom:12px;
+    min-height:auto; padding:3px 7px; border-radius:999px;
+    background:color-mix(in srgb,var(--metric-color) 10%,transparent);
+  }
+  .ddb-cockpit-side {
+    display:grid; grid-template-columns:minmax(0,1.25fr) minmax(340px,.95fr);
+    gap:12px; min-width:0; align-items:stretch;
+  }
+  .ddb-output-chart,
+  .ddb-output-categories {
+    border:1px solid color-mix(in srgb,#06b6d4 18%,var(--border)); border-radius:12px; padding:12px;
+    background:rgba(255,255,255,.045); min-width:0;
+    box-shadow:0 0 0 1px rgba(255,255,255,.025) inset;
+  }
+  [data-theme="dark"] .ddb-output-chart,
+  [data-theme="dark"] .ddb-output-categories { background:rgba(11,18,38,.62); }
+  .ddb-output-panel-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:9px; }
+  .ddb-output-panel-title { display:flex; align-items:center; gap:7px; color:var(--text); font-size:13px; font-weight:850; }
+  .ddb-output-panel-title .ui-icon { width:16px; height:16px; color:#22d3ee; }
+  .ddb-output-period-select {
+    border:1px solid var(--border); border-radius:9px; color:var(--text);
+    background:var(--surface-2); font-size:11px; padding:5px 8px; font:inherit;
+  }
+  .ddb-output-chart-svg { width:100%; height:224px; display:block; overflow:visible; }
+  .ddb-output-grid-line { opacity:.56; }
+  .ddb-output-axis-label { fill:var(--muted); font-size:10px; font-weight:650; opacity:.82; }
+  .ddb-output-bar {
+    cursor:pointer; transition:opacity .15s ease,filter .15s ease;
+    animation:ddb-bar-rise .58s cubic-bezier(.2,.8,.2,1) both;
+    transform-origin:bottom; transform-box:fill-box;
+  }
+  .ddb-output-bar:hover,
+  .ddb-output-bar.active { filter:drop-shadow(0 0 10px rgba(34,211,238,.44)); opacity:1; }
+  .ddb-output-trend-line { stroke-dasharray:520; stroke-dashoffset:520; animation:ddb-draw .9s ease .12s forwards; }
+  .ddb-output-chart-tip {
+    min-height:52px; padding:9px 10px; border-radius:10px;
+    border:1px solid var(--border); background:rgba(124,92,255,.055);
+    color:var(--muted); font-size:12px; line-height:1.45;
+  }
+  [data-theme="dark"] .ddb-output-chart-tip { background:rgba(2,6,23,.34); }
+  .ddb-output-tip-title { display:flex; align-items:center; justify-content:space-between; gap:10px; color:var(--text); font-weight:850; margin-bottom:4px; }
+  .ddb-output-tip-meta { display:flex; gap:10px; flex-wrap:wrap; }
+  .ddb-output-category-list { display:flex; flex-direction:column; gap:8px; }
+  .ddb-output-category {
+    --cat-color:#14b8a6;
+    display:grid; grid-template-columns:minmax(0,1fr) 44px;
+    grid-template-areas:"copy value" "track track";
+    align-items:center; gap:6px 10px;
+    padding:8px 0; border-bottom:1px solid color-mix(in srgb,var(--border) 72%,transparent);
+    cursor:pointer;
+    border-left:none; border-right:none; border-top:none; background:transparent; width:100%; font:inherit; text-align:left;
+  }
+  .ddb-output-category:last-child { border-bottom:none; }
+  .ddb-output-category-copy { grid-area:copy; min-width:0; display:block; }
+  .ddb-output-category:hover .ddb-output-category-fill { filter:drop-shadow(0 0 7px color-mix(in srgb,var(--cat-color) 52%,transparent)); }
+  .ddb-output-category-name { display:block; min-width:0; color:var(--text); font-size:12.5px; font-weight:750; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ddb-output-category-meta { color:var(--muted); font-size:10.5px; margin-top:2px; }
+  .ddb-output-category-track { grid-area:track; height:8px; border-radius:999px; background:rgba(148,163,184,.18); overflow:hidden; }
+  .ddb-output-category-fill {
+    position:relative; width:0; height:100%; border-radius:inherit;
+    background:linear-gradient(90deg,var(--cat-color),#22d3ee);
+    animation:ddb-fill .72s cubic-bezier(.34,1.12,.64,1) both; transform-origin:left;
+    overflow:hidden;
+  }
+  .ddb-output-category-fill::after {
+    content:''; position:absolute; inset:0;
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.38),transparent);
+    animation:ddb-shine 2.4s ease 1s both;
+  }
+  .ddb-output-category-value { grid-area:value; text-align:right; color:var(--cat-color); font-size:13px; font-weight:900; align-self:start; }
+  .ddb-output-risk-panel .ddb-drawer-body { display:flex; flex-direction:column; gap:10px; }
+  .ddb-output-risk-row {
+    border:1px solid var(--border); border-radius:12px; padding:11px;
+    background:var(--surface); display:grid; gap:9px; cursor:pointer;
+    transition:transform .15s ease,border-color .15s ease,background .15s ease;
+    width:100%; font:inherit; text-align:left; color:inherit;
+  }
+  .ddb-output-risk-row:hover { transform:translateY(-1px); border-color:rgba(20,184,166,.38); background:var(--surface-2); }
+  .ddb-output-risk-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+  .ddb-output-risk-name { display:block; color:var(--text); font-weight:850; line-height:1.28; text-wrap:pretty; }
+  .ddb-output-risk-sub { display:block; color:var(--muted); font-size:11.5px; margin-top:5px; line-height:1.35; text-wrap:pretty; }
+  .ddb-output-risk-reason {
+    display:block;
+    margin-top:6px;
+    color:var(--muted);
+    font-size:11px;
+    font-style:italic;
+    line-height:1.35;
+    text-wrap:pretty;
+  }
+  .ddb-output-risk-reason b {
+    color:#8bdfff;
+    font-style:normal;
+  }
+  .ddb-output-risk-badge { font-size:11px; font-weight:850; border-radius:999px; padding:4px 8px; white-space:nowrap; }
+  .ddb-output-risk-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px; }
+  .ddb-output-risk-stat { border:1px solid var(--border); border-radius:9px; padding:7px; background:rgba(255,255,255,.03); min-width:0; }
+  .ddb-output-risk-stat span { display:block; color:var(--muted); font-size:9.5px; font-weight:800; text-transform:uppercase; letter-spacing:0; }
+  .ddb-output-risk-stat b { display:block; color:var(--text); font-size:13px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  @media(max-width:1180px){
+    .ddb-output-cockpit.draft {
+      grid-template-columns:1fr;
+      grid-template-areas:"hero" "metrics" "insight" "charts";
+    }
+    .ddb-output-draft-hero { min-height:208px; }
+    .ddb-output-draft-copy { max-width:540px; }
+    .ddb-cockpit-side { grid-template-columns:1fr; }
+  }
+  @media(max-width:900px){
+    .ddb-output-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  }
+  @media(max-width:560px){
+    .ddb-output-cockpit { padding:14px; border-radius:14px; }
+    .ddb-output-draft-hero { min-height:236px; padding:16px; }
+    .ddb-output-draft-title { font-size:30px; max-width:220px; }
+    .ddb-output-draft-sub { max-width:230px; }
+    .ddb-output-draft-orbit { width:124px; height:124px; right:-28px; bottom:-30px; }
+    .ddb-output-draft-orbit::after { inset:24px; }
+    .ddb-output-draft-orbit span { font-size:18px; }
+    .ddb-output-draft-actions .btn { flex:1 1 calc(50% - 4px); justify-content:center; min-width:0; }
+    .ddb-output-draft-actions .btn.primary { flex-basis:100%; }
+    .ddb-cockpit-head { flex-direction:column; }
+    .ddb-cockpit-actions { justify-content:flex-start; width:100%; }
+    .ddb-cockpit-actions .btn { flex:1 1 calc(50% - 4px); justify-content:center; min-width:0; }
+    .ddb-cockpit-actions .btn.primary { flex-basis:100%; }
+    .ddb-output-metrics { grid-template-columns:1fr; }
+    .ddb-output-metric {
+      min-height:112px; display:grid; grid-template-columns:76px minmax(0,1fr);
+      grid-template-rows:auto auto; align-items:center; justify-items:start;
+      column-gap:12px; row-gap:6px;
+    }
+    .ddb-output-metric-top { grid-column:2; grid-row:1; }
+    .ddb-output-metric-label { font-size:10px; }
+    .ddb-output-ring { grid-column:1; grid-row:1 / span 2; width:76px; height:76px; }
+    .ddb-output-ring svg { width:76px; height:76px; }
+    .ddb-output-ring-value-text { font-size:19px; }
+    .ddb-output-metric-delta { grid-column:2; grid-row:2; }
+    .ddb-output-metric-tip { left:0; right:0; top:calc(100% + 6px); }
+    .ddb-output-risk-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
   }
 
   /* Hero */
@@ -343,56 +725,79 @@ const DASH_CSS = `
   }
   .ddb-obj-pct { font-size:11.5px; font-weight:700; width:32px; text-align:right; flex-shrink:0 }
 
-  /* Burnout meter */
+  /* Burnout — capacity bar */
   .ddb-gauge-wrap {
-    --gauge-color:#eab308;
-    min-height:196px; display:flex; flex-direction:column; justify-content:center; gap:16px;
-    padding:6px 2px 2px;
+    --gauge-color:#22c55e;
+    display:flex; flex-direction:column; gap:12px; padding:4px 0 2px;
   }
-  .ddb-burnout-top { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; }
-  .ddb-burnout-scorebox { display:flex; flex-direction:column; gap:4px; min-width:0; }
-  .ddb-burnout-score { color:var(--text); font-size:44px; line-height:.95; font-weight:850; letter-spacing:0; }
-  .ddb-burnout-caption {
-    color:var(--muted); font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:0;
+  .ddb-burnout-header { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+  .ddb-burnout-pct {
+    font-size:36px; line-height:.95; font-weight:800; letter-spacing:-.5px;
+    font-variant-numeric:tabular-nums; color:var(--gauge-color);
+    animation:ddb-pop .6s cubic-bezier(.34,1.18,.64,1) .08s both;
   }
+  .ddb-burnout-caption { color:var(--muted); font-size:10px; font-weight:800; text-transform:uppercase; margin-top:5px; }
   .ddb-burnout-status {
     display:inline-flex; align-items:center; gap:7px; flex-shrink:0;
-    color:var(--gauge-color); font-size:12px; font-weight:850; line-height:1;
+    color:var(--gauge-color); font-size:12px; font-weight:700; line-height:1;
     padding:7px 10px; border-radius:999px;
     background:color-mix(in srgb,var(--gauge-color) 12%,transparent);
     border:1px solid color-mix(in srgb,var(--gauge-color) 28%,transparent);
   }
   .ddb-burnout-status::before { content:''; width:7px; height:7px; border-radius:50%; background:currentColor; }
-  .ddb-burnout-meter { display:grid; gap:8px; }
-  .ddb-burnout-track {
-    position:relative; height:12px; overflow:hidden; border-radius:999px;
-    background:linear-gradient(90deg,var(--track),color-mix(in srgb,var(--track) 80%,var(--surface-2)));
+  .ddb-capbar-outer { display:flex; flex-direction:column; gap:5px; }
+  .ddb-capbar-track {
+    position:relative; height:18px; border-radius:9px; overflow:hidden;
+    background:linear-gradient(90deg,
+      color-mix(in srgb,#22c55e 22%,var(--surface-2)) 0% 40%,
+      color-mix(in srgb,#eab308 22%,var(--surface-2)) 40% 66.7%,
+      color-mix(in srgb,#ef4444 18%,var(--surface-2)) 66.7% 100%);
   }
-  .ddb-burnout-fill {
-    height:100%; width:0; border-radius:inherit;
-    background:linear-gradient(90deg,#22c55e,var(--gauge-color));
-    transition:width .55s cubic-bezier(.4,0,.2,1);
+  .ddb-capbar-fill {
+    position:absolute; inset:0; right:auto;
+    border-radius:inherit;
+    background:var(--gauge-color);
+    opacity:.88;
+    transform-origin:left center;
+    animation:ddb-capbar-in .88s cubic-bezier(.34,1.12,.64,1) .1s both;
+    overflow:hidden;
   }
-  .ddb-burnout-marker {
-    position:absolute; top:-3px; bottom:-3px; width:2px; border-radius:2px;
-    background:color-mix(in srgb,var(--text) 42%,transparent);
+  .ddb-capbar-fill::after {
+    content:''; position:absolute; inset:0;
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.46),transparent);
+    animation:ddb-shine 1s ease .9s both;
   }
-  .ddb-burnout-marker.warning { left:40%; }
-  .ddb-burnout-marker.limit { left:66.666%; }
-  .ddb-burnout-scale { display:grid; grid-template-columns:1fr 1fr 1fr; color:var(--muted); font-size:10px; font-weight:700; }
-  .ddb-burnout-scale span:nth-child(2) { text-align:center; }
-  .ddb-burnout-scale span:nth-child(3) { text-align:right; }
-  .ddb-burnout-stats { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
+  .ddb-capbar-marker {
+    position:absolute; top:2px; bottom:2px; width:1.5px; border-radius:1px;
+    background:rgba(255,255,255,.72); z-index:2;
+  }
+  .ddb-capbar-ticks {
+    display:grid; grid-template-columns:0fr 1fr 1fr 0fr;
+    color:var(--muted); font-size:9.5px; font-weight:700;
+  }
+  .ddb-capbar-ticks span:nth-child(2) { text-align:center; padding-left:6%; }
+  .ddb-capbar-ticks span:nth-child(3) { text-align:center; padding-left:10%; }
+  .ddb-capbar-ticks span:last-child { text-align:right; }
+  .ddb-burnout-stats { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
   .ddb-burnout-stat {
-    display:flex; align-items:baseline; justify-content:space-between; gap:10px;
-    padding-top:10px; border-top:1px solid var(--border); min-width:0;
+    display:flex; align-items:center; gap:8px;
+    padding:9px 10px; border-radius:10px;
+    border:1px solid var(--border); background:var(--surface-2); min-width:0;
+    animation:ddb-up .42s cubic-bezier(.22,1,.36,1) .3s both;
   }
-  .ddb-burnout-stat span {
-    color:var(--muted); font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:0;
-    white-space:nowrap;
+  .ddb-burnout-stat:nth-child(2) { animation-delay:.42s; }
+  .ddb-burnout-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+  .ddb-burnout-stat-text { min-width:0; }
+  .ddb-burnout-stat-text span {
+    display:block; color:var(--muted); font-size:9.5px; font-weight:800;
+    text-transform:uppercase; letter-spacing:0; white-space:nowrap;
   }
-  .ddb-burnout-stat strong { color:var(--text); font-size:18px; line-height:1; font-weight:850; white-space:nowrap; }
-  .ddb-burnout-stat.primary strong { color:var(--gauge-color); }
+  .ddb-burnout-stat-text strong {
+    display:block; color:var(--text); font-size:16px; font-weight:800;
+    font-variant-numeric:tabular-nums; line-height:1.15;
+  }
+  .ddb-burnout-stat-text strong.primary { color:var(--gauge-color); }
+  @keyframes ddb-capbar-in { from{transform:scaleX(0)} }
 
   /* Top risk list */
   .ddb-risk-list { display:flex; flex-direction:column; gap:1px }
@@ -670,21 +1075,31 @@ const DASH_CSS = `
 
   /* Drawer */
   .ddb-backdrop {
-    position:fixed; left:0; right:0; top:var(--header-h); bottom:0;
-    background:rgba(2,6,23,.50); z-index:80;
+    position:fixed; inset:0;
+    background:rgba(2,6,23,.50); z-index:900;
     backdrop-filter:blur(2px); -webkit-backdrop-filter:blur(2px);
     animation:ddb-fade .25s forwards;
   }
   .ddb-drawer {
-    position:fixed; right:0; top:var(--header-h); bottom:0; width:min(460px,100vw);
-    max-height:calc(100dvh - var(--header-h));
+    position:fixed; right:0; top:0; bottom:0; width:min(460px,100vw);
+    max-height:100dvh;
     background:
       linear-gradient(180deg,rgba(255,255,255,.84),rgba(255,255,255,.96)),
       var(--surface);
-    border-left:1px solid var(--border); z-index:90;
+    border-left:1px solid var(--border); z-index:1000;
     display:flex; flex-direction:column; overflow:hidden;
     box-shadow:-26px 0 70px rgba(15,23,42,.20);
     animation:ddb-slide .28s cubic-bezier(.4,0,.2,1) forwards;
+    outline:none;
+  }
+  .ddb-drawer:focus-visible {
+    outline:none;
+    box-shadow:var(--focus-ring), -26px 0 70px rgba(15,23,42,.20);
+  }
+  .lcmd-journal-detail:focus-visible,
+  .lcmd-confirm-dialog:focus-visible {
+    outline:none;
+    box-shadow:var(--focus-ring);
   }
   [data-theme="dark"] .ddb-drawer {
     background:
@@ -706,7 +1121,7 @@ const DASH_CSS = `
       linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.018)),
       #111827;
   }
-  .ddb-drawer-title { font-size:15px; font-weight:700; line-height:1.35 }
+  .ddb-drawer-title { font-size:15px; font-weight:700; line-height:1.35; text-wrap:balance }
   .ddb-drawer-body {
     padding:20px; flex:1; min-height:0; overflow-y:auto;
     overscroll-behavior:contain; scrollbar-gutter:stable;
@@ -726,28 +1141,1647 @@ const DASH_CSS = `
   .ddb-drawer-meta-key { color:var(--muted) }
 
   /* Animations */
-  @keyframes ddb-up { from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)} }
-  @keyframes ddb-page-in { from{opacity:0}to{opacity:1} }
-  @keyframes ddb-pop { from{opacity:0;transform:scale(.94)}to{opacity:1;transform:scale(1)} }
+  @keyframes ddb-up { from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)} }
+  @keyframes ddb-page-in { from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)} }
+  @keyframes ddb-pop { from{opacity:0;transform:scale(.91) translateY(6px)}to{opacity:1;transform:scale(1) translateY(0)} }
   @keyframes ddb-fill { from{transform:scaleX(0)}to{transform:scaleX(1)} }
+  @keyframes ddb-bar-rise { from{opacity:.45;transform:scaleY(.08)}to{opacity:1;transform:scaleY(1)} }
   @keyframes ddb-draw { to{stroke-dashoffset:0} }
   @keyframes ddb-donut-in { from{opacity:0;transform:scale(.88)}to{opacity:1;transform:scale(1)} }
-  @keyframes ddb-ring-pulse { 0%,100%{filter:drop-shadow(0 0 10px rgba(124,92,255,.22))}50%{filter:drop-shadow(0 0 18px rgba(20,184,166,.32))} }
+  @keyframes ddb-ring-pulse { 0%,100%{filter:drop-shadow(0 0 10px rgba(124,92,255,.22));transform:scale(1)} 50%{filter:drop-shadow(0 0 20px rgba(20,184,166,.40));transform:scale(1.018)} }
   @keyframes ddb-shimmer { 0%,68%{transform:translateX(-120%)}100%{transform:translateX(120%)} }
+  @keyframes ddb-shine { 0%{transform:translateX(-100%)} 100%{transform:translateX(100%)} }
   @keyframes ddb-slide { from{transform:translateX(100%)}to{transform:translateX(0)} }
   @keyframes ddb-sheet { from{transform:translateY(100%)}to{transform:translateY(0)} }
   @keyframes ddb-fade { from{opacity:0}to{opacity:1} }
   @keyframes ddb-ai-flip { from{opacity:0;transform:rotateY(-14deg) translateY(8px)}to{opacity:1;transform:rotateY(0) translateY(0)} }
   @keyframes ddb-radar-in { from{opacity:0;transform:scale(.18)}to{opacity:1;transform:scale(1)} }
   @keyframes ddb-week-grow { from{width:0}to{width:var(--bar-width)} }
+  @keyframes ddb-urgent-blink { 0%,100%{opacity:.55} 50%{opacity:1;filter:drop-shadow(0 0 5px currentColor)} }
+
+  /* Living dashboard shell */
+  .ldb-shell { position:relative; isolation:isolate; display:flex; flex-direction:column; gap:14px; }
+  .ldb-ambient {
+    position:fixed; inset:var(--header-h) 0 0; z-index:-1; pointer-events:none; overflow:hidden;
+    background:var(--lcmd-ambient-bg);
+  }
+  .ldb-ambient::before {
+    content:''; position:absolute; inset:0;
+    background:
+      linear-gradient(90deg,var(--lcmd-grid-line-a) 1px,transparent 1px),
+      linear-gradient(180deg,var(--lcmd-grid-line-b) 1px,transparent 1px);
+    background-size:72px 72px;
+    mask-image:linear-gradient(180deg,rgba(0,0,0,.85),transparent 82%);
+    animation:ldb-grid-drift 16s linear infinite;
+  }
+  .ldb-ambient::after {
+    content:''; position:absolute; left:0; right:0; top:-2px; height:2px;
+    background:var(--lcmd-scan-line);
+    box-shadow:var(--lcmd-scan-shadow); opacity:.38;
+    animation:ldb-scan 8s linear infinite;
+  }
+  .ldb-particle {
+    position:absolute; width:3px; height:3px; border-radius:999px;
+    background:#22d3ee; opacity:.34; box-shadow:0 0 12px currentColor;
+    animation:ldb-float 7s ease-in-out infinite;
+  }
+  .ldb-particle:nth-child(1){ left:8%; top:18%; color:#22d3ee; animation-delay:-1s; }
+  .ldb-particle:nth-child(2){ left:31%; top:8%; color:#7c5cff; animation-delay:-4s; }
+  .ldb-particle:nth-child(3){ left:58%; top:22%; color:#edf2ff; animation-delay:-2s; }
+  .ldb-particle:nth-child(4){ left:78%; top:42%; color:#14b8a6; animation-delay:-5s; }
+  .ldb-particle:nth-child(5){ left:18%; top:70%; color:#ffb300; animation-delay:-3s; }
+  .ldb-top { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  .ldb-title { min-width:0; display:flex; flex-direction:column; gap:4px; }
+  .ldb-title strong { color:var(--text); font-size:18px; font-weight:900; line-height:1.15; }
+  .ldb-title span { color:var(--muted); font-size:12px; }
+  .ldb-alert {
+    display:flex; align-items:center; gap:10px; padding:12px 14px;
+    border:1px solid rgba(255,61,0,.28); border-left:3px solid #ff3d00; border-radius:12px;
+    background:linear-gradient(90deg,rgba(255,61,0,.10),rgba(255,61,0,.025));
+    color:var(--text); font-size:12.5px; line-height:1.45; animation:ddb-up .26s ease both;
+  }
+  .ldb-alert.ok {
+    border-color:rgba(0,230,118,.22); border-left-color:#00e676;
+    background:linear-gradient(90deg,rgba(0,230,118,.09),rgba(0,229,255,.03));
+  }
+  .ldb-alert .ui-icon {
+    width:17px; height:17px; color:#ff6b3d; flex-shrink:0;
+    animation:ddb-ring-pulse 2.6s ease-in-out infinite;
+  }
+  .ldb-alert.ok .ui-icon { color:#00e676; }
+  .ldb-alert-actions { margin-left:auto; display:inline-flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+  .ldb-command-grid { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(320px,.75fr); gap:14px; align-items:stretch; }
+  .ldb-side-stack { display:grid; gap:14px; }
+  .ldb-bottom-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+  .ldb-panel {
+    min-width:0; border:1px solid color-mix(in srgb,#00e5ff 15%,var(--border));
+    border-radius:12px; padding:14px;
+    background:linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.015)),var(--surface);
+    box-shadow:0 0 0 1px rgba(255,255,255,.018) inset;
+  }
+  [data-theme="dark"] .ldb-panel {
+    background:linear-gradient(180deg,rgba(17,29,53,.82),rgba(13,20,36,.88)),var(--surface);
+  }
+  .ldb-journal-list { display:flex; flex-direction:column; gap:9px; }
+  .ldb-journal-item {
+    display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:9px;
+    padding:9px 0; border-bottom:1px solid var(--border); color:var(--text); font-size:12px;
+  }
+  .ldb-journal-item:last-child { border-bottom:none; }
+  .ldb-journal-icon {
+    width:24px; height:24px; display:grid; place-items:center; border-radius:8px;
+    color:#22d3ee; background:rgba(34,211,238,.10);
+  }
+  .ldb-journal-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:750; }
+  .ldb-journal-meta { color:var(--muted); font-size:10.5px; white-space:nowrap; }
+  @keyframes ldb-scan { from{ transform:translateY(0); } to{ transform:translateY(100vh); } }
+  @keyframes ldb-grid-drift { from{ transform:translate3d(0,0,0); } to{ transform:translate3d(72px,72px,0); } }
+  @keyframes ldb-float { 0%,100%{ transform:translate3d(0,0,0); opacity:.22; } 50%{ transform:translate3d(18px,-16px,0); opacity:.48; } }
+
+  /* Command center rebuild */
+  .page.ddb-wrap.lcmd-page {
+    --surface:#ffffff;
+    --surface-2:#f3f8ff;
+    --surface-3:#e8f2ff;
+    --text:#172033;
+    --muted:#64708c;
+    --border:rgba(79,70,229,.16);
+    --primary:#7c5cff;
+    --primary-2:#14b8a6;
+    --cyan:#0891b2;
+    --violet:#8b5cf6;
+    --grad:linear-gradient(135deg,#7c5cff 0%,#06b6d4 55%,#14b8a6 100%);
+    --grad-hot:linear-gradient(135deg,#7c5cff 0%,#22d3ee 50%,#ff6ec7 100%);
+    --primary-soft:rgba(124,92,255,.11);
+    --shadow-hover:0 12px 30px rgba(15,23,42,.10),0 1px 3px rgba(15,23,42,.04);
+    --lcmd-ambient-bg:
+      radial-gradient(circle at 14% 16%,rgba(124,92,255,.12),transparent 28%),
+      radial-gradient(circle at 86% 7%,rgba(6,182,212,.10),transparent 30%),
+      radial-gradient(circle at 52% 36%,rgba(20,184,166,.07),transparent 28%),
+      linear-gradient(180deg,rgba(248,252,255,.72),rgba(248,252,255,.14) 54%,transparent);
+    --lcmd-grid-line-a:rgba(79,70,229,.055);
+    --lcmd-grid-line-b:rgba(20,184,166,.045);
+    --lcmd-scan-line:linear-gradient(90deg,transparent,rgba(124,92,255,.24),rgba(6,182,212,.26),transparent);
+    --lcmd-scan-shadow:0 0 14px rgba(124,92,255,.14),0 0 18px rgba(34,211,238,.10);
+    --lcmd-page-bg:
+      radial-gradient(900px 460px at 18% -12%,rgba(124,92,255,.10),transparent 66%),
+      radial-gradient(820px 420px at 96% 0%,rgba(6,182,212,.08),transparent 64%),
+      linear-gradient(180deg,#f7fbff 0%,#f3f7fb 48%,#f8fbff 100%);
+    --lcmd-title-grad:linear-gradient(135deg,#172033 0%,#4f46e5 44%,#0891b2 100%);
+    --lcmd-button-bg:color-mix(in srgb,var(--surface) 90%,var(--primary) 7%);
+    --lcmd-card-bg:
+      radial-gradient(380px 220px at 18% 0%,rgba(124,92,255,.11),transparent 62%),
+      linear-gradient(160deg,rgba(6,182,212,.075),rgba(20,184,166,.045) 48%,rgba(124,92,255,.065)),
+      var(--surface);
+    --lcmd-panel-bg:
+      radial-gradient(320px 170px at 0% 0%,rgba(124,92,255,.08),transparent 64%),
+      linear-gradient(180deg,rgba(255,255,255,.78),rgba(255,255,255,.48)),
+      var(--surface);
+    --lcmd-row-bg:color-mix(in srgb,var(--surface) 88%,var(--cyan) 5%);
+    --lcmd-row-hover:color-mix(in srgb,var(--surface-2) 82%,var(--cyan) 9%);
+    --lcmd-row-strong:color-mix(in srgb,var(--surface) 82%,var(--primary) 8%);
+    --lcmd-inset-shadow:0 0 0 1px rgba(15,23,42,.035) inset;
+    --lcmd-note-text:#51617f;
+    --lcmd-highlight:#0e7490;
+    --lcmd-highlight-soft:rgba(14,116,144,.13);
+    --lcmd-ring-core:#ffffff;
+    --lcmd-hover-base:#0f172a;
+    --lcmd-chart-axis:#64708c;
+    --lcmd-chart-text:#172033;
+    --lcmd-chart-label:#172033;
+    --lcmd-chart-label-stroke:#ffffff;
+    --lcmd-chart-callout-bg:rgba(255,255,255,.96);
+    --lcmd-chart-callout-text:#172033;
+    --lcmd-chart-callout-muted:#64708c;
+    --lcmd-needle:#172033;
+    --lcmd-dialog-bg:#ffffff;
+    --lcmd-dialog-text:#172033;
+    --lcmd-live-tip-bg:#ffffff;
+    --lcmd-live-tip-text:#172033;
+    position:relative;
+    max-width:1360px;
+    min-height:calc(100vh - var(--header-h));
+    background:var(--lcmd-page-bg);
+    overflow:hidden;
+    font-family:'Inter','Segoe UI',system-ui,-apple-system,sans-serif;
+    text-rendering:geometricPrecision;
+  }
+  [data-theme="dark"] .page.ddb-wrap.lcmd-page {
+    --surface:#0b1022;
+    --surface-2:#111a34;
+    --surface-3:#182448;
+    --text:#edf2ff;
+    --muted:#a2acc8;
+    --border:rgba(148,163,184,.18);
+    --cyan:#22d3ee;
+    --primary-soft:rgba(124,92,255,.16);
+    --shadow-hover:0 18px 46px rgba(2,6,23,.34);
+    --lcmd-ambient-bg:
+      radial-gradient(circle at 14% 16%,rgba(124,92,255,.16),transparent 28%),
+      radial-gradient(circle at 86% 7%,rgba(6,182,212,.13),transparent 30%),
+      radial-gradient(circle at 52% 36%,rgba(20,184,166,.08),transparent 28%),
+      linear-gradient(180deg,rgba(7,10,22,.56),rgba(7,10,22,.02) 54%,transparent);
+    --lcmd-grid-line-a:rgba(124,92,255,.055);
+    --lcmd-grid-line-b:rgba(20,184,166,.045);
+    --lcmd-scan-line:linear-gradient(90deg,transparent,rgba(124,92,255,.44),rgba(34,211,238,.48),transparent);
+    --lcmd-scan-shadow:0 0 18px rgba(124,92,255,.24),0 0 22px rgba(34,211,238,.18);
+    --lcmd-page-bg:
+      radial-gradient(900px 460px at 18% -12%,rgba(124,92,255,.18),transparent 66%),
+      radial-gradient(820px 420px at 96% 0%,rgba(6,182,212,.12),transparent 64%),
+      linear-gradient(180deg,#070a16 0%,#090e1d 48%,#070b18 100%);
+    --lcmd-title-grad:linear-gradient(135deg,#f5f7ff 0%,#c7d2fe 35%,#67e8f9 100%);
+    --lcmd-button-bg:rgba(17,26,52,.84);
+    --lcmd-card-bg:
+      radial-gradient(380px 220px at 18% 0%,rgba(124,92,255,.13),transparent 62%),
+      linear-gradient(160deg,rgba(34,211,238,.05),rgba(20,184,166,.035) 48%,rgba(124,92,255,.07)),
+      var(--surface);
+    --lcmd-panel-bg:
+      radial-gradient(320px 170px at 0% 0%,rgba(124,92,255,.09),transparent 64%),
+      linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.012)),
+      var(--surface);
+    --lcmd-row-bg:rgba(7,10,22,.64);
+    --lcmd-row-hover:rgba(17,26,52,.92);
+    --lcmd-row-strong:rgba(17,26,52,.72);
+    --lcmd-inset-shadow:0 0 0 1px rgba(255,255,255,.025) inset;
+    --lcmd-note-text:#cbd5ef;
+    --lcmd-highlight:#8bdfff;
+    --lcmd-highlight-soft:rgba(139,223,255,.13);
+    --lcmd-ring-core:#0b1022;
+    --lcmd-hover-base:#ffffff;
+    --lcmd-chart-axis:#a2acc8;
+    --lcmd-chart-text:#edf2ff;
+    --lcmd-chart-label:#dbeafe;
+    --lcmd-chart-label-stroke:#0b1022;
+    --lcmd-chart-callout-bg:rgba(7,10,22,.88);
+    --lcmd-chart-callout-text:#edf2ff;
+    --lcmd-chart-callout-muted:#a2acc8;
+    --lcmd-needle:#edf2ff;
+    --lcmd-dialog-bg:#101827;
+    --lcmd-dialog-text:#edf2ff;
+    --lcmd-live-tip-bg:#0b1022;
+    --lcmd-live-tip-text:#edf2ff;
+  }
+  .lcmd {
+    position:relative;
+    isolation:isolate;
+    display:grid;
+    gap:12px;
+    color:var(--text);
+    font-size:13px;
+    line-height:1.45;
+  }
+  .lcmd button {
+    font-family:inherit;
+  }
+  .lcmd .btn {
+    border-color:var(--border);
+    background:var(--lcmd-button-bg);
+    color:var(--text);
+  }
+  .lcmd .btn.primary {
+    border:0;
+    color:#fff;
+    background:var(--grad);
+    box-shadow:0 10px 28px rgba(124,92,255,.22),0 0 22px rgba(20,184,166,.14);
+  }
+  .lcmd .btn.ghost {
+    background:transparent;
+    color:var(--muted);
+  }
+  .lcmd-topline {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:12px;
+    flex-wrap:wrap;
+    padding:2px 0;
+  }
+  .lcmd-kicker {
+    display:inline-flex;
+    align-items:center;
+    gap:7px;
+    width:max-content;
+    color:var(--lcmd-highlight);
+    font-size:10px;
+    font-weight:800;
+    text-transform:uppercase;
+    letter-spacing:.08em;
+  }
+  .lcmd-kicker::before {
+    content:'';
+    width:7px;
+    height:7px;
+    border-radius:999px;
+    background:#14b8a6;
+    box-shadow:0 0 12px rgba(20,184,166,.82);
+    animation:lcmd-live 2s ease-in-out infinite;
+  }
+  .lcmd-title {
+    margin-top:4px;
+    font-size:28px;
+    line-height:1.08;
+    font-weight:800;
+    background:var(--lcmd-title-grad);
+    -webkit-background-clip:text;
+    background-clip:text;
+    color:transparent;
+  }
+  .lcmd-subtitle {
+    margin-top:5px;
+    color:var(--muted);
+    font-size:12.5px;
+    text-wrap:pretty;
+  }
+  .lcmd-top-actions {
+    display:flex;
+    align-items:center;
+    justify-content:flex-end;
+    gap:10px;
+    flex-wrap:wrap;
+  }
+  .lcmd-top-actions .view-switch {
+    margin-bottom:0;
+    align-self:center;
+  }
+  .lcmd-refresh-state {
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    gap:6px;
+    height:38px;
+    padding:0 10px;
+    border:1px solid var(--border);
+    border-radius:12px;
+    background:var(--lcmd-row-bg);
+    color:var(--muted);
+    font-size:11px;
+    font-weight:750;
+    white-space:nowrap;
+    line-height:1;
+  }
+  .lcmd-refresh-state .ui-icon {
+    width:13px;
+    height:13px;
+  }
+  .lcmd-refresh-state.active .ui-icon {
+    animation:lcmd-spin 1s linear infinite;
+  }
+  .lcmd-hero-grid {
+    display:grid;
+    grid-template-columns:minmax(276px,.74fr) minmax(0,1.86fr);
+    gap:12px;
+    align-items:stretch;
+  }
+  .lcmd-hero-side {
+    display:grid;
+    gap:10px;
+    min-width:0;
+  }
+  .lcmd-card {
+    position:relative;
+    overflow:hidden;
+    border:1px solid var(--border);
+    border-radius:12px;
+    background:var(--lcmd-card-bg);
+    box-shadow:var(--lcmd-inset-shadow);
+  }
+  .lcmd-card::before {
+    content:'';
+    position:absolute;
+    inset:0;
+    pointer-events:none;
+    background:
+      linear-gradient(115deg,transparent 0%,rgba(124,92,255,.075) 42%,rgba(34,211,238,.06) 52%,transparent 64%),
+      repeating-linear-gradient(90deg,rgba(148,163,184,.04) 0 1px,transparent 1px 96px);
+    opacity:.68;
+  }
+  .lcmd-score-card {
+    min-height:278px;
+    height:100%;
+    padding:14px;
+    display:flex;
+    flex-direction:column;
+    justify-content:space-between;
+    gap:10px;
+  }
+  .lcmd-score-card.danger {
+    border-color:rgba(255,61,0,.36);
+    box-shadow:0 0 20px rgba(255,61,0,.14),var(--lcmd-inset-shadow);
+    animation:lcmd-red-pulse 3s ease-in-out infinite;
+  }
+  .lcmd-score-head,
+  .lcmd-score-body,
+  .lcmd-metric-grid,
+  .lcmd-panel-inner {
+    position:relative;
+    z-index:1;
+  }
+  .lcmd-score-head {
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:12px;
+  }
+  .lcmd-score-title {
+    color:var(--muted);
+    font-size:10.5px;
+    font-weight:800;
+    text-transform:uppercase;
+    letter-spacing:.08em;
+  }
+  .lcmd-score-note {
+    margin-top:5px;
+    max-width:260px;
+    color:var(--lcmd-note-text);
+    font-size:11.5px;
+    font-style:italic;
+    line-height:1.45;
+    text-wrap:pretty;
+  }
+  .lcmd-score-body {
+    flex:1;
+    display:grid;
+    place-items:center;
+  }
+  .lcmd-score-ring {
+    position:relative;
+    width:180px;
+    height:180px;
+    margin:4px auto 0;
+    display:grid;
+    place-items:center;
+    border-radius:999px;
+    box-shadow:0 0 0 1px color-mix(in srgb,var(--score-strong) 46%,transparent),0 0 36px var(--score-glow),0 0 70px color-mix(in srgb,var(--score-strong) 16%,transparent);
+  }
+  .lcmd-score-ring::before {
+    content:'';
+    position:absolute;
+    inset:8px;
+    border-radius:999px;
+    background:radial-gradient(circle,color-mix(in srgb,var(--score-strong) 34%,transparent),transparent 68%);
+    filter:blur(12px);
+    opacity:.62;
+    transform:scale(var(--score-scale,.95));
+    pointer-events:none;
+  }
+  .lcmd-score-ring::after {
+    content:'';
+    position:absolute;
+    inset:-4px;
+    border-radius:999px;
+    background:conic-gradient(from -90deg,color-mix(in srgb,var(--score-soft) 20%,transparent),var(--score-mid),var(--score-strong),color-mix(in srgb,var(--score-strong) 18%,transparent));
+    opacity:.72;
+    -webkit-mask:radial-gradient(circle,transparent 68%,#000 70%);
+    mask:radial-gradient(circle,transparent 68%,#000 70%);
+    pointer-events:none;
+  }
+  .lcmd-score-ring svg {
+    width:180px;
+    height:180px;
+    transform:rotate(-90deg);
+    overflow:visible;
+    position:relative;
+    z-index:1;
+  }
+  .lcmd-ring-track {
+    fill:none;
+    stroke:rgba(162,172,200,.20);
+    stroke-width:18;
+  }
+  .lcmd-ring-value {
+    fill:none;
+    stroke:url(#lcmdScoreGradient);
+    stroke-width:18;
+    stroke-linecap:round;
+    filter:drop-shadow(0 0 10px var(--score-glow)) drop-shadow(0 0 16px color-mix(in srgb,var(--score-strong) 22%,transparent));
+    animation:lcmd-ring-load 1.1s cubic-bezier(.22,1,.36,1) both;
+  }
+  .lcmd-score-center {
+    position:absolute;
+    z-index:2;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:4px;
+    max-width:106px;
+    text-align:center;
+  }
+  .lcmd-score-number {
+    font-size:44px;
+    line-height:.95;
+    font-weight:800;
+    font-variant-numeric:tabular-nums;
+    font-feature-settings:"tnum" 1;
+    background:linear-gradient(135deg,color-mix(in srgb,var(--score-strong) 78%,#172033) 0%,var(--score-strong) 46%,color-mix(in srgb,var(--score-strong) 68%,#0f172a) 100%);
+    -webkit-background-clip:text;
+    background-clip:text;
+    color:transparent;
+    filter:none;
+    text-shadow:none;
+  }
+  [data-theme="dark"] .lcmd-score-number {
+    background:linear-gradient(135deg,#fffef2 0%,var(--score-mid) 42%,var(--score-strong) 100%);
+    -webkit-background-clip:text;
+    background-clip:text;
+    filter:drop-shadow(0 0 8px color-mix(in srgb,var(--score-strong) 58%,transparent)) drop-shadow(0 0 18px var(--score-glow));
+    text-shadow:0 0 18px color-mix(in srgb,var(--score-strong) 52%,transparent);
+  }
+  .lcmd-score-label {
+    color:var(--muted);
+    font-size:10px;
+    font-weight:800;
+    text-transform:uppercase;
+    letter-spacing:.10em;
+    line-height:1.18;
+    max-width:96px;
+    white-space:normal;
+  }
+  .lcmd-cursor {
+    display:inline-block;
+    width:1px;
+    height:13px;
+    margin-left:3px;
+    vertical-align:-2px;
+    background:var(--lcmd-highlight);
+    animation:lcmd-cursor 1s steps(2,end) infinite;
+  }
+  .lcmd-score-actions {
+    display:flex;
+    gap:8px;
+    flex-wrap:wrap;
+  }
+  .lcmd-metric-grid {
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:10px;
+  }
+  .lcmd-metric {
+    --metric-color:#22d3ee;
+    position:relative; overflow:hidden;
+    min-height:102px;
+    border:1px solid color-mix(in srgb,var(--metric-color) 30%,var(--border));
+    border-radius:12px;
+    background:
+      radial-gradient(170px 110px at 8% 0%,color-mix(in srgb,var(--metric-color) 13%,transparent),transparent 66%),
+      linear-gradient(180deg,rgba(255,255,255,.70),rgba(255,255,255,.38)),
+      var(--surface);
+    padding:11px 12px;
+    color:var(--text);
+    text-align:left;
+    cursor:pointer;
+    animation:ddb-pop .38s cubic-bezier(.34,1.2,.64,1) both;
+    transition:transform .18s cubic-bezier(.34,1.2,.64,1),border-color .16s ease,background .16s ease,box-shadow .18s ease;
+  }
+  .lcmd-metric:nth-child(1) { animation-delay:.04s }
+  .lcmd-metric:nth-child(2) { animation-delay:.09s }
+  .lcmd-metric:nth-child(3) { animation-delay:.14s }
+  .lcmd-metric:nth-child(4) { animation-delay:.19s }
+  [data-theme="dark"] .lcmd-metric {
+    background:
+      radial-gradient(170px 110px at 8% 0%,color-mix(in srgb,var(--metric-color) 16%,transparent),transparent 66%),
+      linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.012)),
+      var(--surface);
+  }
+  .lcmd-metric::after {
+    content:''; position:absolute; inset:0; pointer-events:none; border-radius:inherit; z-index:2;
+    background:linear-gradient(115deg,transparent 25%,rgba(255,255,255,.15) 50%,transparent 75%);
+    transform:translateX(-110%); transition:transform 0s;
+  }
+  .lcmd-metric:hover::after { transform:translateX(110%); transition:transform .5s cubic-bezier(.4,0,.2,1); }
+  .lcmd-metric:hover,
+  .lcmd-metric:focus-visible {
+    transform:translateY(-3px) scale(1.01);
+    border-color:color-mix(in srgb,var(--metric-color) 60%,var(--lcmd-hover-base));
+    box-shadow:0 16px 36px rgba(2,6,23,.22),0 0 20px color-mix(in srgb,var(--metric-color) 12%,transparent);
+    outline:none;
+  }
+  .lcmd-metric-icon {
+    width:27px;
+    height:27px;
+    display:grid;
+    place-items:center;
+    border-radius:9px;
+    color:var(--metric-color);
+    background:color-mix(in srgb,var(--metric-color) 14%,transparent);
+  }
+  .lcmd-metric-icon .ui-icon {
+    width:16px;
+    height:16px;
+  }
+  .lcmd-metric-top {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+    width:100%;
+  }
+  .lcmd-metric-badge {
+    min-width:0;
+    max-width:92px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    padding:3px 7px;
+    border-radius:999px;
+    color:var(--metric-color);
+    background:color-mix(in srgb,var(--metric-color) 13%,transparent);
+    font-size:10px;
+    font-weight:850;
+  }
+  .lcmd-metric-label {
+    margin-top:8px;
+    color:var(--muted);
+    font-size:10px;
+    font-weight:800;
+    text-transform:uppercase;
+    letter-spacing:.06em;
+    line-height:1.25;
+    text-wrap:balance;
+  }
+  .lcmd-metric-value {
+    margin-top:5px;
+    font-size:25px;
+    line-height:1;
+    font-weight:800;
+    color:var(--text);
+    font-variant-numeric:tabular-nums;
+    font-feature-settings:"tnum" 1;
+  }
+  .lcmd-metric-sub {
+    margin-top:5px;
+    min-height:16px;
+    color:var(--muted);
+    font-size:11px;
+    font-weight:650;
+    line-height:1.35;
+    text-wrap:pretty;
+  }
+  .lcmd-metric-mini {
+    display:block;
+    width:100%;
+    height:5px;
+    margin-top:8px;
+    border-radius:999px;
+    overflow:hidden;
+    background:rgba(162,172,200,.16);
+  }
+  .lcmd-metric-mini span {
+    display:block;
+    height:100%;
+    border-radius:inherit;
+    background:var(--metric-color);
+    box-shadow:0 0 12px color-mix(in srgb,var(--metric-color) 28%,transparent);
+    animation:ddb-fill .72s cubic-bezier(.22,1,.36,1) both;
+    transform-origin:left;
+  }
+  .lcmd-live {
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    margin-top:8px;
+    color:var(--metric-color);
+    max-width:100%;
+    font-size:10.5px;
+    font-weight:800;
+    line-height:1.25;
+    overflow-wrap:anywhere;
+  }
+  .lcmd-live-info {
+    position:relative;
+    display:inline-grid;
+    place-items:center;
+    width:15px;
+    height:15px;
+    margin-left:1px;
+    border-radius:999px;
+    border:1px solid currentColor;
+    font-size:10px;
+    line-height:1;
+    opacity:.86;
+  }
+  .lcmd-live-info .ui-icon {
+    width:11px;
+    height:11px;
+    stroke-width:2.3;
+  }
+  .lcmd-live-tip {
+    position:absolute;
+    left:50%;
+    bottom:calc(100% + 8px);
+    width:min(250px,calc(100vw - 44px));
+    transform:translate(-50%,4px);
+    z-index:40;
+    padding:8px 9px;
+    border:1px solid color-mix(in srgb,var(--lcmd-highlight) 24%,var(--border));
+    border-radius:9px;
+    background:var(--lcmd-live-tip-bg);
+    color:var(--lcmd-live-tip-text);
+    box-shadow:0 12px 30px rgba(2,6,23,.34);
+    font-size:11px;
+    font-weight:650;
+    line-height:1.35;
+    text-transform:none;
+    letter-spacing:0;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .15s ease,transform .15s ease;
+  }
+  .lcmd-live:hover .lcmd-live-tip,
+  .lcmd-live:focus-within .lcmd-live-tip {
+    opacity:1;
+    transform:translate(-50%,0);
+  }
+  .lcmd-live.up { color:#14b8a6; }
+  .lcmd-live.down { color:#ff6b3d; }
+  .lcmd-live.flat { color:var(--muted); }
+  .lcmd-live-arrow {
+    display:inline-grid;
+    place-items:center;
+    width:16px;
+    height:16px;
+    flex-shrink:0;
+    border-radius:6px;
+    background:color-mix(in srgb,currentColor 14%,transparent);
+  }
+  .lcmd-live-arrow .ui-icon { width:12px; height:12px; stroke-width:2.25; }
+  .lcmd-alert {
+    position:relative;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    min-height:46px;
+    padding:10px 12px;
+    border:1px solid rgba(255,61,0,.26);
+    border-left:3px solid #ff3d00;
+    border-radius:12px;
+    background:linear-gradient(90deg,rgba(255,61,0,.10),rgba(255,61,0,.025));
+    color:var(--text);
+    font-size:12.5px;
+    line-height:1.45;
+    animation:ddb-up .24s ease both;
+  }
+  .lcmd-alert.ok {
+    border-color:rgba(0,230,118,.22);
+    border-left-color:#14b8a6;
+    background:linear-gradient(90deg,rgba(20,184,166,.11),rgba(124,92,255,.045));
+  }
+  .lcmd-alert.watch {
+    border-color:rgba(255,179,0,.28);
+    border-left-color:#ffb300;
+    background:linear-gradient(90deg,rgba(255,179,0,.10),rgba(124,92,255,.035));
+  }
+  .lcmd-alert .ui-icon {
+    width:17px;
+    height:17px;
+    color:#ff3d00;
+    flex-shrink:0;
+  }
+  .lcmd-alert.ok .ui-icon {
+    color:#14b8a6;
+  }
+  .lcmd-alert.watch .ui-icon {
+    color:#ffb300;
+  }
+  .lcmd-alert-copy {
+    min-width:0;
+    display:grid;
+    gap:2px;
+  }
+  .lcmd-alert-copy strong {
+    color:var(--text);
+    font-size:12.5px;
+    line-height:1.35;
+    text-wrap:pretty;
+  }
+  .lcmd-alert-copy em {
+    color:var(--muted);
+    font-size:11.5px;
+    font-style:italic;
+    line-height:1.35;
+    text-wrap:pretty;
+  }
+  .lcmd-alert-actions {
+    margin-left:auto;
+    display:inline-flex;
+    gap:10px;
+    flex-wrap:wrap;
+    flex-shrink:0;
+  }
+  .lcmd-alert-actions .lcmd-inline {
+    white-space:nowrap;
+  }
+  .lcmd-inline {
+    border:0;
+    padding:0;
+    background:transparent;
+    color:var(--lcmd-highlight);
+    font:inherit;
+    font-weight:700;
+    cursor:pointer;
+    text-decoration:none;
+  }
+  .lcmd-inline:hover,
+  .lcmd-inline:focus-visible {
+    color:var(--violet);
+    outline:none;
+  }
+  .lcmd-main-grid {
+    display:grid;
+    grid-template-columns:minmax(0,1fr);
+    gap:12px;
+  }
+  .lcmd-panel {
+    min-width:0;
+    padding:12px;
+    border:1px solid var(--border);
+    border-radius:12px;
+    background:var(--lcmd-panel-bg);
+    box-shadow:var(--lcmd-inset-shadow);
+  }
+  .lcmd .ddb-gauge-wrap {
+    min-height:150px;
+    gap:11px;
+    padding:0;
+  }
+  .lcmd .ddb-burnout-top {
+    gap:10px;
+  }
+  .lcmd .ddb-burnout-score {
+    font-size:36px;
+  }
+  .lcmd .ddb-burnout-track {
+    height:10px;
+  }
+  .lcmd .ddb-burnout-stats {
+    gap:10px;
+  }
+  .lcmd .ddb-burnout-stat {
+    padding-top:7px;
+  }
+  .lcmd .ddb-burnout-note {
+    display:grid;
+    gap:3px;
+    padding:7px 9px;
+    border:1px solid color-mix(in srgb,var(--lcmd-highlight) 22%,var(--border));
+    border-radius:9px;
+    background:var(--lcmd-row-bg);
+    color:var(--muted);
+    font-size:10.8px;
+    line-height:1.34;
+    text-wrap:pretty;
+  }
+  .lcmd .ddb-burnout-note em {
+    color:var(--text);
+    font-style:italic;
+  }
+  .lcmd-panel-head {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    margin-bottom:9px;
+  }
+  .lcmd-panel-title {
+    display:flex;
+    align-items:center;
+    gap:8px;
+    color:var(--text);
+    font-size:12px;
+    font-weight:800;
+    text-transform:uppercase;
+    letter-spacing:.06em;
+  }
+  .lcmd-panel-title .ui-icon {
+    width:16px;
+    height:16px;
+    color:var(--lcmd-highlight);
+  }
+  .lcmd-chart {
+    width:100%;
+    height:266px;
+    display:block;
+    overflow:visible;
+  }
+  .lcmd-bar {
+    cursor:pointer;
+    transform-origin:bottom;
+    transform-box:fill-box;
+    animation:ddb-bar-rise .64s cubic-bezier(.22,1,.36,1) both;
+  }
+  .lcmd-bar-hit {
+    cursor:pointer;
+    fill:transparent;
+  }
+  .lcmd-axis-label {
+    fill:var(--lcmd-chart-axis);
+    font-size:10.5px;
+    font-weight:750;
+  }
+  .lcmd-target-line {
+    stroke-dasharray:7 7;
+  }
+  .lcmd-chart-legend {
+    display:flex;
+    align-items:center;
+    gap:10px;
+    flex-wrap:wrap;
+    margin:-3px 0 8px;
+    color:var(--muted);
+    font-size:10.5px;
+    font-weight:750;
+  }
+  .lcmd-chart-legend span {
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    white-space:nowrap;
+  }
+  .lcmd-period-badge {
+    display:inline-flex;
+    align-items:center;
+    min-height:26px;
+    padding:4px 8px;
+    border:1px solid var(--border);
+    border-radius:999px;
+    background:var(--lcmd-row-bg);
+    color:var(--muted);
+    font-size:11px;
+    font-weight:800;
+    white-space:nowrap;
+  }
+  .lcmd-legend-mark {
+    width:18px;
+    height:3px;
+    border-radius:999px;
+    background:#22d3ee;
+  }
+  .lcmd-legend-mark.bar {
+    width:9px;
+    height:11px;
+    border-radius:3px;
+  }
+  .lcmd-legend-mark.target {
+    background:repeating-linear-gradient(90deg,var(--lcmd-chart-axis) 0 5px,transparent 5px 8px);
+  }
+  .lcmd-legend-mark.zero {
+    width:10px;
+    height:10px;
+    border-radius:3px;
+    background:linear-gradient(135deg,rgba(255,61,0,.62),rgba(255,179,0,.38));
+  }
+  .lcmd-legend-mark.trend {
+    height:3px;
+    width:20px;
+    background:var(--lcmd-highlight);
+    box-shadow:0 0 10px color-mix(in srgb,var(--lcmd-highlight) 42%,transparent);
+  }
+  .lcmd-trend-layer { pointer-events:none; }
+  .lcmd-trend-line {
+    fill:none;
+    stroke:var(--lcmd-highlight);
+    stroke-width:2.8;
+    stroke-linecap:round;
+    stroke-linejoin:round;
+    filter:drop-shadow(0 0 10px color-mix(in srgb,var(--lcmd-highlight) 42%,transparent));
+    stroke-dasharray:1800;
+    stroke-dashoffset:1800;
+    animation:lcmd-trend-draw 1.2s cubic-bezier(.22,1,.36,1) .2s forwards;
+  }
+  .lcmd-area-fill {
+    fill:url(#lcmdAreaGrad);
+    pointer-events:none;
+    animation:ddb-up .8s ease .3s both;
+  }
+  .lcmd-trend-dot {
+    fill:var(--lcmd-ring-core);
+    stroke:var(--lcmd-highlight);
+    stroke-width:1.8;
+    opacity:.82;
+  }
+  .lcmd-trend-dot.active {
+    fill:var(--lcmd-highlight);
+    animation:lcmd-trend-pulse 1.6s ease-in-out infinite;
+  }
+  .lcmd-trend-node {
+    pointer-events:all;
+    cursor:pointer;
+  }
+  .lcmd-trend-hit {
+    fill:rgba(139,223,255,.001);
+    pointer-events:all;
+  }
+  .lcmd-trend-label {
+    fill:var(--lcmd-chart-label);
+    font-size:8.8px;
+    font-weight:850;
+    paint-order:stroke;
+    stroke:var(--lcmd-chart-label-stroke);
+    stroke-width:3px;
+    stroke-linejoin:round;
+  }
+  .lcmd-bar-label {
+    fill:var(--lcmd-chart-callout-text);
+    font-size:9px;
+    font-weight:850;
+    paint-order:stroke;
+    stroke:var(--lcmd-chart-label-stroke);
+    stroke-width:3px;
+    stroke-linejoin:round;
+  }
+  .lcmd-bar-score {
+    fill:var(--lcmd-chart-text);
+    font-size:10.5px;
+    font-weight:850;
+    paint-order:stroke;
+    stroke:var(--lcmd-chart-label-stroke);
+    stroke-width:3.5px;
+    stroke-linejoin:round;
+    pointer-events:none;
+    transition:opacity .18s;
+  }
+  .lcmd-bar-glow {
+    pointer-events:none;
+    filter:blur(7px);
+    opacity:.24;
+  }
+  .lcmd-tip-chips {
+    display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+  }
+  .lcmd-tip-chip {
+    display:inline-flex; align-items:center; gap:5px;
+    padding:4px 10px; border-radius:999px;
+    border:1px solid var(--border); background:var(--surface-2);
+    color:var(--muted); font-size:11px; font-weight:750;
+    white-space:nowrap;
+    animation:ddb-up .28s ease both;
+  }
+  .lcmd-tip-chip.period { color:var(--text); font-weight:800; border-color:transparent; background:transparent; padding-left:0; }
+  .lcmd-tip-chip b { color:var(--text); font-weight:850; }
+  .lcmd-tip-chip.trend { color:var(--lcmd-highlight); border-color:color-mix(in srgb,var(--lcmd-highlight) 26%,var(--border)); }
+  .lcmd-tip-chip.pos { color:#22c55e; border-color:color-mix(in srgb,#22c55e 26%,var(--border)); }
+  .lcmd-tip-chip.neg { color:#ef4444; border-color:color-mix(in srgb,#ef4444 26%,var(--border)); }
+  .lcmd-tip-chip.formula { font-style:italic; font-size:10.5px; color:var(--lcmd-highlight); border-color:transparent; background:transparent; }
+  .lcmd-chart-callout {
+    pointer-events:none;
+  }
+  .lcmd-chart-callout rect {
+    fill:var(--lcmd-chart-callout-bg);
+    stroke:color-mix(in srgb,var(--lcmd-highlight) 36%,var(--border));
+    stroke-width:1;
+    filter:drop-shadow(0 12px 24px rgba(0,0,0,.28));
+  }
+  .lcmd-chart-callout text {
+    fill:var(--lcmd-chart-callout-text);
+    font-size:10px;
+    font-weight:800;
+  }
+  .lcmd-chart-callout .muted {
+    fill:var(--lcmd-chart-callout-muted);
+    font-size:9.2px;
+    font-weight:750;
+  }
+  .lcmd-tip {
+    min-height:34px;
+    padding:8px 10px;
+    border:1px solid var(--border);
+    border-radius:10px;
+    background:var(--lcmd-row-bg);
+    color:var(--muted);
+    font-size:12px;
+    line-height:1.45;
+    text-wrap:pretty;
+  }
+  .lcmd-tip b {
+    color:var(--text);
+  }
+  .lcmd-tip-row {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+  }
+  .lcmd-tip-main {
+    min-width:0;
+  }
+  .lcmd-tip-formula {
+    display:block;
+    margin-top:4px;
+    color:var(--lcmd-highlight);
+    font-size:11px;
+    font-style:italic;
+    text-wrap:pretty;
+  }
+  .lcmd-category-list {
+    display:grid;
+    gap:8px;
+  }
+  .lcmd-category {
+    --cat-color:#22d3ee;
+    border:0;
+    border-radius:10px;
+    padding:9px 10px;
+    background:var(--lcmd-row-bg);
+    color:var(--text);
+    text-align:left;
+    cursor:pointer;
+    transition:background .16s ease,transform .16s ease;
+  }
+  .lcmd-category:hover,
+  .lcmd-category:focus-visible {
+    background:var(--lcmd-row-hover);
+    transform:translateY(-1px);
+    outline:1px solid color-mix(in srgb,var(--cat-color) 44%,var(--border));
+  }
+  .lcmd-category-top {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    margin-bottom:8px;
+  }
+  .lcmd-category-name {
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    font-size:13px;
+    font-weight:700;
+  }
+  .lcmd-category-value {
+    color:var(--cat-color);
+    font-size:14px;
+    font-weight:800;
+    font-variant-numeric:tabular-nums;
+  }
+  .lcmd-category-meta {
+    color:var(--muted);
+    font-size:11px;
+    margin-bottom:7px;
+  }
+  .lcmd-track {
+    height:8px;
+    overflow:hidden;
+    border-radius:999px;
+    background:rgba(162,172,200,.18);
+  }
+  .lcmd-fill {
+    height:100%;
+    width:0;
+    border-radius:inherit;
+    background:linear-gradient(90deg,var(--cat-color),#7c5cff 55%,#22d3ee);
+    animation:ddb-fill .9s cubic-bezier(.22,1,.36,1) both;
+    transform-origin:left;
+  }
+  .lcmd-bottom-grid {
+    display:grid;
+    grid-template-columns:1.02fr 1fr 1fr;
+    gap:12px;
+  }
+  .lcmd-secondary-grid {
+    display:grid;
+    grid-template-columns:minmax(0,1fr);
+    gap:12px;
+  }
+  .lcmd-risk-list,
+  .lcmd-journal-list {
+    display:grid;
+    gap:8px;
+  }
+  .lcmd-risk-row {
+    --risk-color:#ff3d00;
+    display:grid;
+    grid-template-columns:28px minmax(0,1fr);
+    gap:8px;
+    align-items:center;
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:8px 9px;
+    background:var(--lcmd-row-bg);
+    color:var(--text);
+    text-align:left;
+    cursor:pointer;
+    animation:ddb-up .32s ease both;
+    transition:transform .14s ease,border-color .14s ease,box-shadow .14s ease;
+  }
+  .lcmd-risk-row:nth-child(2) { animation-delay:.06s }
+  .lcmd-risk-row:nth-child(3) { animation-delay:.12s }
+  .lcmd-risk-row:nth-child(4) { animation-delay:.18s }
+  .lcmd-risk-row:hover { transform:translateX(2px); border-color:color-mix(in srgb,var(--risk-color) 38%,var(--border)); }
+  .lcmd-risk-row:first-child {
+    border-color:rgba(255,61,0,.32);
+    box-shadow:0 0 18px rgba(255,61,0,.12);
+  }
+  .lcmd-risk-row.urgent {
+    border-color:color-mix(in srgb,var(--risk-color) 42%,var(--border));
+    background:linear-gradient(90deg,color-mix(in srgb,var(--risk-color) 12%,transparent),var(--lcmd-row-bg));
+  }
+  .lcmd-risk-row.urgent .lcmd-risk-index {
+    color:var(--risk-color);
+    animation:ddb-urgent-blink 2.2s ease-in-out infinite;
+  }
+  .lcmd-risk-criteria {
+    margin:-3px 0 9px;
+    color:var(--muted);
+    font-size:11.5px;
+    line-height:1.45;
+    font-style:italic;
+    text-wrap:pretty;
+  }
+  .lcmd-risk-index {
+    color:var(--muted);
+    font-size:12px;
+    font-weight:800;
+    font-variant-numeric:tabular-nums;
+  }
+  .lcmd-risk-name {
+    display:flex;
+    align-items:center;
+    gap:7px;
+    min-width:0;
+    font-size:12px;
+    font-weight:700;
+  }
+  .lcmd-risk-name-text {
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .lcmd-risk-chip {
+    flex-shrink:0;
+    padding:2px 6px;
+    border-radius:999px;
+    background:color-mix(in srgb,var(--risk-color) 14%,transparent);
+    color:var(--risk-color);
+    font-size:9.5px;
+    font-weight:850;
+  }
+  .lcmd-risk-meta {
+    display:grid;
+    grid-template-columns:minmax(54px,1fr) auto auto;
+    align-items:center;
+    gap:7px;
+    margin-top:6px;
+    color:var(--muted);
+    font-size:10.5px;
+  }
+  .lcmd-risk-bar {
+    min-width:54px;
+    height:5px;
+    overflow:hidden;
+    border-radius:999px;
+    background:rgba(162,172,200,.18);
+  }
+  .lcmd-risk-bar span {
+    display:block;
+    height:100%;
+    border-radius:inherit;
+    background:linear-gradient(90deg,var(--risk-color),#ffb300);
+  }
+  .lcmd-risk-delta {
+    color:var(--risk-color);
+    font-size:11.5px;
+    font-weight:800;
+    font-variant-numeric:tabular-nums;
+  }
+  .lcmd-risk-reason {
+    display:block;
+    margin-top:4px;
+    color:var(--muted);
+    font-size:10.5px;
+    line-height:1.35;
+    font-style:italic;
+    text-wrap:pretty;
+  }
+  .lcmd-journal-row {
+    width:100%;
+    display:grid;
+    grid-template-columns:auto minmax(0,1fr) auto;
+    align-items:center;
+    gap:9px;
+    padding:9px 8px;
+    border:1px solid transparent;
+    border-bottom-color:var(--border);
+    border-radius:9px;
+    background:transparent;
+    color:inherit;
+    font:inherit;
+    text-align:left;
+    cursor:pointer;
+    transition:background .16s ease,border-color .16s ease,box-shadow .16s ease;
+  }
+  .lcmd-journal-row:last-child {
+    border-bottom-color:transparent;
+  }
+  .lcmd-journal-row:hover,
+  .lcmd-journal-row:focus-visible,
+  .lcmd-journal-row.is-active {
+    border-color:rgba(34,211,238,.26);
+    background:rgba(14,165,233,.08);
+    box-shadow:0 0 18px rgba(34,211,238,.08);
+    outline:none;
+  }
+  .lcmd-journal-icon {
+    width:25px;
+    height:25px;
+    display:grid;
+    place-items:center;
+    border-radius:8px;
+    color:var(--lcmd-highlight);
+    background:rgba(124,92,255,.14);
+  }
+  .lcmd-journal-icon .ui-icon {
+    width:14px;
+    height:14px;
+  }
+  .lcmd-journal-title {
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    color:var(--text);
+    font-size:12px;
+    font-weight:600;
+  }
+  .lcmd-journal-date {
+    color:var(--muted);
+    font-size:10.5px;
+    white-space:nowrap;
+  }
+  .lcmd-journal-detail {
+    margin-top:10px;
+    padding:10px;
+    border:1px solid color-mix(in srgb,var(--lcmd-highlight) 25%,var(--border));
+    border-radius:10px;
+    background:var(--lcmd-row-strong);
+    box-shadow:0 16px 34px rgba(15,23,42,.12);
+  }
+  .lcmd-journal-detail-head {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    margin-bottom:9px;
+  }
+  .lcmd-journal-detail-title {
+    min-width:0;
+    color:var(--text);
+    font-size:12.5px;
+    font-weight:850;
+    line-height:1.3;
+  }
+  .lcmd-journal-detail-close {
+    width:28px;
+    height:28px;
+    display:grid;
+    place-items:center;
+    border:1px solid var(--border);
+    border-radius:8px;
+    background:var(--lcmd-row-bg);
+    color:var(--muted);
+    cursor:pointer;
+  }
+  .lcmd-journal-detail-close:hover,
+  .lcmd-journal-detail-close:focus-visible {
+    color:var(--text);
+    border-color:rgba(34,211,238,.32);
+    outline:none;
+  }
+  .lcmd-journal-detail-close .ui-icon {
+    width:14px;
+    height:14px;
+  }
+  .lcmd-journal-detail-grid {
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:8px;
+  }
+  .lcmd-journal-detail-field {
+    min-width:0;
+    padding:8px;
+    border:1px solid rgba(148,163,184,.14);
+    border-radius:8px;
+    background:color-mix(in srgb,var(--surface) 86%,var(--surface-3) 14%);
+  }
+  .lcmd-journal-detail-field span {
+    display:block;
+    color:var(--muted);
+    font-size:10px;
+    font-weight:800;
+    text-transform:uppercase;
+  }
+  .lcmd-journal-detail-field b {
+    display:block;
+    margin-top:3px;
+    color:var(--text);
+    font-size:11.5px;
+    font-weight:750;
+    line-height:1.35;
+    overflow-wrap:anywhere;
+  }
+  .lcmd-journal-detail-note {
+    margin-top:8px;
+    color:var(--muted);
+    font-size:11.5px;
+    line-height:1.45;
+    font-style:italic;
+    text-wrap:pretty;
+  }
+  .lcmd-journal-detail-actions {
+    margin-top:10px;
+    display:flex;
+    justify-content:flex-end;
+  }
+  @media (max-width:640px) {
+    .lcmd-journal-detail-grid {
+      grid-template-columns:minmax(0,1fr);
+    }
+  }
+  .lcmd-period-panel .ddb-drawer-body {
+    display:grid;
+    gap:12px;
+  }
+  .lcmd-period-summary {
+    display:grid;
+    grid-template-columns:repeat(4,minmax(0,1fr));
+    gap:8px;
+  }
+  .lcmd-period-stat {
+    padding:10px;
+    border:1px solid var(--border);
+    border-radius:10px;
+    background:var(--lcmd-row-bg);
+  }
+  .lcmd-period-stat span {
+    display:block;
+    color:var(--muted);
+    font-size:10px;
+    font-weight:800;
+    text-transform:uppercase;
+    letter-spacing:.06em;
+  }
+  .lcmd-period-stat b {
+    display:block;
+    margin-top:5px;
+    color:var(--text);
+    font-size:18px;
+    line-height:1;
+    font-variant-numeric:tabular-nums;
+  }
+  .lcmd-period-stat em {
+    display:block;
+    margin-top:6px;
+    color:var(--muted);
+    font-style:italic;
+    font-size:10.5px;
+    line-height:1.35;
+    text-transform:none;
+    letter-spacing:0;
+    text-wrap:pretty;
+  }
+  .lcmd-period-explain {
+    padding:10px 11px;
+    border:1px solid color-mix(in srgb,var(--lcmd-highlight) 24%,var(--border));
+    border-radius:10px;
+    background:var(--lcmd-row-strong);
+    color:var(--text);
+    font-size:12px;
+    font-style:italic;
+    line-height:1.5;
+  }
+  .lcmd-period-list {
+    display:grid;
+    gap:8px;
+  }
+  .lcmd-period-kpi {
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto;
+    gap:8px;
+    align-items:center;
+    padding:10px;
+    border:1px solid var(--border);
+    border-radius:10px;
+    background:var(--lcmd-row-bg);
+    color:var(--text);
+  }
+  .lcmd-period-kpi strong {
+    display:block;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    font-size:12.5px;
+  }
+  .lcmd-period-kpi small {
+    display:block;
+    margin-top:3px;
+    color:var(--muted);
+    font-size:11px;
+  }
+  .lcmd-period-kpi b {
+    display:block;
+    color:var(--lcmd-highlight);
+    font-size:13px;
+    font-variant-numeric:tabular-nums;
+  }
+  .lcmd-period-kpi > .lcmd-inline {
+    display:grid;
+    gap:3px;
+    justify-items:end;
+    text-align:right;
+    white-space:nowrap;
+  }
+  .lcmd-period-kpi > .lcmd-inline span {
+    color:var(--muted);
+    font-size:11px;
+    font-weight:750;
+  }
+  .lcmd-period-actions {
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:8px;
+  }
+  .lcmd-period-actions .btn {
+    justify-content:center;
+    min-height:36px;
+    white-space:nowrap;
+  }
+  .lcmd-confirm-backdrop {
+    position:fixed;
+    inset:0;
+    z-index:1200;
+    display:grid;
+    place-items:center;
+    padding:18px;
+    background:rgba(3,7,18,.58);
+    backdrop-filter:blur(8px);
+    -webkit-backdrop-filter:blur(8px);
+  }
+  .lcmd-confirm-dialog {
+    --lcmd-confirm-accent:var(--lcmd-highlight, var(--accent, #22d3ee));
+    width:min(420px,100%);
+    display:grid;
+    grid-template-columns:auto minmax(0,1fr);
+    gap:12px;
+    padding:14px;
+    position:relative;
+    isolation:isolate;
+    border:2px solid color-mix(in srgb,var(--lcmd-confirm-accent) 72%,var(--border));
+    border-radius:12px;
+    background:
+      linear-gradient(180deg,color-mix(in srgb,var(--surface) 88%,var(--lcmd-confirm-accent) 12%),var(--surface));
+    color:var(--text);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb,var(--lcmd-confirm-accent) 26%,transparent) inset,
+      0 24px 70px rgba(2,6,23,.42),
+      0 0 34px color-mix(in srgb,var(--lcmd-confirm-accent) 22%,transparent);
+    animation:ddb-up .18s ease both;
+  }
+  .lcmd-confirm-dialog::before {
+    content:'';
+    position:absolute;
+    inset:-3px;
+    border:1px solid color-mix(in srgb,var(--lcmd-confirm-accent) 42%,transparent);
+    border-radius:14px;
+    pointer-events:none;
+  }
+  .lcmd-confirm-icon {
+    width:34px;
+    height:34px;
+    display:grid;
+    place-items:center;
+    border-radius:10px;
+    color:var(--lcmd-confirm-accent);
+    background:rgba(34,211,238,.12);
+  }
+  .lcmd-confirm-icon .ui-icon { width:18px; height:18px; }
+  .lcmd-confirm-copy {
+    display:grid;
+    gap:5px;
+    min-width:0;
+  }
+  .lcmd-confirm-copy strong {
+    font-size:14px;
+  }
+  .lcmd-confirm-copy span {
+    color:var(--muted);
+    font-size:12.5px;
+    line-height:1.45;
+    text-wrap:pretty;
+  }
+  .lcmd-confirm-actions {
+    grid-column:1 / -1;
+    display:flex;
+    justify-content:flex-end;
+    gap:8px;
+    flex-wrap:wrap;
+  }
+  @keyframes lcmd-ring-load {
+    from { stroke-dasharray:0 999; }
+  }
+  @keyframes lcmd-spin {
+    to { transform:rotate(360deg); }
+  }
+  @keyframes lcmd-trend-draw {
+    to { stroke-dashoffset:0; }
+  }
+  @keyframes lcmd-trend-pulse {
+    0%,100% { opacity:1; filter:drop-shadow(0 0 4px rgba(139,223,255,.42)); }
+    50% { opacity:.58; filter:drop-shadow(0 0 12px rgba(139,223,255,.65)); }
+  }
+  @keyframes lcmd-live {
+    0%,100% { opacity:1; transform:scale(1); }
+    50% { opacity:.35; transform:scale(.72); }
+  }
+  @keyframes lcmd-cursor {
+    0%,45% { opacity:1; }
+    46%,100% { opacity:0; }
+  }
+  @keyframes lcmd-red-pulse {
+    0%,100% { box-shadow:0 0 12px rgba(255,61,0,.12),0 0 0 1px rgba(255,255,255,.025) inset; }
+    50% { box-shadow:0 0 26px rgba(255,61,0,.28),0 0 0 1px rgba(255,255,255,.025) inset; }
+  }
+  @media(max-width:960px){
+    .lcmd-hero-grid,
+    .lcmd-main-grid { grid-template-columns:1fr; }
+  }
+  @media(max-width:820px){
+    .lcmd-bottom-grid { grid-template-columns:1fr; }
+  }
+  @media(max-width:560px){
+    .lcmd-topline { align-items:flex-start; }
+    .lcmd-top-actions { width:100%; justify-content:space-between; }
+    .lcmd-refresh-state { max-width:100%; }
+    .lcmd-title { font-size:22px; }
+    .lcmd-score-card { min-height:260px; }
+    .lcmd-score-ring,
+    .lcmd-score-ring svg { width:148px; height:148px; }
+    .lcmd-score-number { font-size:31px; }
+    .lcmd-metric-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+    .lcmd-metric { min-height:104px; }
+    .lcmd-live-tip { display:none; }
+    .lcmd-alert { align-items:flex-start; flex-direction:column; }
+    .lcmd-alert-actions { margin-left:0; }
+    .lcmd-chart { height:190px; }
+    .lcmd-risk-meta { grid-template-columns:minmax(48px,1fr) auto; }
+    .lcmd-risk-delta { justify-self:start; }
+    .lcmd-tip-row { align-items:flex-start; flex-direction:column; }
+    .lcmd-period-summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .lcmd-period-kpi { grid-template-columns:1fr; }
+  }
   @media(prefers-reduced-motion:reduce){
     .ddb-wrap *, .ddb-wrap *::before, .ddb-wrap *::after {
       animation-duration:.01ms !important; animation-iteration-count:1 !important; transition-duration:.01ms !important;
     }
+    .ldb-ambient { display:none; }
+  }
+  @media(max-width:1080px){
+    .ldb-command-grid,
+    .ldb-bottom-grid { grid-template-columns:1fr; }
   }
   @media(max-width:720px){
     .page.ddb-wrap { gap:14px; }
     .ddb-panel { padding:16px; }
+    .ldb-alert { align-items:flex-start; flex-direction:column; }
+    .ldb-alert-actions { margin-left:0; justify-content:flex-start; }
     .ddb-focus-item {
       grid-template-columns:auto minmax(0,1fr);
       align-items:start;
@@ -885,6 +2919,1211 @@ function PanelHeader({ icon, label, tip, tr, children }) {
     )
 }
 
+function toneColor(tone) {
+    if (tone === 'red') return '#fb7185'
+    if (tone === 'yellow') return '#f59e0b'
+    if (tone === 'green') return '#14b8a6'
+    return '#14b8a6'
+}
+
+function metricIcon(key) {
+    if (key === 'overall_score') return 'target'
+    if (key === 'on_track') return 'checkCircle'
+    if (key === 'target_achievement') return 'flag'
+    if (key === 'at_risk') return 'warning'
+    return 'target'
+}
+
+function metricLabel(key, tr) {
+    return tr(`output.metric_${key}`)
+}
+
+function metricDetail(key, tr) {
+    return tr(`output.metric_${key}_tip`)
+}
+
+function metricFormula(key, tr) {
+    return tr(`output.metric_${key}_formula`)
+}
+
+function fallbackOutputMetrics(data, visible) {
+    const total = visible.length
+    const green = visible.filter(s => s.health === 'green').length
+    const risky = visible.filter(s => s.health !== 'green').length
+    const targetHits = visible.filter(s => s.kpi.progress >= 100).length
+    const targetAchievement = total ? Math.round(targetHits / total * 1000) / 10 : 0
+    const onTrackPct = total ? Math.round(green / total * 1000) / 10 : 0
+    const score = Number(data?.overall_progress || 0)
+    return [
+        { key: 'overall_score', value: score, value_text: `${score}%`, unit: '%', tone: score < 70 ? 'red' : score < 90 ? 'yellow' : 'green', action: 'reports' },
+        { key: 'on_track', value: onTrackPct, value_text: `${green}/${total}`, unit: 'kpis', tone: onTrackPct < 45 ? 'red' : onTrackPct < 70 ? 'yellow' : 'green', action: 'filter_on_track' },
+        { key: 'target_achievement', value: targetAchievement, value_text: `${targetAchievement}%`, unit: '%', tone: targetAchievement < 70 ? 'red' : targetAchievement < 90 ? 'yellow' : 'green', action: 'kpis' },
+        { key: 'at_risk', value: total ? Math.round(risky / total * 1000) / 10 : 0, value_text: `${risky}`, unit: 'kpis', tone: risky ? 'red' : 'green', action: 'open_risks' },
+    ]
+}
+
+function OutputMetricCard({ metric, tr, onAction }) {
+    const value = clampPct(metric?.value ?? 0)
+    const counted = useCountUp(value)
+    const color = toneColor(metric?.tone)
+    const r = 39
+    const circum = 2 * Math.PI * r
+    const filled = circum * (value / 100)
+    const rawText = metric?.value_text || `${counted}${metric?.unit === '%' ? '%' : ''}`
+    const clickable = !!metric?.action
+    return (
+        <button
+            type="button"
+            className={`ddb-output-metric${clickable ? ' clickable' : ''}`}
+            style={{ '--metric-color': color }}
+            onClick={() => clickable && onAction(metric)}
+            aria-label={`${metricLabel(metric.key, tr)}: ${rawText}`}
+        >
+            <span className="ddb-output-metric-top">
+                <span className="ddb-output-metric-icon"><UiIcon name={metricIcon(metric.key)} /></span>
+                <span className="ddb-output-metric-label">{metricLabel(metric.key, tr)}</span>
+            </span>
+            <span className="ddb-output-ring" aria-hidden="true">
+                <svg viewBox="0 0 96 96">
+                    <circle className="ddb-output-ring-track" cx="48" cy="48" r={r} />
+                    <circle
+                        className="ddb-output-ring-value"
+                        cx="48" cy="48" r={r}
+                        strokeDasharray={`${filled} ${circum - filled}`}
+                    />
+                </svg>
+                <span className="ddb-output-ring-center">
+                    <span className="ddb-output-ring-value-text">{rawText}</span>
+                    <span className="ddb-output-ring-unit">{metric?.unit || 'score'}</span>
+                </span>
+            </span>
+            <span className="ddb-output-metric-delta">
+                {metric?.delta_pct == null
+                    ? <span>{tr('output.metric_live')}</span>
+                    : <>
+                        <UiIcon name={metric.delta_pct >= 0 ? 'arrowRight' : 'chartDown'} />
+                        <span>{metric.delta_pct >= 0 ? '+' : ''}{metric.delta_pct}%</span>
+                    </>}
+            </span>
+            <span className="ddb-output-metric-tip">
+                {metricDetail(metric.key, tr)}
+                <span className="ddb-formula-line" style={{ '--metric-color': color }}>{metricFormula(metric.key, tr)}</span>
+            </span>
+        </button>
+    )
+}
+
+function fallbackPerformancePoints(data) {
+    const current = clampPct(Number(data?.overall_progress || 0))
+    const now = new Date()
+    const count = 12
+    const baseStep = Math.max(1.6, Math.min(4.2, (current || 45) / 14))
+    let prevScore = null
+    return Array.from({ length: count }, (_, i) => {
+        const d = new Date(now.getFullYear(), now.getMonth() - (count - 1 - i), 1)
+        const distance = count - 1 - i
+        const wave = Math.sin(i * 1.25) * 3.2 + (i % 4 === 1 ? 2.4 : 0)
+        const score = i === count - 1
+            ? Math.round(current)
+            : Math.round(clampPct(current - distance * baseStep + wave))
+        const delta = prevScore == null ? null : roundNum(score - prevScore, 1)
+        prevScore = score
+        return {
+            label: d.toLocaleDateString(undefined, { month: 'short' }).replace('.', ''),
+            period_key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+            actual: score,
+            target: 100,
+            attainment_pct: score,
+            weighted_score: score,
+            severity: score < 70 ? 'red' : score < 90 ? 'yellow' : 'green',
+            delta_pct: delta,
+            is_estimated: true,
+        }
+    })
+}
+
+
+function lcmdToneColor(toneOrValue) {
+    if (toneOrValue === 'red' || toneOrValue < 40) return '#ff3d00'
+    if (toneOrValue === 'yellow' || toneOrValue < 70) return '#ffb300'
+    return '#14b8a6'
+}
+
+function lcmdScorePalette(score) {
+    const pct = clampPct(score)
+    if (pct < 40) return {
+        soft: '#45110b',
+        mid: '#ff6b3d',
+        strong: '#ff3d00',
+        glow: 'rgba(255,61,0,.34)',
+    }
+    if (pct < 70) return {
+        soft: '#42310a',
+        mid: '#ffd166',
+        strong: '#ffb300',
+        glow: 'rgba(255,179,0,.30)',
+    }
+    return {
+        soft: '#083d3a',
+        mid: '#5eead4',
+        strong: '#14b8a6',
+        glow: 'rgba(20,184,166,.32)',
+    }
+}
+
+function lcmdMetricIcon(key) {
+    if (key === 'overall_score') return 'target'
+    if (key === 'on_track') return 'checkCircle'
+    if (key === 'target_achievement') return 'flag'
+    if (key === 'at_risk') return 'warning'
+    return metricIcon(key)
+}
+
+function lcmdStatusIcon(tone) {
+    if (tone === 'up') return 'arrowUp'
+    if (tone === 'down') return 'arrowDown'
+    if (tone === 'risk') return 'warning'
+    return 'arrowRight'
+}
+
+function lcmdScrollTo(id) {
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#${id}`)
+    requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+}
+
+function lcmdFocusPanel(node, { scroll = false, block = 'nearest' } = {}) {
+    if (!node) return
+    requestAnimationFrame(() => {
+        node.querySelector?.('.ddb-drawer-body')?.scrollTo({ top: 0, left: 0 })
+        if (scroll) node.scrollIntoView({ behavior: 'smooth', block })
+        node.focus(scroll ? { preventScroll: true } : undefined)
+    })
+}
+
+function lcmdPointScore(point) {
+    return Number(point?.weighted_score ?? point?.attainment_pct ?? point?.actual ?? point?.score ?? 0)
+}
+
+function lcmdPointMonth(point, fallbackYear) {
+    const key = String(point?.period_key || '').trim()
+    if (/^\d{4}-\d{2}$/.test(key)) {
+        return { year: Number(key.slice(0, 4)), month: Number(key.slice(5, 7)) }
+    }
+    const raw = point?.period_label || point?.label || ''
+    const monthIndex = LCMD_MONTH_SHORT.findIndex(m => m.toLowerCase() === String(raw).slice(0, 3).toLowerCase())
+    if (monthIndex >= 0) return { year: fallbackYear, month: monthIndex + 1 }
+    return null
+}
+
+function lcmdVisualPeriods(data) {
+    const raw = data?.performance_periods || []
+    const fallbackYear = Number(data?.displayYear || data?.year || new Date().getFullYear())
+    const byMonth = new Map()
+    raw.forEach((point) => {
+        const ym = lcmdPointMonth(point, fallbackYear)
+        if (!ym || ym.year !== fallbackYear || ym.month < 1 || ym.month > 12) return
+        byMonth.set(ym.month, point)
+    })
+    let prevScore = null
+    return Array.from({ length: 12 }, (_, index) => {
+        const month = index + 1
+        const source = byMonth.get(month)
+        const score = source ? roundNum(lcmdPointScore(source), 1) : 0
+        const point = source ? { ...source } : {
+            label: LCMD_MONTH_SHORT[index],
+            target: 100,
+            actual: 0,
+            attainment_pct: 0,
+            weighted_score: 0,
+            is_empty: true,
+        }
+        const delta = prevScore == null ? null : roundNum(score - prevScore, 1)
+        prevScore = score
+        return {
+            ...point,
+            period_key: `${fallbackYear}-${String(month).padStart(2, '0')}`,
+            label: point.label || LCMD_MONTH_SHORT[index],
+            actual: source ? Number(point.actual ?? point.weighted_score ?? score) : 0,
+            target: Number(point.target || 100),
+            attainment_pct: source ? Number(point.attainment_pct ?? score) : 0,
+            weighted_score: score,
+            severity: source ? (point.severity || (score < 70 ? 'red' : score < 90 ? 'yellow' : 'green')) : 'red',
+            delta_pct: point.delta_pct ?? delta,
+            is_empty: !source,
+        }
+    })
+}
+
+function lcmdLatestDelta(points) {
+    const recent = (points || []).slice(-2)
+    if (recent.length < 2) return null
+    return roundNum(lcmdPointScore(recent[1]) - lcmdPointScore(recent[0]), 1)
+}
+
+const LCMD_MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+function lcmdMonthLabel(month, tr) {
+    const short = LCMD_MONTH_SHORT[month - 1] || ''
+    if (!short) return ''
+    return tr ? tr('output.month_label', { short, month }) : short
+}
+
+function lcmdPeriodLabel(point, fallback = '', tr) {
+    const key = String(point?.period_key || '').trim()
+    if (/^\d{4}-\d{2}$/.test(key)) {
+        const month = Number(key.slice(5, 7))
+        return lcmdMonthLabel(month, tr) || fallback
+    }
+    const raw = point?.period_label || point?.label || key || fallback
+    const monthIndex = LCMD_MONTH_SHORT.findIndex(m => m.toLowerCase() === String(raw).slice(0, 3).toLowerCase())
+    if (monthIndex >= 0) return lcmdMonthLabel(monthIndex + 1, tr) || raw
+    return raw
+}
+
+function lcmdSignedDelta(delta) {
+    const value = roundNum(Math.abs(delta), 1)
+    if (Math.abs(delta) < 0.1) return '0%'
+    return `${delta > 0 ? '+' : '-'}${value}%`
+}
+
+function lcmdDeltaText(delta, tr, previousLabel = '') {
+    if (delta == null || Number.isNaN(delta)) return tr('output.metric_live')
+    const value = roundNum(Math.abs(delta), 1)
+    if (previousLabel) {
+        if (Math.abs(delta) < 0.1) return tr('output.delta_flat_named', { period: previousLabel })
+        return delta > 0
+            ? tr('output.delta_up_named', { value, period: previousLabel })
+            : tr('output.delta_down_named', { value, period: previousLabel })
+    }
+    if (Math.abs(delta) < 0.1) return tr('output.delta_flat')
+    return delta > 0 ? tr('output.delta_up', { value }) : tr('output.delta_down', { value })
+}
+
+function lcmdDeltaTone(delta, positiveIsGood = true) {
+    if (delta == null || Math.abs(delta) < 0.1) return 'flat'
+    const good = positiveIsGood ? delta > 0 : delta < 0
+    return good ? 'up' : 'down'
+}
+
+function lcmdDeltaInfo(points, tr, options = {}) {
+    const all = points || []
+    const latestDataIndex = all.reduce((last, point, index) => !point?.is_empty ? index : last, -1)
+    const recent = latestDataIndex >= 0
+        ? [all[Math.max(0, latestDataIndex - 1)], all[latestDataIndex]].filter(Boolean)
+        : all.slice(-2)
+    const hasDelta = Object.prototype.hasOwnProperty.call(options, 'delta')
+    const delta = hasDelta ? options.delta : (recent.length >= 2 ? lcmdLatestDelta(recent) : null)
+    const previous = lcmdPeriodLabel(recent[0], tr('output.previous_period'), tr)
+    const current = lcmdPeriodLabel(recent[1], tr('output.current_period'), tr)
+    const estimated = Boolean(recent[0]?.is_estimated || recent[1]?.is_estimated)
+    const text = lcmdDeltaText(delta, tr, previous)
+    const tooltip = delta == null
+        ? tr('output.delta_tooltip_empty')
+        : [
+            tr('output.delta_tooltip', { current, previous, delta: lcmdSignedDelta(delta) }),
+            estimated ? tr('output.delta_tooltip_estimated') : '',
+            options.risk ? tr('output.delta_tooltip_risk') : '',
+        ].filter(Boolean).join(' ')
+    return { delta, text, tooltip, previous, current, estimated }
+}
+
+function lcmdPeriodFormulaText(point, tr) {
+    if (!point) return tr('output.performance_formula')
+    if (point.is_empty) return `${tr('output.performance_formula')} ${tr('output.performance_missing_zero')}`
+    return point.is_estimated
+        ? `${tr('output.performance_formula')} ${tr('output.performance_estimated_note')}`
+        : tr('output.performance_formula')
+}
+
+function lcmdTrendFormulaText(trend, tr) {
+    if (!trend?.samples?.length) return ''
+    return tr('output.trend_node_formula', {
+        count: trend.samples.length,
+        periods: trend.samples.map(p => lcmdPeriodLabel(p, '', tr)).join(', '),
+        score: Math.round(trend.score || 0),
+    })
+}
+
+function lcmdTrendShortText(trend, tr) {
+    if (!trend?.samples?.length) return ''
+    return tr('output.trend_node_short', {
+        count: trend.samples.length,
+        score: Math.round(trend.score || 0),
+    })
+}
+
+function lcmdPeriodKpiRows(visible) {
+    return [...(visible || [])]
+        .map((s) => {
+            const progress = Number(s.kpi?.progress || 0)
+            const expected = Number(s.expected_progress ?? progress - (s.gap || 0))
+            const weight = Number(s.kpi?.weight || 0)
+            return {
+                id: s.kpi?.id,
+                name: s.kpi?.name || '',
+                unit: s.kpi?.unit || '%',
+                current: Number(s.kpi?.current_value || 0),
+                target: Number(s.kpi?.target_value || 0),
+                progress: roundNum(progress, 1),
+                expected: roundNum(expected, 1),
+                gap: roundNum(Number(s.gap ?? progress - expected), 1),
+                weight: roundNum(weight, 1),
+                contribution: roundNum(clampPct(progress) * (weight || 1) / 100, 1),
+            }
+        })
+        .sort((a, b) => a.gap - b.gap)
+}
+
+function lcmdRiskSignal(item, visible, year, tr) {
+    const status = visible?.find?.(s => s.kpi?.id === item?.kpi_id)
+    const progress = Number(item?.attainment_pct ?? item?.progress ?? status?.kpi?.progress ?? 0)
+    const expected = Number(item?.expected_progress ?? status?.expected_progress ?? progress)
+    const gap = roundNum(Number(item?.gap ?? status?.gap ?? progress - expected), 1)
+    const severity = String(item?.severity || status?.health || '').toLowerCase()
+    const deadline = item?.deadline || status?.kpi?.deadline || `${year || new Date().getFullYear()}-12-31`
+    const parsedDeadline = new Date(deadline)
+    const safeDeadline = Number.isNaN(parsedDeadline.getTime()) ? new Date(`${year || new Date().getFullYear()}-12-31`) : parsedDeadline
+    const daysLeft = Math.ceil((safeDeadline - new Date()) / 86400000)
+    const isRed = severity === 'red'
+    const overdueBehind = daysLeft < 0 && gap < 0
+    const severeGap = gap <= -10
+    const dueSoonBehind = daysLeft <= 7 && gap <= -5
+    const today = isRed || overdueBehind || severeGap || dueSoonBehind
+    let reason = tr('output.risk_reason_watch')
+    if (overdueBehind) reason = tr('output.risk_reason_overdue')
+    else if (isRed) reason = tr('output.risk_reason_red')
+    else if (severeGap) reason = tr('output.risk_reason_gap', { gap: Math.abs(gap) })
+    else if (dueSoonBehind) reason = tr('output.risk_reason_due', { days: Math.max(0, daysLeft) })
+    return {
+        progress,
+        expected,
+        gap,
+        daysLeft,
+        today,
+        reason,
+        label: today ? tr('output.risk_today_badge') : tr('output.risk_watch_badge'),
+    }
+}
+
+function lcmdDecoratedRisks(items, visible, year, tr) {
+    return [...(items || [])]
+        .map(item => ({ ...item, signal: lcmdRiskSignal(item, visible, year, tr) }))
+        .sort((a, b) => {
+            if (a.signal.today !== b.signal.today) return a.signal.today ? -1 : 1
+            return (a.signal.daysLeft - b.signal.daysLeft) || (a.signal.gap - b.signal.gap)
+        })
+}
+
+function LivingMetricCard({ metric, onAction, tr }) {
+    const counted = useCountUp(metric.countTarget ?? 0, 820)
+    const color = metric.color || lcmdToneColor(metric.tone)
+    const value = metric.format ? metric.format(counted) : `${counted}${metric.suffix || ''}`
+    const statusText = metric.deltaText || metric.delta || tr('output.metric_live')
+    const statusTone = metric.deltaTone || (metric.deltaText ? 'flat' : 'live')
+    const tooltip = metric.deltaTooltip || tr('output.delta_tooltip_empty')
+    const fillPct = clampPct(metric.fillPct ?? metric.countTarget ?? 0)
+    return (
+        <button
+            type="button"
+            className="lcmd-metric"
+            style={{ '--metric-color': color }}
+            onClick={() => onAction(metric.action)}
+            aria-label={`${metricLabel(metric.key, tr)}: ${value}`}
+            title={tooltip}
+        >
+            <span className="lcmd-metric-top">
+                <span className="lcmd-metric-icon"><UiIcon name={lcmdMetricIcon(metric.key)} /></span>
+                {metric.badge && <span className="lcmd-metric-badge">{metric.badge}</span>}
+            </span>
+            <div className="lcmd-metric-label">{metricLabel(metric.key, tr)}</div>
+            <div className="lcmd-metric-value">{value}</div>
+            {metric.subText && <div className="lcmd-metric-sub">{metric.subText}</div>}
+            <span className="lcmd-metric-mini" aria-hidden="true"><span style={{ width: `${fillPct}%` }} /></span>
+            <span className={`lcmd-live ${statusTone}`}>
+                <span className="lcmd-live-arrow"><UiIcon name={lcmdStatusIcon(statusTone)} /></span>
+                {statusText}
+                <span className="lcmd-live-info" aria-hidden="true">
+                    <UiIcon name="info" />
+                    <span className="lcmd-live-tip">{tooltip}</span>
+                </span>
+            </span>
+        </button>
+    )
+}
+
+function LivingHeroScore({ data, visible, counts, tr }) {
+    const rawScore = Number(data?.overall_progress || 0)
+    const score = clampPct(rawScore)
+    const counted = useCountUp(Math.round(score), 1100)
+    const r = 70
+    const circumference = 2 * Math.PI * r
+    const color = lcmdToneColor(score)
+    const palette = lcmdScorePalette(score)
+    const danger = score < 40 || counts.red > 0
+    return (
+        <section className={`lcmd-card lcmd-score-card${danger ? ' danger' : ''}`} onClick={(e) => {
+            if (e.target.closest('button')) return
+            lcmdScrollTo('performance')
+        }}>
+            <div className="lcmd-score-head">
+                <div>
+                    <div className="lcmd-score-title">{tr('dashboard.health_score')}</div>
+                    <div className="lcmd-subtitle">{tr('dashboard.tracking_count', { count: visible.length })}</div>
+                    <div className="lcmd-score-note">{tr('output.health_score_formula_short')}</div>
+                </div>
+                <span className="lcmd-kicker">{tr('output.metric_live')}</span>
+            </div>
+            <div className="lcmd-score-body">
+                <div
+                    className="lcmd-score-ring"
+                    style={{
+                        '--score-color': color,
+                        '--score-soft': palette.soft,
+                        '--score-mid': palette.mid,
+                        '--score-strong': palette.strong,
+                        '--score-glow': palette.glow,
+                        '--score-scale': 0.82 + score / 560,
+                    }}
+                >
+                    <svg viewBox="0 0 176 176" role="img" aria-label={tr('dashboard.health_score_aria')}>
+                        <defs>
+                            <linearGradient id="lcmdScoreGradient" x1="0" x2="1" y1="0" y2="1">
+                                <stop offset="0%" stopColor={palette.soft} />
+                                <stop offset="52%" stopColor={palette.mid} />
+                                <stop offset="100%" stopColor={palette.strong} />
+                            </linearGradient>
+                        </defs>
+                        <circle className="lcmd-ring-track" cx="88" cy="88" r={r} />
+                        <circle
+                            className="lcmd-ring-value"
+                            cx="88" cy="88" r={r}
+                            strokeDasharray={`${circumference * (score / 100)} ${circumference}`}
+                        />
+                    </svg>
+                    <span className="lcmd-score-center">
+                        <span className="lcmd-score-number">{counted}%</span>
+                        <span className="lcmd-score-label">{cleanIconLabel(tr('dashboard.health_score_short'))}</span>
+                    </span>
+                </div>
+            </div>
+        </section>
+    )
+}
+
+function LivingPerformanceChart({ data, visible, tr, onOpenPeriod }) {
+    const [hoverIndex, setHoverIndex] = useState(null)
+    const all = lcmdVisualPeriods(data)
+    const points = all
+    const currentMonthIndex = Math.max(0, Math.min(11, new Date().getMonth()))
+    const latestDataIndex = points.reduce((last, point, index) => !point.is_empty ? index : last, -1)
+    const activeIndex = hoverIndex ?? (latestDataIndex >= 0 ? latestDataIndex : currentMonthIndex)
+    const active = points[activeIndex]
+    const w = 760, h = 268, padX = 50, padTop = 32, padBottom = 58
+    const innerW = w - padX * 2
+    const innerH = h - padTop - padBottom
+    const maxScore = Math.max(1, ...points.map(p => lcmdPointScore(p)))
+    const maxValue = Math.max(100, Math.min(120, Math.ceil((maxScore + 14) / 10) * 10))
+    const targetY = padTop + innerH - (Math.min(100, maxValue) / maxValue) * innerH
+    const slotW = innerW / Math.max(1, points.length)
+    const barW = Math.min(32, Math.max(16, slotW * 0.42))
+    const coords = points.map((p, i) => {
+        const score = lcmdPointScore(p)
+        const x = padX + i * slotW + (slotW - barW) / 2
+        const barH = Math.max(3, (score / maxValue) * innerH)
+        const y = padTop + innerH - barH
+        const tone = score < 40 ? 'red' : score < 70 ? 'yellow' : 'green'
+        return { ...p, score, tone, x, y, barH, cx: padX + i * slotW + slotW / 2 }
+    })
+    const trendCoords = coords.map((p, i) => {
+        const from = Math.max(0, i - 2)
+        const sample = coords.slice(from, i + 1)
+        const avg = sample.reduce((sum, row) => sum + row.score, 0) / Math.max(1, sample.length)
+        const y = padTop + innerH - (avg / maxValue) * innerH
+        return { x: p.cx, y, score: avg, samples: sample }
+    })
+    const dataTrendCoords = trendCoords.slice(0, latestDataIndex + 1)
+    const smoothTrendPath = (() => {
+        const pts = dataTrendCoords
+        if (pts.length < 2) return ''
+        const parts = [`M ${pts[0].x} ${pts[0].y}`]
+        for (let i = 0; i < pts.length - 1; i++) {
+            const p0 = pts[Math.max(0, i - 1)]
+            const p1 = pts[i]
+            const p2 = pts[i + 1]
+            const p3 = pts[Math.min(pts.length - 1, i + 2)]
+            const t = 0.2
+            const cp1x = (p1.x + (p2.x - p0.x) * t).toFixed(1)
+            const cp1y = (p1.y + (p2.y - p0.y) * t).toFixed(1)
+            const cp2x = (p2.x - (p3.x - p1.x) * t).toFixed(1)
+            const cp2y = (p2.y - (p3.y - p1.y) * t).toFixed(1)
+            parts.push(`C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${p2.x} ${p2.y}`)
+        }
+        return parts.join(' ')
+    })()
+    const baseY = padTop + innerH
+    const areaPath = smoothTrendPath
+        ? `${smoothTrendPath} L ${dataTrendCoords[dataTrendCoords.length - 1].x} ${baseY} L ${dataTrendCoords[0].x} ${baseY} Z`
+        : ''
+    const activePrevious = activeIndex > 0 ? points[activeIndex - 1] : null
+    const activeTrend = trendCoords[activeIndex]
+    const hoverTrend = hoverIndex != null ? trendCoords[hoverIndex] : null
+    const calloutX = hoverTrend ? Math.max(padX, Math.min(w - padX - 182, hoverTrend.x + 12)) : 0
+    const calloutY = hoverTrend ? Math.max(14, Math.min(h - padBottom - 50, hoverTrend.y - 58)) : 0
+    const openPoint = (point, previous) => {
+        if (!point) return
+        onOpenPeriod?.({
+            point,
+            previous,
+            rows: lcmdPeriodKpiRows(visible),
+        })
+    }
+    return (
+        <section className="lcmd-panel" id="performance">
+            <div className="lcmd-panel-head">
+                <div className="lcmd-panel-title"><UiIcon name="chartDown" />{tr('output.performance_title')}</div>
+            </div>
+            <div className="lcmd-chart-legend" aria-hidden="true">
+                <span><i className="lcmd-legend-mark bar" />{tr('output.legend_bar_score')}</span>
+                <span><i className="lcmd-legend-mark trend" />{tr('output.legend_line_trend')}</span>
+                <span><i className="lcmd-legend-mark target" />{tr('output.legend_target_line')}</span>
+                <span><i className="lcmd-legend-mark zero" />{tr('output.legend_missing_zero')}</span>
+            </div>
+            <svg className="lcmd-chart" viewBox={`0 0 ${w} ${h}`} role="img" aria-label={tr('output.performance_title')}>
+                <defs>
+                    <linearGradient id="lcmdBarRed" x1="0" x2="0" y1="0" y2="1">
+                        <stop offset="0%" stopColor="#ffb300" />
+                        <stop offset="100%" stopColor="#ff3d00" />
+                    </linearGradient>
+                    <linearGradient id="lcmdBarYellow" x1="0" x2="0" y1="0" y2="1">
+                        <stop offset="0%" stopColor="#ffd166" />
+                        <stop offset="100%" stopColor="#ffb300" />
+                    </linearGradient>
+                    <linearGradient id="lcmdBarGreen" x1="0" x2="0" y1="0" y2="1">
+                        <stop offset="0%" stopColor="#5eead4" />
+                        <stop offset="100%" stopColor="#14b8a6" />
+                    </linearGradient>
+                    <linearGradient id="lcmdAreaGrad" x1="0" x2="0" y1="0" y2="1">
+                        <stop offset="0%" stopColor="var(--lcmd-highlight)" stopOpacity=".18" />
+                        <stop offset="100%" stopColor="var(--lcmd-highlight)" stopOpacity="0" />
+                    </linearGradient>
+                </defs>
+                <text className="lcmd-axis-label" x={padX} y="12">{tr('output.axis_score')}</text>
+                <text className="lcmd-axis-label" x={w - padX} y={h - 3} textAnchor="end">{tr('output.axis_period')}</text>
+                <line x1={padX} x2={padX} y1={padTop} y2={padTop + innerH} stroke="rgba(148,163,184,.34)" />
+                <line x1={padX} x2={w - padX} y1={padTop + innerH} y2={padTop + innerH} stroke="rgba(148,163,184,.34)" />
+                <rect x={padX} y={padTop} width={innerW} height={Math.max(0, targetY - padTop)} fill="#14b8a6" opacity=".035" rx="10" />
+                <rect x={padX} y={targetY} width={innerW} height={padTop + innerH - targetY} fill="#ff3d00" opacity=".035" rx="10" />
+                {[0, 25, 50, 75, 100].map(v => {
+                    if (v > maxValue) return null
+                    const y = padTop + innerH - (v / maxValue) * innerH
+                    return (
+                        <g key={v}>
+                            <line x1={padX} x2={w - padX} y1={y} y2={y} stroke="rgba(148,163,184,.18)" strokeDasharray="3 7" />
+                            <text x={padX - 10} y={y + 4} textAnchor="end" fill="var(--lcmd-chart-axis)" fontSize="10">{v}%</text>
+                        </g>
+                    )
+                })}
+                <line className="lcmd-target-line" x1={padX} x2={w - padX} y1={targetY} y2={targetY} stroke="var(--lcmd-chart-axis)" strokeWidth="2" strokeDasharray="7 7" opacity=".78" />
+                <text x={w - padX - 6} y={Math.max(12, targetY - 6)} textAnchor="end" fill="var(--lcmd-chart-label)" fontSize="10.5" fontWeight="800">{tr('output.target_100')}</text>
+                {coords.map((p, i) => {
+                    const gradient = p.tone === 'green' ? 'url(#lcmdBarGreen)' : p.tone === 'yellow' ? 'url(#lcmdBarYellow)' : 'url(#lcmdBarRed)'
+                    const trend = trendCoords[i]
+                    const isActive = activeIndex === i
+                    return (
+                        <g
+                            key={`${p.period_key || p.label}-${i}`}
+                            tabIndex={0}
+                            onMouseEnter={() => setHoverIndex(i)}
+                            onMouseLeave={() => setHoverIndex(null)}
+                            onFocus={() => setHoverIndex(i)}
+                            onBlur={() => setHoverIndex(null)}
+                            onClick={() => {
+                                setHoverIndex(i)
+                                openPoint(p, i > 0 ? points[i - 1] : null)
+                            }}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault()
+                                    setHoverIndex(i)
+                                    openPoint(p, i > 0 ? points[i - 1] : null)
+                                }
+                            }}
+                            role="button"
+                            aria-label={tr('output.open_period_detail', { period: lcmdPeriodLabel(p, '', tr), score: Math.round(p.score) })}
+                        >
+                            <title>{`${lcmdPeriodLabel(p, '', tr)}: ${tr('output.legend_bar_score')} ${Math.round(p.score)}%. ${lcmdTrendFormulaText(trend, tr)} ${lcmdPeriodFormulaText(p, tr)}`}</title>
+                            {isActive && !p.is_empty && (
+                                <rect className="lcmd-bar-glow" x={p.x - 2} y={p.y} width={barW + 4} height={p.barH} rx="8" fill={gradient} />
+                            )}
+                            <rect className="lcmd-bar" x={p.x} y={p.y} width={barW} height={p.barH} rx="6" fill={gradient} opacity={isActive ? '.97' : p.is_empty ? '.38' : '.72'} style={{ animationDelay: `${i * 52}ms` }} />
+                            {!p.is_empty && (
+                                <text className="lcmd-bar-score" x={p.cx} y={Math.max(padTop + 10, p.y - 6)} textAnchor="middle" opacity={isActive ? 1 : 0}>
+                                    {Math.round(p.score)}%
+                                </text>
+                            )}
+                            <rect className="lcmd-bar-hit" x={p.cx - Math.max(22, slotW * .36)} y={padTop} width={Math.max(44, slotW * .72)} height={innerH + 24} />
+                            <text transform={`translate(${p.cx} ${h - 16}) rotate(-36)`} textAnchor="end" fill="var(--lcmd-chart-axis)" fontSize="9.4" fontWeight={isActive ? '850' : '650'}>{lcmdPeriodLabel(p, '', tr)}</text>
+                        </g>
+                    )
+                })}
+                {smoothTrendPath && (
+                    <g className="lcmd-trend-layer">
+                        {areaPath && <path className="lcmd-area-fill" d={areaPath} />}
+                        <path className="lcmd-trend-line" d={smoothTrendPath} />
+                        {trendCoords.map((p, i) => {
+                            const point = points[i]
+                            if (point.is_empty) return null
+                            const isActive = i === activeIndex
+                            return (
+                            <g
+                                key={`trend-${i}`}
+                                className="lcmd-trend-node"
+                                tabIndex={0}
+                                role="button"
+                                aria-label={tr('output.open_period_detail', { period: lcmdPeriodLabel(point, '', tr), score: Math.round(p.score) })}
+                                onMouseEnter={() => setHoverIndex(i)}
+                                onMouseLeave={() => setHoverIndex(null)}
+                                onFocus={() => setHoverIndex(i)}
+                                onBlur={() => setHoverIndex(null)}
+                                onClick={() => {
+                                    setHoverIndex(i)
+                                    openPoint(point, i > 0 ? points[i - 1] : null)
+                                }}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault()
+                                        setHoverIndex(i)
+                                        openPoint(point, i > 0 ? points[i - 1] : null)
+                                    }
+                                }}
+                            >
+                                <title>{`${lcmdPeriodLabel(point, '', tr)}: ${lcmdTrendFormulaText(p, tr)} ${lcmdPeriodFormulaText(point, tr)}`}</title>
+                                <circle className="lcmd-trend-hit" cx={p.x} cy={p.y} r="14" />
+                                <circle
+                                    className={isActive ? 'lcmd-trend-dot active' : 'lcmd-trend-dot'}
+                                    cx={p.x} cy={p.y}
+                                    r={isActive ? 5 : 3}
+                                />
+                                {p.score > 1 && (
+                                    <text className="lcmd-trend-label" x={p.x} y={Math.max(14, p.y - (i % 2 === 0 ? 12 : 24))} textAnchor="middle">{Math.round(p.score)}%</text>
+                                )}
+                            </g>
+                        )})}
+                    </g>
+                )}
+                {hoverTrend && (
+                    <g className="lcmd-chart-callout" transform={`translate(${calloutX} ${calloutY})`}>
+                        <rect width="182" height="46" rx="9" />
+                        <text x="10" y="17">{lcmdPeriodLabel(points[hoverIndex], '', tr)} | {Math.round(hoverTrend.score)}%</text>
+                        <text className="muted" x="10" y="34">{lcmdTrendShortText(hoverTrend, tr)}</text>
+                    </g>
+                )}
+            </svg>
+            <div className="lcmd-tip">
+                {active ? (
+                    <div className="lcmd-tip-chips">
+                        <span className="lcmd-tip-chip period"><b>{lcmdPeriodLabel(active, '', tr)}</b></span>
+                        <span className="lcmd-tip-chip" style={{ animationDelay: '.04s' }}>
+                            {tr('output.tip_period_score')} <b>{Math.round(active.score || 0)}%</b>
+                        </span>
+                        {activeTrend && (
+                            <span className="lcmd-tip-chip trend" style={{ animationDelay: '.08s' }}>
+                                ↗ {tr('output.tip_trend')} <b>{Math.round(activeTrend.score || 0)}%</b>
+                            </span>
+                        )}
+                        {active.delta_pct != null && (
+                            <span className={`lcmd-tip-chip ${active.delta_pct >= 0 ? 'pos' : 'neg'}`} style={{ animationDelay: '.12s' }}>
+                                {active.delta_pct >= 0 ? '+' : ''}{Math.round(active.delta_pct)}% {lcmdPeriodLabel(activePrevious, '', tr) ? `vs ${lcmdPeriodLabel(activePrevious, '', tr)}` : ''}
+                            </span>
+                        )}
+                        {lcmdPeriodFormulaText(active, tr) && (
+                            <span className="lcmd-tip-chip formula" style={{ animationDelay: '.16s' }}>{lcmdPeriodFormulaText(active, tr)}</span>
+                        )}
+                        <button className="lcmd-inline" type="button" style={{ marginLeft: 'auto' }} onClick={() => openPoint(active, activePrevious)}>
+                            {tr('output.open_period_detail_short')}
+                        </button>
+                    </div>
+                ) : tr('dashboard.trend_empty_desc')}
+            </div>
+        </section>
+    )
+}
+
+function LivingCategoryBars({ data, visible, tr, navigate }) {
+    const rows = data?.category_progress?.length
+        ? data.category_progress.map(r => ({
+            key: r.key,
+            name: r.name,
+            value: roundNum(r.attainment_pct || 0),
+            kpiCount: r.kpi_count || 0,
+            riskCount: r.at_risk_count || 0,
+        }))
+        : objectiveLensRows(data, visible).map(r => ({
+            key: r.id,
+            name: r.name,
+            value: r.actual,
+            kpiCount: visible.filter(s => s.kpi.objective_id === r.id).length,
+            riskCount: visible.filter(s => s.kpi.objective_id === r.id && s.health !== 'green').length,
+        }))
+    return (
+        <section className="lcmd-panel">
+            <div className="lcmd-panel-head">
+                <div className="lcmd-panel-title"><UiIcon name="flag" />{tr('output.category_title')}</div>
+                <button className="lcmd-inline" type="button" onClick={() => navigate('/kpis', tr('output.destination_kpis'))}>{tr('output.view_all')}</button>
+            </div>
+            <div className="lcmd-category-list">
+                {!rows.length ? (
+                    <div className="lcmd-tip">{tr('dashboard.no_objectives')}</div>
+                ) : rows.slice(0, 6).map(row => {
+                    const color = lcmdToneColor(row.value)
+                    return (
+                        <button key={row.key} type="button" className="lcmd-category" style={{ '--cat-color': color }} onClick={() => navigate(`/kpis?category=${encodeURIComponent(row.name)}`, tr('output.destination_kpis'))}>
+                            <span className="lcmd-category-top">
+                                <span className="lcmd-category-name">{row.name}</span>
+                                <span className="lcmd-category-value">{Math.round(row.value)}%</span>
+                            </span>
+                            <div className="lcmd-category-meta">{tr('output.category_meta', { count: row.kpiCount, risk: row.riskCount })}</div>
+                            <span className="lcmd-track"><span className="lcmd-fill" style={{ width: `${clampPct(row.value)}%` }} /></span>
+                        </button>
+                    )
+                })}
+            </div>
+        </section>
+    )
+}
+
+function LivingRiskList({ riskItems, visible, year, tr, onOpenRiskKpi, navigate }) {
+    const items = riskItems?.length ? lcmdDecoratedRisks(riskItems, visible, year, tr) : []
+    return (
+        <section className="lcmd-panel" id="at-risk-list">
+            <div className="lcmd-panel-head">
+                <div className="lcmd-panel-title"><UiIcon name="warning" />{tr('dashboard.panel_top_risk')}</div>
+                <button className="lcmd-inline" type="button" onClick={() => navigate('/kpis?filter=at-risk', tr('output.destination_kpis'))}>{tr('output.view_all')}</button>
+            </div>
+            <div className="lcmd-risk-criteria">{tr('output.risk_today_rule')}</div>
+            <div className="lcmd-risk-list">
+                {!items.length ? (
+                    <div className="lcmd-tip">{tr('dashboard.risk_none')}</div>
+                ) : items.slice(0, 4).map((item, i) => {
+                    const progress = item.signal.progress
+                    const gap = item.signal.gap
+                    const days = item.signal.daysLeft
+                    const color = lcmdToneColor(item.severity || progress)
+                    return (
+                        <button key={item.kpi_id || item.name} type="button" className={`lcmd-risk-row${item.signal.today ? ' urgent' : ''}`} style={{ '--risk-color': color }} onClick={() => onOpenRiskKpi(item)}>
+                            <span className="lcmd-risk-index">{String(i + 1).padStart(2, '0')}</span>
+                            <span style={{ minWidth: 0 }}>
+                                <span className="lcmd-risk-name">
+                                    <span className="lcmd-risk-name-text">{item.name}</span>
+                                    <span className="lcmd-risk-chip">{item.signal.label}</span>
+                                </span>
+                                <span className="lcmd-risk-meta">
+                                    <span className="lcmd-risk-bar"><span style={{ width: `${clampPct(progress)}%` }} /></span>
+                                    <span>{days >= 0 ? tr('dashboard.days_short', { days }) : tr('dashboard.overdue_short', { days: -days })}</span>
+                                    <span className="lcmd-risk-delta">{gap > 0 ? '+' : ''}{roundNum(gap)}%</span>
+                                </span>
+                                <span className="lcmd-risk-reason">{item.signal.reason}</span>
+                            </span>
+                        </button>
+                    )
+                })}
+            </div>
+        </section>
+    )
+}
+
+function lcmdActivityLabel(tr, group, value) {
+    const key = `${group}.${value || ''}`
+    const label = tr(key)
+    return label === key ? (value || tr('output.activity_empty_value')) : cleanIconLabel(label)
+}
+
+function lcmdActivityDetail(w, tr) {
+    const empty = tr('output.activity_empty_value')
+    const delta = Number(w?.progress_delta || 0)
+    return {
+        title: w?.title || empty,
+        workDate: w?.work_date || w?.created_at?.slice(0, 10) || empty,
+        recordedAt: w?.created_at ? w.created_at.slice(0, 16).replace('T', ' ') : empty,
+        status: lcmdActivityLabel(tr, 'status', w?.status),
+        kpi: w?.kpi_name || tr('journal.no_kpi'),
+        delta: delta ? `${delta > 0 ? '+' : ''}${roundNum(delta, 2)}` : empty,
+        source: lcmdActivityLabel(tr, 'source', w?.source),
+        note: String(w?.detail || w?.mapping_reason || '').trim(),
+    }
+}
+
+function LivingQuickJournal({ items, tr, navigate }) {
+    const rows = (items || []).slice(0, 4)
+    const [selected, setSelected] = useState(null)
+    const detailRef = useRef(null)
+    const selectedDetail = selected ? lcmdActivityDetail(selected, tr) : null
+    useEffect(() => {
+        if (selectedDetail) lcmdFocusPanel(detailRef.current, { scroll: true })
+    }, [selected?.id])
+    return (
+        <section className="lcmd-panel">
+            <div className="lcmd-panel-head">
+                <div className="lcmd-panel-title"><UiIcon name="refresh" />{tr('dashboard.recent_activity')}</div>
+                <button className="lcmd-inline" type="button" onClick={() => navigate('/journal', tr('output.destination_journal'))}>{tr('output.go_journal')}</button>
+            </div>
+            <div className="lcmd-journal-list">
+                {!rows.length ? (
+                    <div className="lcmd-tip">{tr('dashboard.focus_empty_desc')}</div>
+                ) : rows.map(w => (
+                    <button
+                        key={w.id}
+                        className={`lcmd-journal-row${selected?.id === w.id ? ' is-active' : ''}`}
+                        type="button"
+                        aria-expanded={selected?.id === w.id}
+                        onClick={() => setSelected(prev => prev?.id === w.id ? null : w)}
+                    >
+                        <span className="lcmd-journal-icon"><UiIcon name="clipboardList" /></span>
+                        <span className="lcmd-journal-title">{w.title}</span>
+                        <span className="lcmd-journal-date">{w.work_date || w.created_at?.slice(0, 10) || '-'}</span>
+                    </button>
+                ))}
+            </div>
+            {selectedDetail && (
+                <div className="lcmd-journal-detail" role="region" aria-live="polite" aria-label={tr('output.activity_detail_title')} tabIndex={-1} ref={detailRef}>
+                    <div className="lcmd-journal-detail-head">
+                        <div className="lcmd-journal-detail-title">{selectedDetail.title}</div>
+                        <button className="lcmd-journal-detail-close" type="button" onClick={() => setSelected(null)} aria-label={tr('common.close')}>
+                            <UiIcon name="x" />
+                        </button>
+                    </div>
+                    <div className="lcmd-journal-detail-grid">
+                        <div className="lcmd-journal-detail-field">
+                            <span>{tr('journal.col_work_date')}</span>
+                            <b>{selectedDetail.workDate}</b>
+                        </div>
+                        <div className="lcmd-journal-detail-field">
+                            <span>{tr('journal.col_recorded')}</span>
+                            <b>{selectedDetail.recordedAt}</b>
+                        </div>
+                        <div className="lcmd-journal-detail-field">
+                            <span>{tr('journal.col_status')}</span>
+                            <b>{selectedDetail.status}</b>
+                        </div>
+                        <div className="lcmd-journal-detail-field">
+                            <span>{tr('journal.col_kpi')}</span>
+                            <b>{selectedDetail.kpi}</b>
+                        </div>
+                        <div className="lcmd-journal-detail-field">
+                            <span>{tr('journal.col_delta')}</span>
+                            <b>{selectedDetail.delta}</b>
+                        </div>
+                        <div className="lcmd-journal-detail-field">
+                            <span>{tr('journal.col_source')}</span>
+                            <b>{selectedDetail.source}</b>
+                        </div>
+                    </div>
+                    {selectedDetail.note && <div className="lcmd-journal-detail-note">{selectedDetail.note}</div>}
+                    <div className="lcmd-journal-detail-actions">
+                        <button className="lcmd-inline" type="button" onClick={() => navigate('/journal', tr('output.destination_journal'))}>
+                            {tr('output.activity_open_journal')}
+                        </button>
+                    </div>
+                </div>
+            )}
+        </section>
+    )
+}
+
+function LivingPeriodDrawer({ detail, tr, navigate, onClose }) {
+    const drawerRef = useRef(null)
+    useEffect(() => {
+        if (!detail) return undefined
+        const onKey = e => { if (e.key === 'Escape') onClose() }
+        window.addEventListener('keydown', onKey)
+        document.body.classList.add('kpi-drawer-open')
+        document.body.style.overflow = 'hidden'
+        lcmdFocusPanel(drawerRef.current)
+        return () => {
+            window.removeEventListener('keydown', onKey)
+            document.body.classList.remove('kpi-drawer-open')
+            document.body.style.overflow = ''
+        }
+    }, [detail, onClose])
+
+    if (!detail) return null
+
+    const point = detail.point || {}
+    const previous = detail.previous
+    const rows = detail.rows || []
+    const period = lcmdPeriodLabel(point, tr('output.current_period'), tr)
+    const score = roundNum(lcmdPointScore(point), 1)
+    const target = roundNum(Number(point.target || 100), 1)
+    const attainment = roundNum(Number(point.attainment_pct ?? score), 1)
+    const actual = roundNum(Number(point.actual ?? point.weighted_score ?? score), 1)
+    const delta = point.delta_pct ?? (previous ? roundNum(score - lcmdPointScore(previous), 1) : null)
+    const periodKey = String(point.period_key || '').trim()
+    const goJournal = () => {
+        onClose()
+        navigate(`/journal${periodKey ? `?period_key=${encodeURIComponent(periodKey)}` : ''}`, tr('output.destination_journal'))
+    }
+    const goKpiMetrics = (id) => {
+        onClose()
+        navigate(`/kpis?focus_kpi=${encodeURIComponent(id)}${periodKey ? `&period_key=${encodeURIComponent(periodKey)}` : ''}`, tr('output.destination_kpis'))
+    }
+    const goKpisForPeriod = () => {
+        onClose()
+        navigate(`/kpis${periodKey ? `?period_key=${encodeURIComponent(periodKey)}` : ''}`, tr('output.destination_kpis'))
+    }
+    const shownRows = rows
+        .filter(row => Number(row.current || 0) > 0 || Number(row.progress || 0) > 0)
+        .slice(0, 6)
+
+    const drawer = (
+        <>
+            <div className="ddb-backdrop" onClick={onClose} />
+            <div className="ddb-drawer lcmd-period-panel" role="dialog" aria-modal="true" aria-label={tr('output.period_drawer_title', { period })} tabIndex={-1} ref={drawerRef}>
+                <div className="ddb-drawer-hd">
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                        <div className="ddb-drawer-title">{tr('output.period_drawer_title', { period })}</div>
+                        <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
+                            {point.is_estimated ? tr('output.period_drawer_estimated') : tr('output.period_drawer_confirmed')}
+                        </div>
+                    </div>
+                    <button className="btn-icon" type="button" onClick={onClose} aria-label={tr('common.close')}>
+                        <UiIcon name="x" />
+                    </button>
+                </div>
+                <div className="ddb-drawer-body">
+                    <div className="lcmd-period-summary">
+                        <div className="lcmd-period-stat"><span>{tr('output.tip_actual')}</span><b>{actual}%</b><em>{tr('output.period_actual_desc')}</em></div>
+                        <div className="lcmd-period-stat"><span>{tr('output.tip_target')}</span><b>{target}%</b><em>{tr('output.period_target_desc')}</em></div>
+                        <div className="lcmd-period-stat"><span>{tr('output.tip_attainment')}</span><b>{attainment}%</b><em>{tr('output.period_attainment_desc')}</em></div>
+                        <div className="lcmd-period-stat"><span>{tr('output.period_delta')}</span><b>{delta == null ? '-' : lcmdSignedDelta(delta)}</b><em>{tr('output.period_delta_desc')}</em></div>
+                    </div>
+
+                    <div className="lcmd-period-explain">
+                        <b>{tr('output.period_formula_title')}</b>
+                        <br />
+                        {tr('output.period_formula_body')}
+                        {point.is_estimated && <><br />{tr('output.performance_estimated_note')}</>}
+                    </div>
+
+                    <div className="lcmd-panel-head" style={{ marginBottom: 0 }}>
+                        <div className="lcmd-panel-title"><UiIcon name="table" />{tr('output.period_kpi_contrib')}</div>
+                    </div>
+                    <div className="lcmd-period-list">
+                        {!shownRows.length ? (
+                            <div className="lcmd-tip">{tr('dashboard.kpi_filter_empty')}</div>
+                        ) : shownRows.map(row => (
+                            <div className="lcmd-period-kpi" key={row.id || row.name}>
+                                <span style={{ minWidth: 0 }}>
+                                    <strong>{row.name}</strong>
+                                    <small>
+                                        {tr('dashboard.actual_label')} {row.current}/{row.target} {row.unit}
+                                        {' · '}{tr('dashboard.expected_label')} {row.expected}%
+                                        {' · '}{tr('dashboard.weight_label_short')} {row.weight}%
+                                    </small>
+                                </span>
+                                <button className="lcmd-inline" type="button" onClick={() => goKpiMetrics(row.id)} aria-label={tr('output.open_kpi_detail')}>
+                                    <b>{row.progress}%</b>
+                                    <span>{tr('output.open_kpi_detail')}</span>
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+
+                    <div className="lcmd-period-actions">
+                        <button className="btn small ghost" type="button" onClick={goJournal}>
+                            <UiIcon name="clipboardList" />{tr('output.open_period_journal')}
+                        </button>
+                        <button className="btn small primary" type="button" onClick={goKpisForPeriod}>
+                            <UiIcon name="table" />{tr('output.log_period_metric')}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </>
+    )
+    return createPortal(drawer, document.body)
+}
+
+function LivingDashboard({
+    data, visible, counts, tr, dashboardYear, riskItems,
+    onOpenRisks, onOpenRiskKpi, onOpenPeriod, navigate,
+    lastUpdated, autoRefreshing, lang,
+}) {
+    const total = visible.length
+    const score = clampPct(Number(data?.overall_progress || 0))
+    const targetHits = visible.filter(s => Number(s.kpi?.progress || 0) >= 100).length
+    const targetPct = total ? Math.round((targetHits / total) * 100) : 0
+    const periods = lcmdVisualPeriods(data)
+    const scoreInfo = lcmdDeltaInfo(periods, tr)
+    const scoreDelta = scoreInfo.delta
+    const decoratedRisks = lcmdDecoratedRisks(riskItems, visible, dashboardYear, tr)
+    const urgentRisks = decoratedRisks.filter(item => item.signal.today)
+    const riskTotal = decoratedRisks.length
+    const currentSnapshot = tr('output.metric_current_snapshot')
+    const currentSnapshotTip = tr('output.metric_current_snapshot_tip')
+    const metrics = [
+        {
+            key: 'overall_score',
+            countTarget: Math.round(score),
+            suffix: '%',
+            tone: score,
+            color: '#7c5cff',
+            action: 'performance',
+            fillPct: score,
+            subText: tr('output.metric_overall_sub', { total }),
+            deltaText: scoreInfo.text,
+            deltaTone: lcmdDeltaTone(scoreDelta),
+            deltaTooltip: scoreInfo.tooltip,
+        },
+        {
+            key: 'on_track',
+            countTarget: counts.green,
+            tone: counts.green / Math.max(1, total) * 100,
+            color: '#14b8a6',
+            action: 'on_track',
+            format: (n) => `${n}/${total}`,
+            fillPct: total ? counts.green / total * 100 : 0,
+            subText: tr('output.metric_on_track_sub', { count: counts.green, total }),
+            deltaText: currentSnapshot,
+            deltaTone: 'flat',
+            deltaTooltip: currentSnapshotTip,
+        },
+        {
+            key: 'target_achievement',
+            countTarget: targetPct,
+            suffix: '%',
+            tone: targetPct,
+            color: '#22d3ee',
+            action: 'target',
+            fillPct: targetPct,
+            subText: tr('output.metric_target_sub', { count: targetHits, total }),
+            deltaText: currentSnapshot,
+            deltaTone: 'flat',
+            deltaTooltip: currentSnapshotTip,
+        },
+        {
+            key: 'at_risk',
+            countTarget: riskTotal,
+            tone: urgentRisks.length ? 'red' : riskTotal ? 'yellow' : 'green',
+            action: 'risk',
+            format: (n) => `${n}/${total}`,
+            fillPct: total ? riskTotal / total * 100 : 0,
+            badge: urgentRisks.length ? tr('output.metric_today_badge', { count: urgentRisks.length }) : '',
+            subText: urgentRisks.length
+                ? tr('output.metric_at_risk_today_sub', { count: urgentRisks.length })
+                : tr('output.metric_at_risk_clear_sub'),
+            deltaText: urgentRisks.length ? tr('output.risk_today_badge') : currentSnapshot,
+            deltaTone: urgentRisks.length ? 'risk' : 'flat',
+            deltaTooltip: tr('output.risk_today_rule'),
+        },
+    ]
+    const alertOk = riskTotal === 0
+    const alertWatch = !alertOk && urgentRisks.length === 0
+    const topUrgent = urgentRisks[0]
+    const alertText = alertOk
+        ? tr('dashboard.insight_all_good')
+        : urgentRisks.length
+            ? tr('dashboard.insight_today_summary', {
+                count: urgentRisks.length,
+                name: topUrgent?.name || '',
+                reason: topUrgent?.signal?.reason || '',
+            })
+            : tr('dashboard.insight_watch_summary', { count: riskTotal })
+    const alertExplain = alertOk
+        ? tr('dashboard.insight_all_good_detail')
+        : urgentRisks.length
+            ? tr('output.risk_today_rule')
+            : tr('dashboard.insight_watch_detail')
+    const lastUpdatedText = lastUpdated
+        ? tr('output.last_updated', {
+            time: new Intl.DateTimeFormat(lang === 'vi' ? 'vi-VN' : 'en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+            }).format(lastUpdated),
+        })
+        : ''
+    const handleMetric = (action) => {
+        if (action === 'performance') lcmdScrollTo('performance')
+        else if (action === 'risk') {
+            lcmdScrollTo('at-risk-list')
+            onOpenRisks(riskItems)
+        } else if (action === 'on_track') navigate('/kpis?filter=on-track', tr('output.destination_kpis'))
+        else if (action === 'target') navigate('/kpis?sort=achievement-desc', tr('output.destination_kpis'))
+    }
+    return (
+        <div className="lcmd">
+            <div className="ldb-ambient" aria-hidden="true">
+                <span className="ldb-particle" />
+                <span className="ldb-particle" />
+                <span className="ldb-particle" />
+                <span className="ldb-particle" />
+                <span className="ldb-particle" />
+            </div>
+            <div className="lcmd-topline">
+                <div>
+                    <div className="lcmd-kicker">{tr('output.cockpit_title')}</div>
+                    <div className="lcmd-title">{cleanIconLabel(tr('dashboard.title', { year: dashboardYear }))}</div>
+                    <div className="lcmd-subtitle">{tr('output.cockpit_subtitle', { count: total })}</div>
+                </div>
+                <div className="lcmd-top-actions">
+                    {lastUpdatedText && (
+                        <span className={`lcmd-refresh-state${autoRefreshing ? ' active' : ''}`}>
+                            <UiIcon name="refresh" />
+                            {autoRefreshing ? tr('output.auto_refreshing') : lastUpdatedText}
+                        </span>
+                    )}
+                    <ViewModeSwitch />
+                </div>
+            </div>
+
+            <div className="lcmd-hero-grid">
+                <LivingHeroScore
+                    data={data}
+                    visible={visible}
+                    counts={counts}
+                    tr={tr}
+                />
+                <div className="lcmd-hero-side">
+                    <div className="lcmd-metric-grid">
+                        {metrics.map(metric => <LivingMetricCard key={metric.key} metric={metric} onAction={handleMetric} tr={tr} />)}
+                    </div>
+                    <div className={`lcmd-alert${alertOk ? ' ok' : alertWatch ? ' watch' : ''}`}>
+                        <UiIcon name={alertOk ? 'checkCircle' : 'warning'} />
+                        <span className="lcmd-alert-copy">
+                            <strong>{alertText}</strong>
+                            <em>{alertExplain}</em>
+                        </span>
+                        {!alertOk && <span className="lcmd-alert-actions">
+                            <button className="lcmd-inline" type="button" onClick={() => {
+                                lcmdScrollTo('at-risk-list')
+                                onOpenRisks(riskItems)
+                            }}>{tr('output.open_risks')}</button>
+                        </span>}
+                    </div>
+                </div>
+            </div>
+
+            <div className="lcmd-main-grid">
+                <LivingPerformanceChart data={data} visible={visible} tr={tr} onOpenPeriod={onOpenPeriod} />
+            </div>
+
+            <div className="lcmd-bottom-grid">
+                <LivingRiskList riskItems={riskItems} visible={visible} year={dashboardYear} tr={tr} onOpenRiskKpi={onOpenRiskKpi} navigate={navigate} />
+                <section className="lcmd-panel">
+                    <div className="lcmd-panel-head">
+                        <div className="lcmd-panel-title"><UiIcon name="shield" />{tr('dashboard.panel_burnout')}</div>
+                    </div>
+                    <BurnoutGauge tr={tr} />
+                </section>
+                <LivingQuickJournal items={data.recent_items} tr={tr} navigate={navigate} />
+            </div>
+
+            <div className="lcmd-secondary-grid">
+                <LivingCategoryBars data={data} visible={visible} tr={tr} navigate={navigate} />
+            </div>
+        </div>
+    )
+}
+
 function clampPct(value) {
     return Math.max(0, Math.min(100, Number(value) || 0))
 }
@@ -920,100 +4159,6 @@ function weightedStatuses(statuses, field = 'progress') {
         const raw = field === 'expected' ? s.expected_progress : s.kpi?.progress
         return sum + clampPct(raw)
     }, 0) / items.length, 1)
-}
-
-function sparkSeries(score, weeklyActivity = [], seed = 'Work') {
-    const recent = (weeklyActivity || []).slice(-6)
-    const maxCount = Math.max(1, ...recent.map(w => Number(w.count) || 0))
-    const seedShift = seed === 'Personal' ? 6 : 0
-    if (!recent.length) {
-        return Array.from({ length: 6 }, (_, i) => clampPct(score - (5 - i) * 3 + seedShift / 4))
-    }
-    return recent.map((w, i) => {
-        const activityLift = ((Number(w.count) || 0) / maxCount) * 10
-        const timeLift = (i - (recent.length - 1)) * 2
-        const lastBias = i === recent.length - 1 ? score : score - 8
-        return roundNum(clampPct(lastBias + timeLift + activityLift + seedShift / 5), 1)
-    })
-}
-
-function lensMetric(key, statuses, weeklyActivity, tr) {
-    const score = weightedStatuses(statuses)
-    const expected = weightedStatuses(statuses, 'expected')
-    const series = sparkSeries(score, weeklyActivity, key)
-    const prev = series.slice(-4, -1)
-    const prevAvg = prev.length ? prev.reduce((a, b) => a + b, 0) / prev.length : score
-    return {
-        key,
-        label: ddbCategoryLabel(key, tr),
-        color: key === 'Work' ? '#2563eb' : key === 'Personal' ? '#0f766e' : '#d97706',
-        score,
-        expected,
-        risk: statuses.filter(s => s.health !== 'green').length,
-        count: statuses.length,
-        delta: roundNum(score - prevAvg),
-    }
-}
-
-function buildLensMetrics(visible, data, tr) {
-    return [
-        lensMetric('Work', visible.filter(s => ddbCategoryOf(s.kpi) === 'Work'), data.weekly_activity, tr),
-        lensMetric('Personal', visible.filter(s => ddbCategoryOf(s.kpi) === 'Personal'), data.weekly_activity, tr),
-    ]
-}
-
-function stableInsightPayload(data) {
-    return JSON.stringify({
-        year: data.year,
-        overall_progress: data.overall_progress,
-        objectives: (data.objectives || []).map(o => ({
-            id: o.id,
-            weight: o.weight,
-            progress: o.progress,
-            kpi_count: o.kpi_count,
-        })),
-        kpis: (data.kpi_statuses || []).map(s => ({
-            id: s.kpi.id,
-            category: s.kpi.category,
-            objective_id: s.kpi.objective_id,
-            weight: s.kpi.weight,
-            progress: s.kpi.progress,
-            current_value: s.kpi.current_value,
-            target_value: s.kpi.target_value,
-            expected_progress: s.expected_progress,
-            health: s.health,
-            gap: s.gap,
-            deadline: s.kpi.deadline,
-        })).sort((a, b) => a.id - b.id),
-        recent: (data.recent_items || []).map(w => ({
-            id: w.id,
-            status: w.status,
-            kpi_id: w.kpi_id,
-            progress_delta: w.progress_delta,
-            work_date: w.work_date,
-            created_at: w.created_at,
-        })),
-        todos: (data.todo_items || []).map(w => ({
-            id: w.id,
-            status: w.status,
-            kpi_id: w.kpi_id,
-            work_date: w.work_date,
-        })),
-        weekly_activity: data.weekly_activity || [],
-    })
-}
-
-function simpleHash(text) {
-    let h = 2166136261
-    for (let i = 0; i < text.length; i += 1) {
-        h ^= text.charCodeAt(i)
-        h = Math.imul(h, 16777619)
-    }
-    return (h >>> 0).toString(36)
-}
-
-function dashboardInsightSignature(data) {
-    return simpleHash(stableInsightPayload(data))
 }
 
 function objectiveLensRows(data, visible) {
@@ -1111,729 +4256,154 @@ function buildInstantDashboardInsight(visible, metrics, tr) {
     }
 }
 
-function DashboardInsightLens({ data, visible, tr, lang, onSelectKpi, onFilterObj, cycleId, category }) {
-    const [lens, setLens] = useState('insight')
-    const [open, setOpen] = useState('correlation')
-    const [checked, setChecked] = useState({})
-    const [aiInsight, setAiInsight] = useState(null)
-    const [loadingInsight, setLoadingInsight] = useState(false)
-    const [insightError, setInsightError] = useState('')
-    const metrics = useMemo(() => buildLensMetrics(visible, data, tr), [visible, data, tr])
-    const instantInsight = useMemo(() => buildInstantDashboardInsight(visible, metrics, tr), [visible, metrics, tr])
-    const displayInsight = aiInsight || instantInsight
-    const signature = useMemo(() => dashboardInsightSignature(data), [data])
-    const cacheKey = useMemo(
-        () => `kpi.dashboardInsight.v1:${cycleId ?? 'all'}:${category}:${signature}`,
-        [cycleId, category, signature],
-    )
-    const rows = useMemo(() => objectiveLensRows(data, visible), [data, visible])
-    const weeks = useMemo(() => buildWeeklyLensBars(data), [data])
-    const wins = useMemo(() => topLensWins(visible, tr), [visible, tr])
-    const concerns = useMemo(() => topLensConcerns(visible, tr), [visible, tr])
-    const riskStatus = displayInsight?.risk_kpi_id
-        ? visible.find(s => s.kpi.id === displayInsight.risk_kpi_id)
-        : null
-    const priorityStatus = displayInsight?.priority_kpi_id
-        ? visible.find(s => s.kpi.id === displayInsight.priority_kpi_id)
-        : null
-    const sections = [
-        ['correlation', tr('pulse.acc_correlation'), displayInsight?.correlation_insight || ''],
-        ['forecast', tr('pulse.acc_forecast'), displayInsight?.forecast_next_period || ''],
-        ['adjustment', tr('pulse.acc_adjustment'), displayInsight?.kpi_adjustment || ''],
-    ]
-
-    const loadAiInsight = useCallback(async (force = false) => {
-        setInsightError('')
-        if (!force) {
-            try {
-                const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null')
-                if (cached?.data_signature) {
-                    setAiInsight(cached)
-                    return
-                }
-            } catch {
-                // ignore cache parse errors
-            }
-        }
-        setLoadingInsight(true)
-        try {
-            const result = await api.dashboardInsight(cycleId, category)
-            setAiInsight(result)
-            localStorage.setItem(cacheKey, JSON.stringify(result))
-        } catch (e) {
-            setInsightError(e.message)
-            setAiInsight(null)
-        } finally {
-            setLoadingInsight(false)
-        }
-    }, [cacheKey, cycleId, category])
-
+function OutputRiskDrawer({ open, items, visible, year, tr, onClose, onSelectKpi, onGoJournal, onGoKpis }) {
+    const drawerRef = useRef(null)
     useEffect(() => {
-        setChecked({})
-        try {
-            const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null')
-            setAiInsight(cached?.data_signature ? cached : null)
-        } catch {
-            setAiInsight(null)
+        if (!open) return undefined
+        const onKey = e => { if (e.key === 'Escape') onClose() }
+        window.addEventListener('keydown', onKey)
+        document.body.classList.add('kpi-drawer-open')
+        document.body.style.overflow = 'hidden'
+        lcmdFocusPanel(drawerRef.current)
+        return () => {
+            window.removeEventListener('keydown', onKey)
+            document.body.classList.remove('kpi-drawer-open')
+            document.body.style.overflow = ''
         }
-    }, [cacheKey])
+    }, [open, onClose])
 
-    const openKpi = (status) => {
-        if (!status) return
-        onSelectKpi({
-            ...status,
-            expected_progress: status.expected_progress ?? status.kpi.progress - status.gap,
-        })
-    }
+    if (!open) return null
 
-    return (
-        <div className="ddb-panel ddb-lens">
-            <div className="ddb-lens-top">
-                <PanelHeader icon="bot" label={tr('pulse.insight_center_title')} tip={tr('pulse.subtitle')} tr={tr} />
-                <div className="ddb-lens-actions">
-                    {aiInsight?.generated_at && (
-                        <span className="ddb-ai-meta">{tr('pulse.last_generated', { time: new Date(aiInsight.generated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })}</span>
-                    )}
-                    <button className="btn small" onClick={() => loadAiInsight(true)} disabled={loadingInsight}>
-                        <UiIcon name="refresh" />{loadingInsight ? tr('pulse.ai_loading_short') : tr('pulse.regenerate')}
+    const rows = lcmdDecoratedRisks(items || [], visible || [], year, tr)
+    const drawer = (
+        <>
+            <div className="ddb-backdrop" onClick={onClose} />
+            <div className="ddb-drawer ddb-output-risk-panel" role="dialog" aria-modal="true" aria-label={tr('output.risk_drawer_title')} tabIndex={-1} ref={drawerRef}>
+                <div className="ddb-drawer-hd">
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                        <div className="ddb-drawer-title">{tr('output.risk_drawer_title')}</div>
+                        <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
+                            {tr('output.risk_drawer_sub')}
+                        </div>
+                    </div>
+                    <button className="btn-icon" type="button" onClick={onClose} aria-label={tr('common.close')}>
+                        <UiIcon name="x" />
                     </button>
-                    <div className="ddb-lens-tabs" role="tablist" aria-label={tr('pulse.tabs_label')}>
-                        <button className={`ddb-lens-tab${lens === 'insight' ? ' active' : ''}`} onClick={() => setLens('insight')}>
-                            <UiIcon name="sparkles" />{tr('pulse.tab_insight')}
-                        </button>
-                        <button className={`ddb-lens-tab${lens === 'monthly' ? ' active' : ''}`} onClick={() => setLens('monthly')}>
-                            <UiIcon name="target" />{tr('pulse.tab_monthly')}
-                        </button>
-                        <button className={`ddb-lens-tab${lens === 'trend' ? ' active' : ''}`} onClick={() => setLens('trend')}>
-                            <UiIcon name="chartDown" />{tr('pulse.tab_trend')}
-                        </button>
-                    </div>
                 </div>
-            </div>
-            <div className="ddb-lens-copy">
-                {lens === 'insight'
-                    ? (loadingInsight
-                        ? tr('pulse.ai_loading')
-                        : displayInsight?.top_priority || tr('pulse.ai_waiting'))
-                    : lens === 'trend'
-                        ? tr('dashboard.trend_estimate')
-                        : (concerns.length
-                        ? tr('pulse.month_analysis_risk', { win: wins[0] || tr('pulse.no_win'), concern: concerns[0] })
-                        : tr('pulse.month_analysis_ok', { win: wins[0] || tr('pulse.no_win') }))}
-            </div>
-
-            {lens === 'insight' ? (
-                <>
-                    {loadingInsight && !aiInsight && (
-                        <div className="ddb-ai-grid">
-                            <div className="ddb-ai-skeleton" />
-                            <div className="ddb-ai-skeleton" />
-                            <div className="ddb-ai-skeleton" />
-                        </div>
-                    )}
-                    {insightError && (
-                        <div className="ddb-ai-callout error">
-                            <UiIcon name="warning" />
-                            <span>{tr('pulse.ai_error', { message: insightError })}</span>
-                        </div>
-                    )}
-                    {displayInsight && (
-                        <div className="ddb-ai-grid">
-                            <button className="ddb-ai-card" style={{ '--ai-color': HC.green }} onClick={() => setLens('monthly')}>
-                                <span className="ddb-ai-card-label"><UiIcon name="sparkles" />{tr('pulse.strength')}</span>
-                                <span className="ddb-ai-card-text">{displayInsight.top_strength}</span>
-                                <span className="ddb-ai-card-note">{tr('pulse.open_weekly')}</span>
-                            </button>
-                            <button className="ddb-ai-card" style={{ '--ai-color': HC.red }} onClick={() => openKpi(riskStatus)}>
-                                <span className="ddb-ai-card-label"><UiIcon name="warning" />{tr('pulse.risk')}</span>
-                                <span className="ddb-ai-card-text">{displayInsight.top_risk}</span>
-                                <span className="ddb-ai-card-note">{riskStatus ? tr('pulse.detail') : tr('pulse.no_data')}</span>
-                            </button>
-                            <button className="ddb-ai-card" style={{ '--ai-color': HC.yellow }} onClick={() => openKpi(priorityStatus)}>
-                                <span className="ddb-ai-card-label"><UiIcon name="compass" />{tr('pulse.priority')}</span>
-                                <span className="ddb-ai-card-text">{displayInsight.top_priority}</span>
-                                <span className="ddb-ai-card-note">{priorityStatus ? tr('pulse.ai_suggestion') : tr('pulse.no_data')}</span>
-                            </button>
-                        </div>
-                    )}
-                    <div className="ddb-lens-grid">
-                        <div className="ddb-lens-subpanel">
-                            <div className="ddb-lens-subtitle"><UiIcon name="list" />{tr('pulse.deep_analysis')}</div>
-                            <div className="ddb-acc-list">
-                                {sections.map(([key, label, body]) => (
-                                    <div key={key} className="ddb-acc-item">
-                                        <button className="ddb-acc-btn" onClick={() => setOpen(open === key ? '' : key)}>
-                                            <span>{label}</span>
-                                            <UiIcon name={open === key ? 'eyeOff' : 'eye'} />
-                                        </button>
-                                        {open === key && <div className="ddb-acc-body">{body || tr('pulse.ai_waiting')}</div>}
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                        <div className="ddb-lens-subpanel">
-                            <div className="ddb-lens-subtitle"><UiIcon name="checkCircle" />{tr('pulse.suggested_actions')}</div>
-                            <div className="ddb-action-list">
-                                {(displayInsight?.suggested_actions?.length ? displayInsight.suggested_actions : [tr('pulse.ai_waiting')]).map((action, i) => (
-                                    <label key={`${action}-${i}`} className="ddb-action-item">
-                                        <input
-                                            type="checkbox"
-                                            checked={!!checked[i]}
-                                            onChange={e => setChecked(prev => ({ ...prev, [i]: e.target.checked }))}
-                                        />
-                                        <span>{action}</span>
-                                    </label>
-                                ))}
-                            </div>
-                        </div>
-                    </div>
-                </>
-            ) : lens === 'trend' ? (
-                <div className="ddb-lens-subpanel">
-                    <KpiTrendChart data={data} visible={visible} tr={tr} lang={lang} />
-                </div>
-            ) : (
-                <>
-                    <div className="ddb-month-grid">
-                        <div className="ddb-lens-subpanel">
-                            <div className="ddb-lens-subtitle"><UiIcon name="target" />{tr('pulse.monthly_radar')}</div>
-                            <MonthlyRadar rows={rows} tr={tr} />
-                        </div>
-                        <div className="ddb-lens-subpanel">
-                            <div className="ddb-lens-subtitle"><UiIcon name="list" />{tr('pulse.completion_table')}</div>
-                            <MonthlyCompletionRows rows={rows} tr={tr} onFilterObj={onFilterObj} />
-                        </div>
-                    </div>
-                    <div className="ddb-lens-grid">
-                        <div className="ddb-lens-subpanel">
-                            <div className="ddb-lens-subtitle"><UiIcon name="chartDown" />{tr('pulse.weekly_breakdown')}</div>
-                            <div className="ddb-week-bars">
-                                {weeks.map((w, i) => (
-                                    <div key={`${w.label}-${i}`} className="ddb-week-bar-row">
-                                        <strong>{w.label}</strong>
-                                        <span className="ddb-week-bar-track">
-                                            <span className="ddb-week-bar-fill" style={{ '--bar-width': `${w.value}%` }} />
+                <div className="ddb-drawer-body">
+                    {!rows.length ? (
+                        <div className="lcmd-tip">{tr('dashboard.risk_none')}</div>
+                    ) : rows.map((item, i) => {
+                        const progress = item.signal.progress
+                        const expected = item.signal.expected
+                        const projected = Number(item.projected_progress ?? progress)
+                        const gap = item.signal.gap
+                        const color = lcmdToneColor(item.severity || progress)
+                        return (
+                            <button
+                                key={item.kpi_id || `${item.name}-${i}`}
+                                type="button"
+                                className="ddb-output-risk-row"
+                                onClick={() => onSelectKpi(item)}
+                            >
+                                <div className="ddb-output-risk-head">
+                                    <span style={{ minWidth: 0 }}>
+                                        <span className="ddb-output-risk-name">{item.name}</span>
+                                        <span className="ddb-output-risk-sub">{item.objective_name || tr('dashboard.panel_top_risk')}</span>
+                                        <span className="ddb-output-risk-reason">
+                                            <b>{item.signal.label}</b>{' '}
+                                            {item.signal.reason}
                                         </span>
-                                        <span>{w.value}%</span>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                        <div className="ddb-lens-subpanel">
-                            <div className="ddb-lens-subtitle"><UiIcon name="sparkles" />{tr('pulse.wins_concerns')}</div>
-                            <div className="ddb-winconcern">
-                                <MiniLensList title={tr('pulse.wins')} items={wins} color={HC.green} empty={tr('pulse.no_win')} />
-                                <MiniLensList title={tr('pulse.concerns')} items={concerns} color={HC.red} empty={tr('pulse.no_concern')} />
-                            </div>
-                        </div>
-                    </div>
-                </>
-            )}
-        </div>
-    )
-}
-
-function MonthlyRadar({ rows, tr }) {
-    const axes = rows.length >= 3 ? rows.slice(0, 6) : rows
-    if (axes.length < 3) {
-        return <div className="ddb-trend-empty"><div><b>{tr('pulse.no_data')}</b></div></div>
-    }
-    const w = 280, h = 238, cx = 140, cy = 118, r = 78
-    const ptsFor = scale => axes.map((row, i) => {
-        const a = -Math.PI / 2 + i * Math.PI * 2 / axes.length
-        return `${cx + Math.cos(a) * r * scale},${cy + Math.sin(a) * r * scale}`
-    }).join(' ')
-    const pts = axes.map((row, i) => {
-        const a = -Math.PI / 2 + i * Math.PI * 2 / axes.length
-        const scale = clampPct(row.actual) / 100
-        return {
-            ...row,
-            x: cx + Math.cos(a) * r * scale,
-            y: cy + Math.sin(a) * r * scale,
-            lx: cx + Math.cos(a) * (r + 26),
-            ly: cy + Math.sin(a) * (r + 26),
-        }
-    })
-    return (
-        <div className="ddb-radar-box">
-            <svg className="ddb-radar-svg" viewBox={`0 0 ${w} ${h}`}>
-                {[.25, .5, .75, 1].map(s => <polygon key={s} points={ptsFor(s)} fill="none" stroke="var(--border)" />)}
-                {pts.map(p => <line key={`axis-${p.id}`} x1={cx} y1={cy} x2={p.lx} y2={p.ly} stroke="var(--border)" />)}
-                <polygon className="ddb-radar-poly" points={pts.map(p => `${p.x},${p.y}`).join(' ')} fill="rgba(20,184,166,.18)" stroke="#14b8a6" strokeWidth="3" />
-                {pts.map((p, i) => (
-                    <g key={p.id}>
-                        <circle cx={p.x} cy={p.y} r="4" fill="#14b8a6" style={{ animationDelay: `${i * .05}s` }} />
-                        <text x={p.lx} y={p.ly} textAnchor={p.lx < cx ? 'end' : p.lx > cx ? 'start' : 'middle'} fontSize="10" fill="var(--muted)">
-                            {String(p.name).slice(0, 16)}
-                        </text>
-                    </g>
-                ))}
-            </svg>
-        </div>
-    )
-}
-
-function MonthlyCompletionRows({ rows, tr, onFilterObj }) {
-    if (!rows.length) return <div className="ddb-trend-empty"><div><b>{tr('pulse.no_data')}</b></div></div>
-    return (
-        <div className="ddb-month-table">
-            <div className="ddb-month-row head">
-                <span>{tr('pulse.table_category')}</span>
-                <span>{tr('pulse.table_plan')}</span>
-                <span>{tr('pulse.table_actual')}</span>
-                <span>{tr('pulse.table_delta')}</span>
-            </div>
-            {rows.map(row => (
-                <button
-                    key={row.id}
-                    className="ddb-month-row"
-                    onClick={() => typeof row.id === 'number' && onFilterObj(row.id)}
-                    type="button"
-                >
-                    <strong>{row.name}</strong>
-                    <span>{row.plan}%</span>
-                    <span>{row.actual}%</span>
-                    <span style={{ color: row.color, fontWeight: 850 }}>{row.delta >= 0 ? '+' : ''}{row.delta}%</span>
-                </button>
-            ))}
-        </div>
-    )
-}
-
-function MiniLensList({ title, items, color, empty }) {
-    const list = items.length ? items : [empty]
-    return (
-        <div className="ddb-mini-list">
-            <div className="ddb-lens-subtitle" style={{ marginBottom: 2 }}>{title}</div>
-            {list.map((item, i) => (
-                <div key={`${item}-${i}`} className="ddb-mini-item" style={{ animationDelay: `${i * .04}s` }}>
-                    <span className="ddb-mini-dot" style={{ '--dot-color': color }} />
-                    <span>{item}</span>
-                </div>
-            ))}
-        </div>
-    )
-}
-
-/* ─── Hero Section ───────────────────────────────────────────────────────── */
-function KpiHeroSection({ data, counts, visible, tr, onWeekly, loadingWeekly, onExport, weekly }) {
-    const [showWeekly, setShowWeekly] = useState(false)
-    const val = useCountUp(data.overall_progress)
-    const total = visible.length
-    const r = 48, circum = 2 * Math.PI * r
-    const filled = (val / 100) * circum
-
-    // Auto-computed AI insight from warnings
-    const warnCount = data.warnings?.length || 0
-    const insightText = cleanIconLabel(warnCount === 0
-        ? tr('dashboard.insight_all_good')
-        : tr('dashboard.insight_risk_summary', {
-            red: counts.red,
-            yellowPart: counts.yellow ? tr('dashboard.insight_yellow_part', { count: counts.yellow }) : '',
-            warning: data.warnings[0]?.slice(0, 90) || '',
-            more: (data.warnings[0]?.length || 0) > 90 ? '...' : '',
-        }))
-    const labels = healthLabels(tr)
-
-    return (
-        <div className="ddb-hero">
-            {/* Animated ring */}
-            <div className="ddb-hero-ring" tabIndex={0} aria-label={tr('dashboard.health_score_aria')}>
-                <svg viewBox="0 0 110 110" style={{ width: 110, height: 110 }}>
-                    <defs>
-                        <linearGradient id="heroGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                            <stop offset="0%" stopColor="var(--primary)" />
-                            <stop offset="100%" stopColor="#14b8a6" />
-                        </linearGradient>
-                    </defs>
-                    <circle cx="55" cy="55" r={r} fill="none" stroke="var(--surface-2)" strokeWidth="10" />
-                    <circle className="ddb-hero-progress" cx="55" cy="55" r={r} fill="none" stroke="url(#heroGrad)" strokeWidth="10"
-                        strokeDasharray={`${filled} ${circum}`}
-                        strokeLinecap="round" transform="rotate(-90 55 55)" />
-                </svg>
-                <div className="ddb-hero-ring-inner">
-                    <span style={{ fontSize: 22, fontWeight: 800, color: 'var(--text)', lineHeight: 1 }}>{val}%</span>
-                    <span style={{ fontSize: 9, color: 'var(--muted)', marginTop: 2, textTransform: 'uppercase', letterSpacing: '.4px' }}>{tr('dashboard.health_score')}</span>
-                </div>
-                <span className="ddb-score-detail">
-                    {tr('dashboard.health_score_detail')}
-                </span>
-            </div>
-
-            {/* Right side */}
-            <div className="ddb-hero-right">
-                <div className="ddb-hero-copy">
-                    <div className="ddb-hero-title icon-heading"><UiIcon name="table" /> {cleanIconLabel(tr('dashboard.title', { year: data.displayYear ?? data.year }))}</div>
-                    <div className="ddb-hero-sub">{tr('dashboard.tracking_count', { count: total })}</div>
-                </div>
-
-                {/* 4 metric tiles */}
-                <div className="ddb-metrics-row">
-                    <MetricTile
-                        num={total}
-                        label={tr('dashboard.metric_total')}
-                        color="var(--text)"
-                        detail={tr('dashboard.metric_total_detail')}
-                    />
-                    <MetricTile
-                        num={counts.green}
-                        label={labels.green}
-                        color={HC.green}
-                        detail={tr('dashboard.metric_green_detail')}
-                    />
-                    <MetricTile
-                        num={counts.yellow}
-                        label={labels.yellow}
-                        color={HC.yellow}
-                        detail={tr('dashboard.metric_yellow_detail')}
-                    />
-                    <MetricTile
-                        num={counts.red}
-                        label={labels.red}
-                        color={HC.red}
-                        detail={tr('dashboard.metric_red_detail')}
-                    />
-                </div>
-
-                {/* AI Insight strip */}
-                <div className="ddb-insight">
-                    <span className="ddb-insight-icon"><UiIcon name="bot" /></span>
-                    <div className="ddb-insight-body">
-                        <div>{insightText}</div>
-                        <div className="ddb-insight-actions">
-                            <button className="btn small" onClick={onWeekly} disabled={loadingWeekly} style={{ fontSize: 11 }}>
-                                <UiIcon name="fileText" />{loadingWeekly ? tr('dashboard.agent_writing') : cleanIconLabel(tr('dashboard.btn_weekly'))}
+                                    </span>
+                                    <span className="ddb-output-risk-badge" style={{ color, background: `${color}22` }}>
+                                        {gap > 0 ? '+' : ''}{roundNum(gap)}%
+                                    </span>
+                                </div>
+                                <div className="ddb-output-risk-stats">
+                                    <span className="ddb-output-risk-stat"><span>{tr('output.tip_actual')}</span><b>{roundNum(progress)}%</b></span>
+                                    <span className="ddb-output-risk-stat"><span>{tr('dashboard.expected_label')}</span><b>{roundNum(expected)}%</b></span>
+                                    <span className="ddb-output-risk-stat"><span>{tr('dashboard.gap_label')}</span><b>{gap > 0 ? '+' : ''}{roundNum(gap)}%</b></span>
+                                    <span className="ddb-output-risk-stat"><span>{tr('output.risk_projected')}</span><b>{roundNum(projected)}%</b></span>
+                                </div>
                             </button>
-                            <button className="btn small primary" onClick={onExport} style={{ fontSize: 11 }}>
-                                <UiIcon name="download" />{tr('dashboard.export_report')}
-                            </button>
-                        </div>
-                        {weekly && (
-                            <>
-                                <button className="btn small ghost" style={{ marginTop: 6, fontSize: 11 }}
-                                    onClick={() => setShowWeekly(v => !v)}>
-                                    <UiIcon name={showWeekly ? 'eyeOff' : 'eye'} />{showWeekly ? tr('dashboard.hide_report') : tr('dashboard.show_report')}
-                                </button>
-                                {showWeekly && (
-                                    <div style={{ marginTop: 10, fontSize: 12, lineHeight: 1.6, borderTop: '1px solid var(--border)', paddingTop: 10 }}
-                                        dangerouslySetInnerHTML={{ __html: marked.parse(weekly) }} />
-                                )}
-                            </>
-                        )}
+                        )
+                    })}
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+                        <button className="btn small ghost" type="button" onClick={onGoJournal}>
+                            <UiIcon name="clipboardList" />{tr('output.go_journal')}
+                        </button>
+                        <button className="btn small primary" type="button" onClick={onGoKpis}>
+                            <UiIcon name="list" />{tr('output.view_all')}
+                        </button>
                     </div>
                 </div>
             </div>
-        </div>
+        </>
     )
+    return createPortal(drawer, document.body)
 }
 
-/* ─── Status Donut (SVG interactive) ────────────────────────────────────── */
-function StatusDonut({ statuses, filterHealth, onFilter, tr }) {
-    const total = statuses.length
-    const counts = { green: 0, yellow: 0, red: 0 }
-    statuses.forEach(s => { counts[s.health]++ })
-    const labels = healthLabels(tr)
 
-    const r = 48, cx = 60, cy = 60, circum = 2 * Math.PI * r
-    const segs = []
-    let offset = 0
-    for (const [key, color, label] of [
-        ['green', HC.green, labels.green],
-        ['yellow', HC.yellow, labels.yellow],
-        ['red', HC.red, labels.red],
-    ]) {
-        const len = total ? (counts[key] / total) * circum : 0
-        if (len > 0) segs.push({ key, color, label, len, offset })
-        offset += len
-    }
 
-    return (
-        <div className="ddb-status-wrap">
-            <svg viewBox="0 0 120 120" style={{ width: 130, height: 130, flexShrink: 0, overflow: 'visible' }}>
-                <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--surface-2)" strokeWidth="14" />
-                {segs.map(s => {
-                    const dimmed = filterHealth !== null && filterHealth !== s.key
-                    return (
-                        <circle className="ddb-donut-seg" key={s.key} cx={cx} cy={cy} r={r}
-                            fill="none" stroke={s.color}
-                            strokeWidth={filterHealth === s.key ? 19 : 14}
-                            strokeDasharray={`${s.len} ${circum - s.len}`}
-                            strokeDashoffset={-s.offset}
-                            transform="rotate(-90 60 60)"
-                            opacity={dimmed ? 0.25 : 1}
-                            style={{ cursor: 'pointer', transition: 'opacity .2s, stroke-width .2s' }}
-                            onClick={() => onFilter(filterHealth === s.key ? null : s.key)}
-                        />
-                    )
-                })}
-                <text x={cx} y={cy - 4} textAnchor="middle" fontSize="22" fontWeight="800" fill="var(--text)">{total}</text>
-                <text x={cx} y={cy + 13} textAnchor="middle" fontSize="9" fill="var(--muted)">KPI</text>
-            </svg>
-
-            <div className="ddb-status-legend">
-                {[
-                    ['green', HC.green, labels.green],
-                    ['yellow', HC.yellow, labels.yellow],
-                    ['red', HC.red, labels.red],
-                ].map(([key, color, label]) => (
-                    <div key={key}
-                        className={`ddb-status-seg${filterHealth === key ? ' active' : ''}`}
-                        onClick={() => onFilter(filterHealth === key ? null : key)}>
-                        <span className="ddb-status-dot" style={{ background: color }} />
-                        <span className="ddb-status-name">{label}</span>
-                        <span className="ddb-status-count" style={{ color }}>{counts[key]}</span>
-                        <span className="ddb-status-pct">{total ? `${Math.round(counts[key] / total * 100)}%` : '—'}</span>
-                    </div>
-                ))}
-            </div>
-        </div>
-    )
-}
-
-/* ─── Objective Bars ─────────────────────────────────────────────────────── */
-function ObjectiveBars({ objectives, visible, filterObj, onFilter, tr }) {
-    if (!objectives?.length) return <p className="muted" style={{ fontSize: 12 }}>{tr('dashboard.no_objectives')}</p>
-    return (
-        <div className="ddb-obj-list">
-            {objectives.map(o => {
-                const kids = visible.filter(s => s.kpi.objective_id === o.id)
-                const ct = { green: 0, yellow: 0, red: 0 }
-                kids.forEach(s => ct[s.health]++)
-                const barColor = ct.red > 0 ? HC.red : ct.yellow > 0 ? HC.yellow : HC.green
-                const isActive = filterObj === o.id
-                return (
-                    <div key={o.id}
-                        className={`ddb-obj-item${isActive ? ' active' : ''}`}
-                        onClick={() => onFilter(isActive ? null : o.id)}>
-                        <div className="ddb-obj-name-row">
-                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{o.name}</span>
-                            <div className="ddb-obj-dist">
-                                {ct.green > 0 && <span className="ddb-obj-chip" style={{ background: HC.green + '22', color: HC.green }}>{ct.green}<UiIcon name="check" /></span>}
-                                {ct.yellow > 0 && <span className="ddb-obj-chip" style={{ background: HC.yellow + '22', color: HC.yellow }}>{ct.yellow}<UiIcon name="warning" /></span>}
-                                {ct.red > 0 && <span className="ddb-obj-chip" style={{ background: HC.red + '22', color: HC.red }}>{ct.red}<UiIcon name="x" /></span>}
-                            </div>
-                        </div>
-                        <div className="ddb-obj-bar-row">
-                            <div className="ddb-obj-track">
-                                <div className="ddb-obj-fill" style={{ width: `${Math.min(100, o.progress)}%`, background: barColor }} />
-                            </div>
-                            <span className="ddb-obj-pct" style={{ color: barColor }}>{o.progress}%</span>
-                        </div>
-                    </div>
-                )
-            })}
-        </div>
-    )
-}
-
-function buildTrendPoints(data, visible, locale) {
-    if (!data?.recent_items?.length && !data?.kpi_statuses?.length) return []
-    const now = new Date()
-    const current = Math.round(data.overall_progress || 0)
-    const redCount = visible.filter(s => s.health === 'red').length
-    const yellowCount = visible.filter(s => s.health === 'yellow').length
-    const greenCount = visible.filter(s => s.health === 'green').length
-    const activityBoost = Math.min(12, data.recent_items?.length || 0)
-    const base = Math.max(0, current - 18 - Math.round(activityBoost / 2))
-
-    return Array.from({ length: 6 }, (_, i) => {
-        const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1)
-        const label = d.toLocaleDateString(locale, { month: 'short' }).replace('.', '')
-        const eased = i / 5
-        const wobble = i === 3 && redCount > yellowCount ? -2 : i === 4 ? 1 : 0
-        const healthScore = i === 5
-            ? current
-            : Math.max(0, Math.min(100, Math.round(base + (current - base) * eased + wobble)))
-        return {
-            label,
-            healthScore,
-            riskCount: Math.max(redCount, Math.round(redCount + (5 - i) * 0.8)),
-            onTrackCount: Math.max(0, greenCount - Math.max(0, 5 - i - 2)),
-        }
-    })
-}
-
-function KpiTrendChart({ data, visible, tr, lang }) {
-    const [selectedIndex, setSelectedIndex] = useState(null)
-    const [hoverIndex, setHoverIndex] = useState(null)
-    const locale = lang === 'vi' ? 'vi-VN' : 'en-US'
-    const points = buildTrendPoints(data, visible, locale)
-    if (points.length === 0) {
-        return (
-            <div className="ddb-trend-empty">
-                <div>
-                    <b>{tr('dashboard.trend_empty_title')}</b>
-                    <span>{tr('dashboard.trend_empty_desc')}</span>
-                </div>
-            </div>
-        )
-    }
-
-    const w = 420, h = 150, padX = 26, padY = 18
-    const innerW = w - padX * 2
-    const innerH = h - padY * 2
-    const trendPoints = points.map((p, i) => {
-        const prev = points[i - 1]
-        const change = prev ? p.healthScore - prev.healthScore : null
-        const reasonKey = i === 0
-            ? 'dashboard.trend_reason_first'
-            : i === points.length - 1
-                ? 'dashboard.trend_reason_current'
-                : change > 0
-                    ? 'dashboard.trend_reason_up'
-                    : change < 0
-                        ? 'dashboard.trend_reason_down'
-                        : 'dashboard.trend_reason_flat'
-        return { ...p, change, reason: tr(reasonKey) }
-    })
-    const coords = trendPoints.map((p, i) => {
-        const x = padX + (innerW / Math.max(1, points.length - 1)) * i
-        const y = padY + innerH - (Math.min(100, p.healthScore) / 100) * innerH
-        return { ...p, x, y }
-    })
-    const path = coords.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
-    const area = `${path} L ${coords[coords.length - 1].x} ${h - padY} L ${coords[0].x} ${h - padY} Z`
-    const last = points[points.length - 1]
-    const prev = points[points.length - 2]
-    const delta = last.healthScore - prev.healthScore
-    const activeIndex = hoverIndex ?? selectedIndex
-    const activePoint = activeIndex == null ? null : coords[activeIndex]
-    const trendChangeLabel = (p) => {
-        if (!p || p.change == null) return tr('dashboard.trend_change_start')
-        if (p.change > 0) return tr('dashboard.trend_change_up', { delta: Math.abs(p.change) })
-        if (p.change < 0) return tr('dashboard.trend_change_down', { delta: Math.abs(p.change) })
-        return tr('dashboard.trend_change_flat')
-    }
-
-    return (
-        <div className="ddb-trend-wrap">
-            <div className="ddb-trend-kpi">
-                <span>{tr('dashboard.trend_estimate')}</span>
-                <strong style={{ color: delta >= 0 ? HC.green : HC.red }}>
-                    {tr('dashboard.trend_recent_period', { value: `${delta >= 0 ? '+' : ''}${delta}` })}
-                </strong>
-            </div>
-            <svg className="ddb-trend-svg" viewBox={`0 0 ${w} ${h}`} role="img" aria-label={tr('dashboard.trend_aria')}>
-                <defs>
-                    <linearGradient id="trendLine" x1="0" x2="1" y1="0" y2="0">
-                        <stop offset="0%" stopColor="#7c5cff" />
-                        <stop offset="100%" stopColor="#14b8a6" />
-                    </linearGradient>
-                    <linearGradient id="trendArea" x1="0" x2="0" y1="0" y2="1">
-                        <stop offset="0%" stopColor="rgba(124,92,255,.24)" />
-                        <stop offset="100%" stopColor="rgba(20,184,166,0)" />
-                    </linearGradient>
-                </defs>
-                {[0, 25, 50, 75, 100].map(v => {
-                    const y = padY + innerH - (v / 100) * innerH
-                    return <line key={v} x1={padX} x2={w - padX} y1={y} y2={y} stroke="var(--border)" strokeDasharray="3 5" />
-                })}
-                <path className="ddb-trend-area" d={area} fill="url(#trendArea)" />
-                <path className="ddb-trend-line" d={path} fill="none" stroke="url(#trendLine)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-                {coords.map((p, i) => (
-                    <g
-                        className={`ddb-trend-dot${activeIndex === i ? ' active' : ''}`}
-                        key={p.label}
-                        style={{ animationDelay: `${0.28 + i * 0.06}s` }}
-                        tabIndex={0}
-                        role="button"
-                        aria-label={tr('dashboard.trend_detail_title', { label: p.label, score: p.healthScore })}
-                        onMouseEnter={() => setHoverIndex(i)}
-                        onMouseLeave={() => setHoverIndex(null)}
-                        onFocus={() => setHoverIndex(i)}
-                        onBlur={() => setHoverIndex(null)}
-                        onClick={() => setSelectedIndex((cur) => cur === i ? null : i)}
-                        onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault()
-                                setSelectedIndex((cur) => cur === i ? null : i)
-                            }
-                        }}>
-                        <circle className="ddb-trend-hit" cx={p.x} cy={p.y} r="13" />
-                        <circle className="ddb-trend-node" cx={p.x} cy={p.y} r="5" fill="var(--surface)" stroke="url(#trendLine)" strokeWidth="3" />
-                        <text x={p.x} y={p.y - 10} textAnchor="middle" fill="var(--muted)" fontSize="10">{p.healthScore}%</text>
-                    </g>
-                ))}
-            </svg>
-            <div className="ddb-trend-labels">
-                {points.map(p => <span key={p.label}>{p.label}</span>)}
-            </div>
-            {activePoint && (
-                <div className="ddb-trend-detail">
-                    <div className="ddb-trend-detail-top">
-                        <span className="ddb-trend-detail-title">
-                            {tr('dashboard.trend_detail_title', { label: activePoint.label, score: activePoint.healthScore })}
-                        </span>
-                        <span
-                            className="ddb-trend-detail-change"
-                            style={{ color: activePoint.change == null || activePoint.change === 0 ? 'var(--muted)' : activePoint.change > 0 ? HC.green : HC.red }}>
-                            {trendChangeLabel(activePoint)}
-                        </span>
-                    </div>
-                    <p>{activePoint.reason}</p>
-                    <div className="ddb-trend-detail-meta">
-                        <span>{tr('dashboard.trend_detail_counts', { green: activePoint.onTrackCount, risk: activePoint.riskCount })}</span>
-                    </div>
-                </div>
-            )}
-        </div>
-    )
-}
-
-/* ─── Burnout Gauge (semi-circle SVG) ───────────────────────────────────── */
 function BurnoutGauge({ tr }) {
     const [data, setData] = useState(null)
     useEffect(() => { api.burnoutCheck().then(setData).catch(() => {}) }, [])
 
-    const meterMax = 150
     const loadPct = data && data.free_hours > 0
-        ? Math.min(meterMax, Math.round((data.hours_needed / data.free_hours) * 100))
+        ? Math.min(150, Math.round((data.hours_needed / data.free_hours) * 100))
         : 0
     const counted = useCountUp(loadPct)
     const color = data?.risk_level === 'danger' ? HC.red : data?.risk_level === 'warning' ? HC.yellow : HC.green
-    const fillPct = (Math.min(meterMax, counted) / meterMax) * 100
     const riskLabel = {
         safe: tr('dashboard.burnout_safe'),
         warning: tr('dashboard.burnout_warning'),
         danger: tr('dashboard.burnout_danger'),
     }
+    const barWidthPct = `${Math.min(100, (counted / 150) * 100).toFixed(2)}%`
 
     return (
         <div className="ddb-gauge-wrap" style={{ '--gauge-color': color }}>
-            <div className="ddb-burnout-top">
-                <div className="ddb-burnout-scorebox">
-                    <span className="ddb-burnout-score">{data ? `${counted}%` : '--'}</span>
-                    <span className="ddb-burnout-caption">{tr('dashboard.gauge_needed')} / {tr('dashboard.gauge_free')}</span>
+            <div className="ddb-burnout-header">
+                <div>
+                    <div className="ddb-burnout-pct">{data ? `${counted}%` : '--'}</div>
+                    <div className="ddb-burnout-caption">{tr('dashboard.gauge_needed')} / {tr('dashboard.gauge_free')}</div>
                 </div>
                 {data && <span className="ddb-burnout-status">{riskLabel[data.risk_level]}</span>}
             </div>
-            <div className="ddb-burnout-meter"
-                role="meter"
-                aria-valuemin={0}
-                aria-valuemax={meterMax}
-                aria-valuenow={data ? counted : 0}
-                aria-label={data ? `${counted}% ${riskLabel[data.risk_level]}` : tr('dashboard.panel_burnout')}>
-                <div className="ddb-burnout-track">
-                    {data && <div className="ddb-burnout-fill" style={{ width: `${fillPct}%` }} />}
-                    <span className="ddb-burnout-marker warning" aria-hidden="true" />
-                    <span className="ddb-burnout-marker limit" aria-hidden="true" />
+            <div className="ddb-capbar-outer">
+                <div className="ddb-capbar-track">
+                    <div className="ddb-capbar-fill" style={{ width: barWidthPct }} />
+                    <div className="ddb-capbar-marker" style={{ left: '40%' }} />
+                    <div className="ddb-capbar-marker" style={{ left: '66.666%' }} />
                 </div>
-                <div className="ddb-burnout-scale" aria-hidden="true">
+                <div className="ddb-capbar-ticks">
                     <span>0%</span>
+                    <span>60%</span>
                     <span>100%</span>
-                    <span>150%+</span>
+                    <span>150%</span>
                 </div>
             </div>
             {data && (
                 <div className="ddb-burnout-stats">
-                    <div className="ddb-burnout-stat primary">
-                        <span>{tr('dashboard.gauge_needed')}</span>
-                        <strong>{data.hours_needed}h</strong>
+                    <div className="ddb-burnout-stat">
+                        <div className="ddb-burnout-dot" style={{ background: 'var(--gauge-color)' }} />
+                        <div className="ddb-burnout-stat-text">
+                            <span>{tr('dashboard.gauge_needed')}</span>
+                            <strong className="primary">{data.hours_needed}h</strong>
+                        </div>
                     </div>
                     <div className="ddb-burnout-stat">
-                        <span>{tr('dashboard.gauge_free')}</span>
-                        <strong>{data.free_hours}h</strong>
+                        <div className="ddb-burnout-dot" style={{ background: 'var(--muted)' }} />
+                        <div className="ddb-burnout-stat-text">
+                            <span>{tr('dashboard.gauge_free')}</span>
+                            <strong>{data.free_hours}h</strong>
+                        </div>
                     </div>
+                </div>
+            )}
+            {data && (
+                <div className="ddb-burnout-note">
+                    <em>{tr('burnout.formula_full', { days: data.horizon_days || 14 })}</em>
                 </div>
             )}
         </div>
@@ -1841,316 +4411,99 @@ function BurnoutGauge({ tr }) {
 }
 
 /* ─── Top Risk List ──────────────────────────────────────────────────────── */
-function TopRiskList({ statuses, year, onSelect, tr }) {
-    const today = new Date()
-    const behind = [...statuses]
-        .filter(s => s.gap < 0)
-        .sort((a, b) => (Math.abs(b.gap) * b.kpi.weight) - (Math.abs(a.gap) * a.kpi.weight))
-        .slice(0, 5)
 
-    if (behind.length === 0) {
-        return (
-            <div style={{ textAlign: 'center', padding: '20px 0', color: 'var(--muted)', fontSize: 13 }}>
-                <div className="ddb-empty-icon"><UiIcon name="checkCircle" /></div>
-                {tr('dashboard.risk_none')}
-            </div>
-        )
-    }
-
-    return (
-        <div className="ddb-risk-list">
-            {behind.map(({ kpi, health, gap }) => {
-                const c = HC[health]
-                const dl = kpi.deadline || `${year}-12-31`
-                const days = Math.ceil((new Date(dl) - today) / 86400000)
-                return (
-                    <div key={kpi.id} className="ddb-risk-item" onClick={() => onSelect({ kpi, expected_progress: kpi.progress - gap, health, gap })}>
-                        <span className="ddb-risk-dot" style={{ background: c }} />
-                        <div className="ddb-risk-main">
-                            <div className="ddb-risk-name">{kpi.name}</div>
-                            <div className="ddb-risk-sub">
-                                <div className="ddb-risk-track">
-                                    <div className="ddb-risk-fill" style={{ width: `${Math.min(100, kpi.progress)}%`, background: c }} />
-                                </div>
-                                <span style={{ fontSize: 10.5, color: 'var(--muted)', flexShrink: 0 }}>
-                                    {days >= 0 ? tr('dashboard.days_short', { days }) : tr('dashboard.overdue_short', { days: -days })}
-                                </span>
-                            </div>
-                        </div>
-                        <span className="ddb-risk-gap" style={{ color: c }}>{gap}%</span>
-                    </div>
-                )
-            })}
-        </div>
-    )
-}
-
-function WeeklyFocusCard({ statuses, todoItems, year, statusLabels, sourceLabels, tr, onSelectKpi, onSelectTodo, onSelect }) {
-    const [expandedKey, setExpandedKey] = useState(null)
-    const focusFromRisk = [...statuses]
-        .filter(s => s.gap < 0)
-        .sort((a, b) => Math.abs(b.gap) - Math.abs(a.gap))
-        .slice(0, 3)
-        .map(s => ({
-            key: `risk-${s.kpi.id}`,
-            title: s.kpi.name,
-            sub: tr('dashboard.focus_risk_sub', { gap: s.gap }),
-            item: s,
-            kind: 'risk',
-            state: tr('dashboard.focus_state_focus'),
-        }))
-    const focusFromTodo = (todoItems || []).slice(0, 3 - focusFromRisk.length).map(w => ({
-        key: `todo-${w.id}`,
-        title: w.title,
-        sub: w.work_date ? tr('dashboard.focus_todo_due', { date: w.work_date }) : tr('dashboard.focus_todo_week'),
-        todo: w,
-        kind: 'todo',
-        state: tr('dashboard.focus_state_todo'),
-    }))
-    const items = [...focusFromRisk, ...focusFromTodo].slice(0, 3)
-
-    if (items.length === 0) {
-        return (
-            <div className="ddb-trend-empty">
-                <div>
-                    <b>{tr('dashboard.focus_empty_title')}</b>
-                    <span>{tr('dashboard.focus_empty_desc')}</span>
-                </div>
-            </div>
-        )
-    }
-
-    return (
-        <div className="ddb-focus-list">
-            {items.map((it, i) => {
-                const open = () => {
-                    setExpandedKey(prev => prev === it.key ? null : it.key)
-                    if (it.kind === 'risk' && it.item) {
-                        const openKpi = onSelectKpi || onSelect
-                        if (typeof openKpi !== 'function') return
-                        openKpi({
-                            ...it.item,
-                            expected_progress: it.item.expected_progress ?? it.item.kpi.progress - it.item.gap,
-                        })
-                    } else if (it.kind === 'todo' && it.todo) {
-                        if (typeof onSelectTodo === 'function') onSelectTodo(it.todo)
-                    }
-                }
-                return (
-                <div
-                    key={it.key}
-                    className="ddb-focus-item"
-                    role="button"
-                    tabIndex={0}
-                    onClick={open}
-                    onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault()
-                            open()
-                        }
-                    }}
-                >
-                    <span className="ddb-focus-index">{i + 1}</span>
-                    <div style={{ minWidth: 0 }}>
-                        <div className="ddb-focus-title">{it.title}</div>
-                        <div className="ddb-focus-sub">{it.sub}</div>
-                    </div>
-                    <span className="ddb-focus-action">
-                        <span className="ddb-focus-state">{it.state}</span>
-                        <span className="ddb-focus-arrow">›</span>
-                    </span>
-                    {expandedKey === it.key && (
-                        <div className="ddb-focus-detail">
-                            {it.kind === 'risk' ? (
-                                <>
-                                    <div>
-                                        {tr('dashboard.focus_risk_detail')}
-                                    </div>
-                                    <div className="ddb-focus-detail-grid">
-                                        <div className="ddb-focus-detail-stat">
-                                            <span>{tr('dashboard.progress_label')}</span>
-                                            <b>{it.item.kpi.progress}%</b>
-                                        </div>
-                                        <div className="ddb-focus-detail-stat">
-                                            <span>{tr('dashboard.gap_label')}</span>
-                                            <b style={{ color: HC.red }}>{it.item.gap}%</b>
-                                        </div>
-                                        <div className="ddb-focus-detail-stat">
-                                            <span>{tr('dashboard.weight_label_short')}</span>
-                                            <b>{it.item.kpi.weight}%</b>
-                                        </div>
-                                    </div>
-                                </>
-                            ) : (
-                                <>
-                                    <div>{tr('dashboard.focus_todo_detail')}</div>
-                                    <div className="ddb-focus-detail-grid">
-                                        <div className="ddb-focus-detail-stat">
-                                            <span>{tr('dashboard.status_label')}</span>
-                                            <b>{statusLabels?.[it.todo.status] ?? it.todo.status}</b>
-                                        </div>
-                                        <div className="ddb-focus-detail-stat">
-                                            <span>{tr('dashboard.date_label')}</span>
-                                            <b>{it.todo.work_date || tr('dashboard.unset')}</b>
-                                        </div>
-                                        <div className="ddb-focus-detail-stat">
-                                            <span>{tr('dashboard.source_label')}</span>
-                                            <b>{sourceLabels?.[it.todo.source] ?? it.todo.source}</b>
-                                        </div>
-                                    </div>
-                                </>
-                            )}
-                        </div>
-                    )}
-                </div>
-            )})}
-        </div>
-    )
-}
-
-function TodoFocusDrawer({ item, statusLabels, sourceLabels, tr, onClose }) {
+function ConfirmNavigationDialog({ pending, tr, onCancel, onConfirm }) {
+    const dialogRef = useRef(null)
     useEffect(() => {
-        const onKey = e => { if (e.key === 'Escape') onClose() }
-        window.addEventListener('keydown', onKey)
-        document.body.style.overflow = 'hidden'
-        return () => {
-            window.removeEventListener('keydown', onKey)
-            document.body.style.overflow = ''
-        }
-    }, [onClose])
-
-    const status = statusLabels[item.status] ?? item.status
-    const source = sourceLabels[item.source] ?? SOURCE_LABELS[item.source] ?? item.source
-    return (
-        <>
-            <div className="ddb-backdrop" onClick={onClose} />
-            <div className="ddb-drawer" role="dialog" aria-modal="true">
-                <div className="ddb-drawer-hd">
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                        <div className="ddb-drawer-title">{item.title}</div>
-                        <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
-                            {tr('dashboard.focus_item_subtitle')}
-                        </div>
-                    </div>
-                    <button className="btn-icon" onClick={onClose}><UiIcon name="x" /></button>
+        if (pending) lcmdFocusPanel(dialogRef.current)
+    }, [pending])
+    if (!pending) return null
+    const dialog = (
+        <div className="lcmd-confirm-backdrop" role="presentation">
+            <div className="lcmd-confirm-dialog" role="dialog" aria-modal="true" aria-label={tr('output.confirm_nav_title')} tabIndex={-1} ref={dialogRef}>
+                <div className="lcmd-confirm-icon"><UiIcon name="arrowRight" /></div>
+                <div className="lcmd-confirm-copy">
+                    <strong>{tr('output.confirm_nav_title')}</strong>
+                    <span>{tr('output.confirm_nav_body', { destination: pending.label || tr('output.destination_page') })}</span>
                 </div>
-                <div className="ddb-drawer-body">
-                    <div className="ddb-drawer-meta" style={{ borderTop: 'none', paddingTop: 0, marginTop: 0 }}>
-                        <div className="ddb-drawer-meta-row">
-                            <span className="ddb-drawer-meta-key">{tr('dashboard.status_label')}</span>
-                            <span style={{ fontWeight: 700, color: STATUS_COLORS[item.status] || 'var(--text)' }}>{status}</span>
-                        </div>
-                        <div className="ddb-drawer-meta-row">
-                            <span className="ddb-drawer-meta-key">{tr('dashboard.work_date_label')}</span>
-                            <span style={{ fontWeight: 700 }}>{item.work_date || item.created_at?.slice(0, 10) || tr('dashboard.unset')}</span>
-                        </div>
-                        <div className="ddb-drawer-meta-row">
-                            <span className="ddb-drawer-meta-key">{tr('dashboard.source_label')}</span>
-                            <span style={{ fontWeight: 700 }}>{source}</span>
-                        </div>
-                        {item.progress_delta ? (
-                            <div className="ddb-drawer-meta-row">
-                                <span className="ddb-drawer-meta-key">{tr('dashboard.impact_kpi')}</span>
-                                <span style={{ fontWeight: 700, color: item.progress_delta > 0 ? HC.green : HC.red }}>
-                                    {item.progress_delta > 0 ? '+' : ''}{item.progress_delta}
-                                </span>
-                            </div>
-                        ) : null}
-                    </div>
-                    <div style={{ marginTop: 18, padding: 14, borderRadius: 12, background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
-                        <div style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
-                            {tr('dashboard.action_suggestion')}
-                        </div>
-                        <p style={{ margin: 0, color: 'var(--text)', fontSize: 13, lineHeight: 1.6 }}>
-                            {tr('dashboard.action_suggestion_text')}
-                        </p>
-                    </div>
+                <div className="lcmd-confirm-actions">
+                    <button className="btn small ghost" type="button" onClick={onCancel}>{tr('output.confirm_nav_stay')}</button>
+                    <button className="btn small primary" type="button" onClick={onConfirm}>{tr('output.confirm_nav_continue')}</button>
                 </div>
             </div>
-        </>
-    )
-}
-
-/* ─── Compact KPI Grid ───────────────────────────────────────────────────── */
-function CompactKpiGrid({ statuses, filterHealth, filterObj, onSelect, tr }) {
-    const filtered = statuses.filter(s =>
-        (filterHealth === null || s.health === filterHealth) &&
-        (filterObj === null || s.kpi.objective_id === filterObj)
-    )
-
-    if (filtered.length === 0) {
-        return <p className="muted" style={{ fontSize: 12, textAlign: 'center', padding: '16px 0' }}>{tr('dashboard.kpi_filter_empty')}</p>
-    }
-
-    return (
-        <div className="ddb-kpi-grid">
-            {filtered.map(({ kpi, expected_progress, health, gap }) => {
-                const c = HC[health]
-                return (
-                    <div key={kpi.id} className="ddb-kpi-card"
-                        style={{ borderLeftColor: c }}
-                        onClick={() => onSelect({ kpi, expected_progress, health, gap })}>
-                        <div className="ddb-kpi-card-top">
-                            <span className="ddb-kpi-name">{kpi.name}</span>
-                            <span className="ddb-kpi-badge" style={{ background: c + '22', color: c }}>
-                                <UiIcon name={kpi.progress > 100 ? 'sparkles' : health === 'green' ? 'check' : health === 'yellow' ? 'warning' : 'x'} />
-                            </span>
-                        </div>
-                        <div className="ddb-kpi-prog" style={{ color: c }}>{kpi.progress}%</div>
-                        <div className="ddb-kpi-bar">
-                            <div className="ddb-kpi-bar-fill" style={{ width: `${Math.min(100, kpi.progress)}%`, background: c }} />
-                        </div>
-                        <div className="ddb-kpi-gap" style={{ color: c }}>
-                            {tr('dashboard.gap_vs_expected', { value: `${gap > 0 ? '+' : ''}${gap}` })}
-                        </div>
-                    </div>
-                )
-            })}
         </div>
     )
+    return createPortal(dialog, document.body)
 }
 
-/* ─── Main Dashboard ─────────────────────────────────────────────────────── */
 export default function Dashboard() {
-    const { tr, lang, statusLabels, sourceLabels } = useLang()
+    const { tr, lang } = useLang()
     const { mode } = useView()
     const { activeCycleId, currentYear, cycles, loading: cyclesLoading } = useCycle()
-    const toast = useToast()
-    const SL = statusLabels()
-    const SRC = sourceLabels()
+    const navigate = useNavigate()
 
     const [data, setData] = useState(null)
     const [error, setError] = useState('')
-    const [weekly, setWeekly] = useState('')
-    const [loadingWeekly, setLoadingWeekly] = useState(false)
     const [selectedKpi, setSelectedKpi] = useState(null)
-    const [selectedFocusTodo, setSelectedFocusTodo] = useState(null)
-    const [filterHealth, setFilterHealth] = useState(null)
-    const [filterObj, setFilterObj] = useState(null)
-    const [completing, setCompleting] = useState(null)
+    const [selectedKpiFromRisk, setSelectedKpiFromRisk] = useState(false)
+    const [riskDrawerOpen, setRiskDrawerOpen] = useState(false)
+    const [riskDrawerItems, setRiskDrawerItems] = useState([])
+    const [periodDetail, setPeriodDetail] = useState(null)
+    const [lastUpdated, setLastUpdated] = useState(null)
+    const [autoRefreshing, setAutoRefreshing] = useState(false)
+    const [pendingNavigation, setPendingNavigation] = useState(null)
 
     const dashboardCategory = mode === 'personal' ? 'Personal' : 'Work'
-    const load = useCallback(() => {
+    const load = useCallback((options = {}) => {
         if (cyclesLoading) return
         if (activeCycleId && cycles.length > 0 && !cycles.some(c => c.id === activeCycleId)) return
-        setError('')
+        const silent = Boolean(options.silent)
+        if (silent) setAutoRefreshing(true)
+        else setError('')
         return api.dashboard(activeCycleId, dashboardCategory)
-            .then(setData)
-            .catch(e => setError(e.message))
+            .then(next => {
+                setData(next)
+                setLastUpdated(new Date())
+            })
+            .catch(e => {
+                if (!silent) setError(e.message)
+            })
+            .finally(() => {
+                if (silent) setAutoRefreshing(false)
+            })
     }, [activeCycleId, dashboardCategory, cycles, cyclesLoading])
 
     useEffect(() => {
-        setFilterHealth(null)
-        setFilterObj(null)
         load()
     }, [load])
 
-    const genWeekly = async () => {
-        setLoadingWeekly(true); setWeekly('')
-        try { const r = await api.weeklyReport(); setWeekly(r.report) }
-        catch (e) { setWeekly(e.message) }
-        finally { setLoadingWeekly(false) }
-    }
+    useEffect(() => {
+        const panelOpen = selectedKpi || riskDrawerOpen || periodDetail || pendingNavigation
+        if (cyclesLoading || panelOpen) return undefined
+        const tick = () => {
+            if (!document.hidden) load({ silent: true })
+        }
+        const id = window.setInterval(tick, 180000)
+        const onVisible = () => {
+            if (!document.hidden) load({ silent: true })
+        }
+        document.addEventListener('visibilitychange', onVisible)
+        return () => {
+            window.clearInterval(id)
+            document.removeEventListener('visibilitychange', onVisible)
+        }
+    }, [cyclesLoading, load, pendingNavigation, periodDetail, riskDrawerOpen, selectedKpi])
+
+    const requestNavigate = useCallback((to, label) => {
+        setPendingNavigation({ to, label: label || tr('output.destination_page') })
+    }, [tr])
+
+    const confirmNavigate = useCallback(() => {
+        const next = pendingNavigation
+        if (!next) return
+        setPendingNavigation(null)
+        navigate(next.to)
+    }, [navigate, pendingNavigation])
 
     if (error) return <div className="page"><div className="error-text"><UiIcon name="warning" /> {error}</div></div>
     if (!data) return <div className="page" style={{ color: 'var(--muted)', fontSize: 14 }}>{tr('dashboard.loading')}</div>
@@ -2159,206 +4512,96 @@ export default function Dashboard() {
     const counts = { green: 0, yellow: 0, red: 0 }
     visible.forEach(s => counts[s.health]++)
 
-    const hasFilters = filterHealth !== null || filterObj !== null
     const dashboardYear = currentYear || data.year
-    const labels = healthLabels(tr)
+    const openRiskDrawer = (items = data.at_risk_items || []) => {
+        setRiskDrawerItems(items)
+        setRiskDrawerOpen(true)
+    }
+    const openRiskKpi = (riskItem) => {
+        const status = visible.find(s => s.kpi.id === riskItem.kpi_id)
+        if (status) {
+            setRiskDrawerOpen(false)
+            setSelectedKpiFromRisk(true)
+            setSelectedKpi({
+                ...status,
+                expected_progress: status.expected_progress ?? status.kpi.progress - status.gap,
+            })
+        }
+    }
+    const riskItems = data.at_risk_items?.length ? data.at_risk_items : visible
+        .filter(s => s.health !== 'green' || s.gap < 0)
+        .slice(0, 8)
+        .map(s => ({
+            kpi_id: s.kpi.id,
+            name: s.kpi.name,
+            objective_name: s.kpi.objective_name || '',
+            attainment_pct: s.kpi.progress,
+            expected_progress: s.expected_progress,
+            gap: s.gap,
+            velocity_pct: s.gap,
+            projected_progress: Math.max(0, s.kpi.progress + s.gap),
+            severity: s.health,
+        }))
 
     return (
-        <div className="page ddb-wrap">
+        <div className="page ddb-wrap lcmd-page">
             <style>{DASH_CSS}</style>
 
-            {/* Top bar */}
-            <div className="ddb-topbar">
-                <div style={{ flex: 1 }}><ViewModeSwitch /></div>
-            </div>
-
-            {/* Hero */}
-            <KpiHeroSection
-                data={{ ...data, displayYear: dashboardYear }} counts={counts} visible={visible} tr={tr}
-                onWeekly={genWeekly} loadingWeekly={loadingWeekly}
-                onExport={() => api.exportEvaluation(activeCycleId).catch(e => toast.error(e.message))}
-                weekly={weekly}
-            />
-
-            <DashboardInsightLens
-                data={data}
+            <LivingDashboard
+                data={{ ...data, displayYear: dashboardYear }}
                 visible={visible}
+                counts={counts}
                 tr={tr}
+                dashboardYear={dashboardYear}
+                riskItems={riskItems}
+                onOpenRisks={openRiskDrawer}
+                onOpenRiskKpi={openRiskKpi}
+                onOpenPeriod={setPeriodDetail}
+                navigate={requestNavigate}
+                lastUpdated={lastUpdated}
+                autoRefreshing={autoRefreshing}
                 lang={lang}
-                onSelectKpi={setSelectedKpi}
-                onFilterObj={setFilterObj}
-                cycleId={activeCycleId}
-                category={dashboardCategory}
             />
 
-            {/* Row: Status donut + Trend */}
-            <div className="ddb-row2 ddb-health-row">
-                <div className="ddb-panel">
-                    <PanelHeader icon="shield" label={tr('dashboard.panel_health')} tip={tr('dashboard.tip_health')} tr={tr}>
-                        {filterHealth && (
-                            <button className="ddb-clear-btn" onClick={() => setFilterHealth(null)}>{tr('dashboard.clear_filter')}</button>
-                        )}
-                    </PanelHeader>
-                    <StatusDonut statuses={visible} filterHealth={filterHealth} onFilter={setFilterHealth} tr={tr} />
-                </div>
-                <div className="ddb-panel">
-                    <PanelHeader icon="clock" label={tr('dashboard.panel_trend')} tip={tr('dashboard.tip_trend')} tr={tr} />
-                    <KpiTrendChart data={data} visible={visible} tr={tr} lang={lang} />
-                </div>
-            </div>
-
-            {/* Row: Objective progress + Weekly focus */}
-            <div className="ddb-row2 ddb-focus-row">
-                <div className="ddb-panel">
-                    <PanelHeader icon="flag" label={tr('dashboard.panel_objective_progress')} tip={tr('dashboard.tip_objective')} tr={tr}>
-                        {filterObj !== null && (
-                            <button className="ddb-clear-btn" onClick={() => setFilterObj(null)}>{tr('dashboard.clear_filter')}</button>
-                        )}
-                    </PanelHeader>
-                    <ObjectiveBars objectives={data.objectives} visible={visible} filterObj={filterObj} onFilter={setFilterObj} tr={tr} />
-                </div>
-                <div className="ddb-panel ddb-weekly-panel">
-                    <PanelHeader icon="compass" label={tr('dashboard.panel_weekly_focus')} tip={tr('dashboard.tip_weekly_focus')} tr={tr} />
-                    <WeeklyFocusCard
-                        statuses={visible}
-                        todoItems={data.todo_items}
-                        year={dashboardYear}
-                        statusLabels={SL}
-                        sourceLabels={SRC}
-                        tr={tr}
-                        onSelectKpi={setSelectedKpi}
-                        onSelectTodo={setSelectedFocusTodo}
-                    />
-                </div>
-            </div>
-
-            {/* Row: Top risk + Burnout gauge */}
-            <div className="ddb-row2 ddb-risk-row">
-                <div className="ddb-panel">
-                    <PanelHeader icon="warning" label={tr('dashboard.panel_top_risk')} tip={tr('dashboard.tip_top_risk')} tr={tr} />
-                    <TopRiskList statuses={visible} year={dashboardYear} onSelect={setSelectedKpi} tr={tr} />
-                </div>
-                <div className="ddb-panel">
-                    <PanelHeader icon="shield" label={tr('dashboard.panel_burnout')} tip={tr('dashboard.tip_burnout')} tr={tr} />
-                    <BurnoutGauge tr={tr} />
-                </div>
-            </div>
-
-            {/* Compact KPI grid */}
-            <div className="ddb-panel">
-                <PanelHeader icon="list" label={tr('dashboard.panel_all_kpis')} tip={tr('dashboard.tip_all_kpis')} tr={tr}>
-                    <span className="ddb-panel-hd-count">
-                        {hasFilters
-                            ? `${visible.filter(s => (filterHealth === null || s.health === filterHealth) && (filterObj === null || s.kpi.objective_id === filterObj)).length} / ${visible.length}`
-                            : visible.length}
-                    </span>
-                    {hasFilters && (
-                        <div className="ddb-filters-row" style={{ margin: 0, display: 'inline-flex', gap: 6 }}>
-                            {filterHealth && (
-                                <button className="ddb-filter-chip" style={{ background: HC[filterHealth] }}
-                                    onClick={() => setFilterHealth(null)}>
-                                    <span>{labels[filterHealth]}</span> <UiIcon name="x" />
-                                </button>
-                            )}
-                            {filterObj !== null && (
-                                <button className="ddb-filter-chip" style={{ background: 'var(--primary)' }}
-                                    onClick={() => setFilterObj(null)}>
-                                    <span>{data.objectives.find(o => o.id === filterObj)?.name}</span> <UiIcon name="x" />
-                                </button>
-                            )}
-                        </div>
-                    )}
-                </PanelHeader>
-                <CompactKpiGrid
-                    statuses={visible}
-                    filterHealth={filterHealth}
-                    filterObj={filterObj}
-                    tr={tr}
-                    onSelect={setSelectedKpi}
-                />
-            </div>
-
-            {/* Todo items */}
-            {data.todo_items?.length > 0 && (
-                <div className="ddb-panel">
-                    <PanelHeader icon="clipboardList" label={tr('dashboard.todo_count', { count: data.todo_items.length })} tip={tr('dashboard.tip_todos')} tr={tr} />
-                    {data.todo_items.map(w => {
-                        const kpiOfItem = data.kpi_statuses.find(s => s.kpi.id === w.kpi_id)?.kpi
-                        const isCompleting = completing?.id === w.id
-                        return (
-                            <div key={w.id} className="ddb-todo-row">
-                                <button className="todo-check"
-                                    onClick={() => {
-                                        if (kpiOfItem) setCompleting({ id: w.id, delta: '' })
-                                        else api.updateWorkItemStatus(w.id, 'da_lam').then(load)
-                                    }}><UiIcon name="check" /></button>
-                                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.title}</span>
-                                {w.work_date && <span style={{ fontSize: 11, color: 'var(--muted)', flexShrink: 0 }}>{w.work_date}</span>}
-                                {isCompleting ? (
-                                    <span style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-                                        +<NumberStepper step="any" className="compact tiny" autoFocus placeholder="0" value={completing.delta}
-                                            onChange={value => setCompleting({ ...completing, delta: value })}
-                                            onKeyDown={e => e.key === 'Escape' && setCompleting(null)} />
-                                        {kpiOfItem?.unit}
-                                        <button className="btn small primary" onClick={async () => {
-                                            await api.updateWorkItemStatus(w.id, 'da_lam', Number(completing.delta) || 0)
-                                            setCompleting(null); load()
-                                        }}>{tr('dashboard.complete_btn')}</button>
-                                    </span>
-                                ) : (
-                                    <span className="status-chip" style={{ color: STATUS_COLORS[w.status], fontSize: 11, flexShrink: 0 }}>
-                                        {SL[w.status] ?? w.status}
-                                    </span>
-                                )}
-                            </div>
-                        )
-                    })}
-                </div>
-            )}
-
-            {/* Recent activity */}
-            {data.recent_items?.length > 0 && (
-                <div className="ddb-panel">
-                    <PanelHeader icon="refresh" label={tr('dashboard.recent_activity')} tip={tr('dashboard.tip_recent')} tr={tr} />
-                    {data.recent_items.slice(0, 6).map((w, i) => (
-                        <div key={w.id} className="ddb-activity-row"
-                            style={{ borderBottom: i < Math.min(5, data.recent_items.length - 1) ? '1px solid var(--border)' : 'none' }}>
-                            <span style={{ color: 'var(--muted)', width: 80, flexShrink: 0, fontSize: 11 }}>
-                                {w.work_date || w.created_at?.slice(0, 10) || '—'}
-                            </span>
-                            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.title}</span>
-                            {w.progress_delta ? (
-                                <span style={{ color: w.progress_delta > 0 ? HC.green : HC.red, fontWeight: 700, fontSize: 11, flexShrink: 0 }}>
-                                    {w.progress_delta > 0 ? '+' : ''}{w.progress_delta}
-                                </span>
-                            ) : null}
-                            <span className="status-chip" style={{ color: STATUS_COLORS[w.status], fontSize: 11, flexShrink: 0 }}>
-                                {SL[w.status] ?? w.status}
-                            </span>
-                        </div>
-                    ))}
-                </div>
-            )}
 
             {/* KPI Detail Drawer */}
             {selectedKpi && (
                 <KpiDetailDrawer
                     item={selectedKpi}
                     year={dashboardYear}
-                    onClose={() => setSelectedKpi(null)}
-                    onReload={() => { setSelectedKpi(null); load() }}
+                    onClose={() => { setSelectedKpi(null); setSelectedKpiFromRisk(false) }}
+                    onBack={selectedKpiFromRisk ? () => {
+                        setSelectedKpi(null)
+                        setRiskDrawerOpen(true)
+                    } : undefined}
+                    backLabel={tr('output.back_to_risks')}
+                    onReload={() => { setSelectedKpi(null); setSelectedKpiFromRisk(false); load() }}
                     lang={lang}
                 />
             )}
-            {selectedFocusTodo && (
-                <TodoFocusDrawer
-                    item={selectedFocusTodo}
-                    statusLabels={SL}
-                    sourceLabels={SRC}
-                    tr={tr}
-                    onClose={() => setSelectedFocusTodo(null)}
-                />
-            )}
+            <OutputRiskDrawer
+                open={riskDrawerOpen}
+                items={riskDrawerItems}
+                visible={visible}
+                year={dashboardYear}
+                tr={tr}
+                onClose={() => setRiskDrawerOpen(false)}
+                onSelectKpi={openRiskKpi}
+                onGoJournal={() => requestNavigate('/journal', tr('output.destination_journal'))}
+                onGoKpis={() => requestNavigate('/kpis', tr('output.destination_kpis'))}
+            />
+            <LivingPeriodDrawer
+                detail={periodDetail}
+                tr={tr}
+                navigate={requestNavigate}
+                onClose={() => setPeriodDetail(null)}
+            />
+            <ConfirmNavigationDialog
+                pending={pendingNavigation}
+                tr={tr}
+                onCancel={() => setPendingNavigation(null)}
+                onConfirm={confirmNavigate}
+            />
         </div>
     )
 }

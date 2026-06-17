@@ -119,6 +119,8 @@ export const api = {
       request('/kpis/confirm-proposal', { method: 'POST', body: JSON.stringify(payload) }),
   analyzeConflicts: (cycleId) => request('/kpis/conflicts/analyze' + (cycleId ? `?cycle_id=${cycleId}` : ''), { method: 'POST' }, 120000),
   kpiForecast: (id) => request(`/kpis/${id}/forecast`),
+  kpiPeriodMetrics: (id) => request(`/kpis/${id}/period-metrics`),
+  upsertKpiPeriodMetric: (id, data) => request(`/kpis/${id}/period-metrics`, { method: 'POST', body: JSON.stringify(data) }),
   coachKpi: (id, lang = 'vi') => request(`/kpis/${id}/coach?lang=${lang}`, { method: 'POST' }, 120000),
   smartValidateKpi: (id) => request(`/kpis/${id}/validate-smart`, { method: 'POST' }, 60000),
   kpiChangelog: (id) => request(`/kpis/${id}/changelog`),
@@ -242,8 +244,10 @@ export const api = {
   deleteObjective: (id) => request(`/objectives/${id}`, { method: 'DELETE' }),
 
   // Chat
-  sendChat: (message, sessionId = null, lang = 'vi', attachments = [], timeoutMs = 90000, signal = null) =>
-      request('/chat', { method: 'POST', body: JSON.stringify({ message, session_id: sessionId, lang, attachments }), signal }, timeoutMs),
+  sendChat: (message, sessionId = null, lang = 'vi', attachments = [], timeoutMs = 90000, signal = null, persist = true) =>
+      request('/chat', { method: 'POST', body: JSON.stringify({ message, session_id: sessionId, lang, attachments, persist }), signal }, timeoutMs),
+  persistChatResponse: (message, response, lang = 'vi', attachments = []) =>
+      request('/chat/sessions/from-response', { method: 'POST', body: JSON.stringify({ message, response, lang, attachments }) }),
   uploadChatAttachment: (file) => {
     const fd = new FormData()
     fd.append('file', file)
@@ -260,6 +264,10 @@ export const api = {
 
   // Work items
   listWorkItems: (params = '') => request('/work-items' + params),
+  listWorkItemDrafts: () => request('/work-items/drafts'),
+  updateWorkItemDraft: (id, item) => request(`/work-items/drafts/${id}`, { method: 'PUT', body: JSON.stringify(item) }),
+  confirmWorkItemDraft: (id) => request(`/work-items/drafts/${id}/confirm`, { method: 'POST' }),
+  deleteWorkItemDraft: (id) => request(`/work-items/drafts/${id}`, { method: 'DELETE' }),
   deleteWorkItem: (id) => request(`/work-items/${id}`, { method: 'DELETE' }),
   confirmItems: (items) => request('/work-items/confirm', { method: 'POST', body: JSON.stringify({ items }) }),
   confirmDeleteKpi: (payload) => request('/kpis/confirm-delete', { method: 'POST', body: JSON.stringify(payload) }),
@@ -274,6 +282,11 @@ export const api = {
   runAutonomousAgentNow: () => request('/agent/autonomous/run-now', { method: 'POST' }),
   autonomousAgentInbox: () => request('/agent/autonomous/inbox'),
   refreshAutonomousAgentInbox: () => request('/agent/autonomous/refresh', { method: 'POST' }),
+  brainStatus: () => request('/agent/brain/status'),
+  brainSettings: () => request('/agent/brain/settings'),
+  updateBrainSettings: (data) => request('/agent/brain/settings', { method: 'PUT', body: JSON.stringify(data) }),
+  recordAgentFeedback: (data) => request('/agent/brain/feedback', { method: 'POST', body: JSON.stringify(data) }),
+  cleanupBrainRetention: () => request('/agent/brain/retention/cleanup', { method: 'POST', body: '{}' }),
 
   // Settings (app-level connection config)
   getConnectionSettings: () => request('/settings/connections'),
@@ -351,9 +364,9 @@ export const api = {
     URL.revokeObjectURL(a.href)
   },
   generateSelfReview: () => request('/reports/self-review', { method: 'POST' }, 120000),
-  exportSavedReport: (id, format) => api.downloadFile(
+  exportSavedReport: (id, format = 'pdf') => api.downloadFile(
     `/reports/saved/${id}/export?format=${format}`,
-    `tu-danh-gia.${format}`,
+    `bao-cao-kpi.${format}`,
   ),
   exportEvaluation: (cycleId) => api.downloadFile(
     `/reports/export${cycleId != null ? `?cycle_id=${encodeURIComponent(cycleId)}` : ''}`,
@@ -395,4 +408,5 @@ export const SOURCE_LABELS = {
   slack: '💬 Slack',
   outlook: '📧 Outlook',
   manual: '✍️ Manual',
+  agent_loop: 'Agent',
 }

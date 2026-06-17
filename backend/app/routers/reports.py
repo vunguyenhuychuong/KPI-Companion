@@ -13,7 +13,7 @@ from ..agent import prompts
 from ..agent.llm import call_json
 from ..auth import CurrentUser
 from ..database import get_db
-from ..services import email_service, export_service, kpi_service, report_service
+from ..services import brain_layer, email_service, export_service, kpi_service, report_service
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -236,7 +236,7 @@ def dashboard_insight(
     if not isinstance(actions, list):
         actions = []
     actions = [str(a).strip() for a in actions if str(a).strip()][:4]
-    return schemas.DashboardInsightOut(
+    out = schemas.DashboardInsightOut(
         generated_at=models.utcnow(),
         data_signature=signature,
         top_strength=_clean_str(result.get("top_strength"), "Chưa đủ dữ liệu để xác định điểm mạnh rõ."),
@@ -250,6 +250,18 @@ def dashboard_insight(
         priority_kpi_id=_clean_kpi_id(result.get("priority_kpi_id"), valid_ids),
         strength_category=_clean_str(result.get("strength_category"), "None"),
     )
+    brain_layer.save_insight_snapshot(
+        db,
+        current_user.id,
+        insight_type="dashboard",
+        title=out.top_priority,
+        content=out.correlation_insight,
+        source="dashboard",
+        data_signature=signature,
+        kpi_id=out.priority_kpi_id or out.risk_kpi_id,
+        meta=out.model_dump(mode="json"),
+    )
+    return out
 
 
 @router.get("/weekly")
@@ -459,11 +471,12 @@ def export_saved_report(
         raise HTTPException(400, "format phải là pdf")
 
     stamp = date.today().isoformat()
-    data = report_service.export_report_pdf(report.period_label, report.content)
+    data = report_service.export_report_pdf(report.period_label, report.content, report.period_type)
+    prefix = "tu-danh-gia" if report.period_type == "self_review" else "bao-cao-kpi"
     return Response(
         content=data,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="tu-danh-gia-{stamp}.pdf"'},
+        headers={"Content-Disposition": f'attachment; filename="{prefix}-{stamp}.pdf"'},
     )
 
 

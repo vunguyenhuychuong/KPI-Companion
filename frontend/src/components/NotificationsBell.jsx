@@ -5,7 +5,7 @@ import { prefs } from '../prefs'
 import { UiIcon } from './UiIcon'
 
 const SEV_COLOR = { high: '#dc2626', medium: '#ca8a04', low: '#6b7194' }
-const TYPE_ICON = { behind: 'chartDown', deadline: 'calendar', overdue: 'clock', runrate: 'sparkles' }
+const TYPE_ICON = { behind: 'chartDown', deadline: 'calendar', overdue: 'clock', runrate: 'sparkles', trend: 'chartDown' }
 
 // Chuông thông báo chủ động (M3): badge số chưa đọc, mở danh sách, ẩn từng cái.
 // Trạng thái đã đọc/đã ẩn lưu localStorage (chống lặp) — không hiện lại tới khi trạng thái KPI đổi (id có severity).
@@ -41,7 +41,19 @@ export default function NotificationsBell() {
       setRead(prefs.getNotifRead())
     }
   }
-  const dismiss = (id) => { prefs.addNotifDismissed(id); setDismissed(prefs.getNotifDismissed()) }
+  const dismiss = (n) => {
+    prefs.addNotifDismissed(n.id)
+    setDismissed(prefs.getNotifDismissed())
+    api.recordAgentFeedback({
+      event_type: 'alert',
+      target_type: n.type || 'notification',
+      target_id: n.id,
+      target_name: n.title || '',
+      action: 'dismissed',
+      source: 'notification_bell',
+      meta: { kpi_id: n.kpi_id, severity: n.severity, params: n.params || {} },
+    }).catch(() => {})
+  }
 
   return (
     <div className="notif-wrap" ref={ref}>
@@ -61,7 +73,7 @@ export default function NotificationsBell() {
                 <div className="notif-name" title={n.title}>{n.title}</div>
                 <div className="notif-msg">{tr('notif.msg_' + n.type, n.params)}</div>
               </div>
-              <button className="notif-x" onClick={() => dismiss(n.id)} title={tr('notif.dismiss')}><UiIcon name="x" /></button>
+              <button className="notif-x" onClick={() => dismiss(n)} title={tr('notif.dismiss')}><UiIcon name="x" /></button>
             </div>
           ))}
         </div>

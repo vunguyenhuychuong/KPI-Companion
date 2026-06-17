@@ -11,10 +11,111 @@ from ..agent import memory as agent_memory
 from ..auth import CurrentUser
 from ..config import settings
 from ..database import get_db
+from ..services import attachment_service, brain_layer
 from ..rate_limit import _user_or_ip, limiter
 from ..services import attachment_service
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+AUTONOMOUS_SESSION_TITLE = "Agent tự chủ"
+MAX_PRIOR_ATTACHMENT_CONTEXT_MESSAGES = 3
+
+
+def _is_autonomous_session(session: models.ChatSession | None) -> bool:
+    return bool(session and session.title == AUTONOMOUS_SESSION_TITLE)
+
+
+def _clean_meta_attachment(raw: dict) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    url = str(raw.get("url") or "")
+    if not url.startswith("/uploads/chat/"):
+        url = ""
+    kind = str(raw.get("kind") or "file")
+    if kind not in {"image", "text", "spreadsheet", "document", "pdf", "file"}:
+        kind = "file"
+    return {
+        "id": str(raw.get("id") or uuid.uuid4().hex)[:80],
+        "name": Path(str(raw.get("name") or "attachment")).name[:180] or "attachment",
+        "content_type": str(raw.get("content_type") or "")[:120],
+        "size": int(raw.get("size") or 0),
+        "kind": kind,
+        "url": url,
+        "extracted_text": attachment_service.limit_text(str(raw.get("extracted_text") or "")),
+        "error": str(raw.get("error") or "")[:700],
+    }
+
+
+def _message_attachments(message: models.ChatMessage) -> list[dict]:
+    meta = message.meta or {}
+    attachments = meta.get("attachments") or []
+    cleaned: list[dict] = []
+    if not isinstance(attachments, list):
+        return cleaned
+    for raw in attachments:
+        item = _clean_meta_attachment(raw)
+        if item:
+            cleaned.append(item)
+    return cleaned
+
+
+def _history_content_with_attachments(message: models.ChatMessage) -> str:
+    content = message.content
+    attachments = _message_attachments(message)
+    if not attachments:
+        return content
+    names = ", ".join(att["name"] for att in attachments[:3])
+    more = f", +{len(attachments) - 3}" if len(attachments) > 3 else ""
+    return f"{content}\n[Uploaded file(s) in this message: {names}{more}]"
+
+
+def _prior_attachment_context(
+    recent_messages: list[models.ChatMessage],
+    lang: str,
+    exclude_ids: set[str] | None = None,
+) -> str:
+    exclude_ids = exclude_ids or set()
+    picked: list[dict] = []
+    seen: set[str] = set(exclude_ids)
+    source_messages = 0
+    for message in reversed(recent_messages):
+        if message.role != "user":
+            continue
+        attachments = _message_attachments(message)
+        if not attachments:
+            continue
+        source_messages += 1
+        for att in attachments:
+            key = att.get("id") or att.get("url") or att.get("name")
+            if key in seen:
+                continue
+            seen.add(key)
+            if att.get("extracted_text") or att.get("error"):
+                picked.append(att)
+        if source_messages >= MAX_PRIOR_ATTACHMENT_CONTEXT_MESSAGES:
+            break
+    if not picked:
+        return ""
+    return attachment_service.attachment_context(picked[: attachment_service.MAX_CHAT_ATTACHMENTS], lang)
+
+
+def _assistant_meta(response: schemas.ChatResponse) -> dict:
+    return {
+        "intent": response.intent,
+        "proposed_items": [i.model_dump(mode="json") for i in response.proposed_items],
+        "proposed_objectives": [i.model_dump(mode="json") for i in response.proposed_objectives],
+        "proposed_kpis": [i.model_dump(mode="json") for i in response.proposed_kpis],
+        "weight_changes": [i.model_dump(mode="json") for i in response.weight_changes],
+        "delete_proposal": response.delete_proposal.model_dump(mode="json") if response.delete_proposal else None,
+        "proposal_status": (
+            "pending"
+            if response.proposed_items
+            or response.proposed_objectives
+            or response.proposed_kpis
+            or response.delete_proposal
+            else None
+        ),
+    }
 
 
 @router.post("/attachments", response_model=schemas.ChatAttachment)
@@ -58,7 +159,10 @@ def list_sessions(current_user: CurrentUser, db: Session = Depends(get_db)):
     return list(
         db.scalars(
             select(models.ChatSession)
-            .where(models.ChatSession.user_id == current_user.id)
+            .where(
+                models.ChatSession.user_id == current_user.id,
+                models.ChatSession.title != AUTONOMOUS_SESSION_TITLE,
+            )
             .order_by(models.ChatSession.created_at.desc())
         )
     )
@@ -73,10 +177,51 @@ def create_session(current_user: CurrentUser, db: Session = Depends(get_db)):
     return session
 
 
+@router.post("/sessions/from-response", response_model=schemas.ChatResponse)
+def create_session_from_response(
+    payload: schemas.ChatPersistResponseRequest,
+    current_user: CurrentUser,
+    db: Session = Depends(get_db),
+):
+    text = payload.message.strip()
+    attachments = attachment_service.clean_attachments(payload.attachments)
+    if not text:
+        raise HTTPException(400, "Tin nhan trong")
+
+    session = models.ChatSession(user_id=current_user.id)
+    session.title = text[:60] + ("..." if len(text) > 60 else "")
+    db.add(session)
+    db.flush()
+
+    db.add(models.ChatMessage(
+        user_id=current_user.id,
+        session_id=session.id,
+        role="user",
+        content=text,
+        meta={"attachments": attachments} if attachments else None,
+    ))
+
+    response = payload.response.model_copy(deep=True)
+    response.session_id = session.id
+    assistant_msg = models.ChatMessage(
+        user_id=current_user.id,
+        session_id=session.id,
+        role="assistant",
+        content=response.reply,
+        meta=_assistant_meta(response),
+    )
+    db.add(assistant_msg)
+    db.commit()
+    response.message_id = assistant_msg.id
+    return response
+
+
 @router.delete("/sessions/{session_id}")
 def delete_session(session_id: int, current_user: CurrentUser, db: Session = Depends(get_db)):
     session = db.get(models.ChatSession, session_id)
     if not session or session.user_id != current_user.id:
+        raise HTTPException(404, "Không tìm thấy phiên chat")
+    if _is_autonomous_session(session):
         raise HTTPException(404, "Không tìm thấy phiên chat")
     db.delete(session)  # cascade xoa tin nhan
     db.commit()
@@ -117,10 +262,24 @@ def chat(
         )
     if not text:
         raise HTTPException(400, "Tin nhắn trống")
-    agent_text = text + attachment_service.attachment_context(attachments, payload.lang)
-
+    current_attachment_context = attachment_service.attachment_context(attachments, payload.lang)
+    if not payload.persist:
+        agent_text = text + current_attachment_context
+        try:
+            return kpi_agent.handle_message(db, agent_text, user_id=current_user.id, history=[], lang=payload.lang)
+        except Exception as e:
+            return schemas.ChatResponse(
+                reply=(
+                    f"⚠️ Có lỗi khi xử lý yêu cầu bằng AI: {e}\n\n"
+                    "Nếu lỗi lặp lại với mọi tin nhắn, hãy kiểm tra LLM_BASE_URL / LLM_API_KEY / LLM_MODEL. "
+                    "Nếu chỉ xảy ra ở một thao tác cụ thể, đây có thể là lỗi prompt/parser trong ứng dụng."
+                ),
+                intent="error",
+            )
     session = db.get(models.ChatSession, payload.session_id) if payload.session_id else None
     if session and session.user_id != current_user.id:
+        session = None
+    if _is_autonomous_session(session):
         session = None
     if not session:
         session = models.ChatSession(user_id=current_user.id)
@@ -139,7 +298,13 @@ def chat(
             .limit(6)
         )
     )
-    history = [{"role": m.role, "content": m.content} for m in reversed(recent)]
+    history = [{"role": m.role, "content": _history_content_with_attachments(m)} for m in reversed(recent)]
+    current_attachment_ids = {str(att.get("id") or "") for att in attachments if att.get("id")}
+    agent_text = (
+        text
+        + current_attachment_context
+        + _prior_attachment_context(recent, payload.lang, current_attachment_ids)
+    )
 
     db.add(models.ChatMessage(
         user_id=current_user.id,
@@ -166,22 +331,7 @@ def chat(
         session_id=session.id,
         role="assistant",
         content=response.reply,
-        meta={
-            "intent": response.intent,
-            "proposed_items": [i.model_dump(mode="json") for i in response.proposed_items],
-            "proposed_objectives": [i.model_dump(mode="json") for i in response.proposed_objectives],
-            "proposed_kpis": [i.model_dump(mode="json") for i in response.proposed_kpis],
-            "weight_changes": [i.model_dump(mode="json") for i in response.weight_changes],
-            "delete_proposal": response.delete_proposal.model_dump(mode="json") if response.delete_proposal else None,
-            "proposal_status": (
-                "pending"
-                if response.proposed_items
-                or response.proposed_objectives
-                or response.proposed_kpis
-                or response.delete_proposal
-                else None
-            ),
-        },
+        meta=_assistant_meta(response),
     )
     db.add(assistant_msg)
     db.commit()
@@ -210,7 +360,38 @@ def set_proposal_status(
     if not msg or msg.user_id != current_user.id or msg.role != "assistant":
         raise HTTPException(404, "Không tìm thấy tin nhắn")
     # gan dict moi (khong mutate) de SQLAlchemy nhan biet thay doi cot JSON
-    msg.meta = {**(msg.meta or {}), "proposal_status": payload.status}
+    meta = msg.meta or {}
+    msg.meta = {**meta, "proposal_status": payload.status}
+    if payload.status in {"saved", "dismissed"}:
+        proposed_items = meta.get("proposed_items") or []
+        proposed_kpis = meta.get("proposed_kpis") or []
+        category_suggestions = meta.get("category_suggestions") or []
+        target_name = ""
+        target_type = "proposal"
+        if proposed_items and isinstance(proposed_items[0], dict):
+            target_name = str(proposed_items[0].get("kpi_name") or proposed_items[0].get("title") or "")
+            target_type = "work_item"
+        elif proposed_kpis and isinstance(proposed_kpis[0], dict):
+            target_name = str(proposed_kpis[0].get("name") or "")
+            target_type = "kpi"
+        elif category_suggestions and isinstance(category_suggestions[0], dict):
+            target_name = str(category_suggestions[0].get("kpi_name") or "")
+            target_type = "category"
+        elif meta.get("delete_proposal"):
+            target_name = str((meta.get("delete_proposal") or {}).get("target_name") or "")
+            target_type = "delete"
+        brain_layer.record_simple_feedback(
+            db,
+            current_user.id,
+            event_type="proposal" if meta.get("intent") != "autonomous_agent" else "insight",
+            action=payload.status,
+            target_type=target_type,
+            target_id=str(message_id),
+            target_name=target_name,
+            source=str(meta.get("intent") or "chat"),
+            meta={"message_id": message_id, "intent": meta.get("intent")},
+            commit=False,
+        )
     db.commit()
     return {"ok": True}
 
@@ -222,8 +403,16 @@ def history(
     limit: int = 100,
     db: Session = Depends(get_db),
 ):
+    if session_id is not None:
+        session = db.get(models.ChatSession, session_id)
+        if not session or session.user_id != current_user.id or _is_autonomous_session(session):
+            raise HTTPException(404, "Không tìm thấy phiên chat")
     q = select(models.ChatMessage).where(models.ChatMessage.user_id == current_user.id)
     if session_id is not None:
         q = q.where(models.ChatMessage.session_id == session_id)
+    else:
+        q = q.join(models.ChatSession, models.ChatMessage.session_id == models.ChatSession.id).where(
+            models.ChatSession.title != AUTONOMOUS_SESSION_TITLE
+        )
     msgs = list(db.scalars(q.order_by(models.ChatMessage.created_at.desc()).limit(limit)))
     return list(reversed(msgs))

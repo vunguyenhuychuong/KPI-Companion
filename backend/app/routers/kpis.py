@@ -165,7 +165,10 @@ def list_kpis(
 def create_kpi(payload: schemas.KPICreate, current_user: CurrentUser, db: Session = Depends(get_db)):
     _check_objective_cycle_not_locked(db, payload.objective_id, current_user.id)
     _check_group_weight(db, payload.weight, payload.objective_id, category=payload.category, user_id=current_user.id)
-    kpi = models.KPI(user_id=current_user.id, **payload.model_dump())
+    data = payload.model_dump()
+    # Manual create is always a manual source; integrations/imports set source internally.
+    data["data_source_mode"] = "manual"
+    kpi = models.KPI(user_id=current_user.id, **data)
     db.add(kpi)
     db.commit()
     db.refresh(kpi)
@@ -434,7 +437,7 @@ async def import_kpis(
             _check_group_weight(db, total_weight, objective_id=None, category=cat, user_id=current_user.id)
     created = []
     for p in parsed:
-        kpi = models.KPI(user_id=current_user.id, **p)
+        kpi = models.KPI(user_id=current_user.id, **{**p, "data_source_mode": "export"})
         db.add(kpi)
         created.append(kpi)
     db.commit()
@@ -519,6 +522,7 @@ def _import_appraisal(appraisal: dict, current_user, db: Session, mode: str = "a
                     description=f"[{o['name']}] " + (k.get("note") or ""),
                     unit="%", target_value=100.0, current_value=0.0,
                     category=schemas._normalize_category(k.get("category") or o.get("category")),
+                    data_source_mode="export",
                 )
                 db.add(kpi)
                 created.append(kpi)
@@ -563,6 +567,7 @@ def _import_appraisal(appraisal: dict, current_user, db: Session, mode: str = "a
                     description=(f"[{o['name']}] " if target_obj_id is None else "") + (k.get("note") or ""),
                     unit="%", target_value=100.0, current_value=0.0,
                     category=schemas._normalize_category(k.get("category") or o.get("category")),
+                    data_source_mode="export",
                 )
                 db.add(kpi)
                 created.append(kpi)
@@ -596,6 +601,7 @@ def _import_appraisal(appraisal: dict, current_user, db: Session, mode: str = "a
                 description=k.get("note") or "",
                 unit="%", target_value=100.0, current_value=0.0,
                 category=schemas._normalize_category(k.get("category") or o.get("category")),
+                data_source_mode="export",
             )
             db.add(kpi)
             created.append(kpi)
@@ -702,6 +708,7 @@ def confirm_kpi_proposal(
                 unit=p.unit or "%", target_value=p.target_value or 100.0,
                 weight=p.weight, deadline=p.deadline, objective_id=objective_id,
                 category=p.category or "Work",
+                data_source_mode=payload.source_mode,
             )
             db.add(kpi)
             created.append(kpi)
@@ -925,6 +932,12 @@ def update_kpi(kpi_id: int, payload: schemas.KPIUpdate, current_user: CurrentUse
         raise HTTPException(404, "Không tìm thấy KPI")
     _check_kpi_cycle_not_locked(db, kpi, current_user.id)
     changes = payload.model_dump(exclude_unset=True, exclude={"reason", "clear_objective"})
+    # Source provenance is system-owned; manual edits must not rewrite it.
+    changes.pop("data_source_mode", None)
+    warning = changes.get("warning_threshold", kpi.warning_threshold)
+    critical = changes.get("critical_threshold", kpi.critical_threshold)
+    if warning is not None and critical is not None and float(critical) > float(warning):
+        raise HTTPException(400, "Ngưỡng critical phải nhỏ hơn hoặc bằng warning")
 
     # xac dinh muc tieu va trong so SAU thay doi de kiem tra dung nhom dich
     new_obj_id = changes.pop("objective_id", None)
@@ -981,6 +994,28 @@ def update_kpi(kpi_id: int, payload: schemas.KPIUpdate, current_user: CurrentUse
     db.refresh(kpi)
     autonomous_agent.run_category_guard_for_kpis(db, current_user.id, [kpi])
     return kpi
+
+
+@router.get("/{kpi_id}/period-metrics", response_model=list[schemas.KPIPeriodMetricOut])
+def list_kpi_period_metrics(kpi_id: int, current_user: CurrentUser, db: Session = Depends(get_db)):
+    kpi = db.get(models.KPI, kpi_id)
+    if not kpi or kpi.user_id != current_user.id:
+        raise HTTPException(404, "Không tìm thấy KPI")
+    return kpi_service.list_period_metrics(db, kpi)
+
+
+@router.post("/{kpi_id}/period-metrics", response_model=schemas.KPIPeriodMetricOut)
+def upsert_kpi_period_metric(
+    kpi_id: int,
+    payload: schemas.KPIPeriodMetricUpsert,
+    current_user: CurrentUser,
+    db: Session = Depends(get_db),
+):
+    kpi = db.get(models.KPI, kpi_id)
+    if not kpi or kpi.user_id != current_user.id:
+        raise HTTPException(404, "Không tìm thấy KPI")
+    _check_kpi_cycle_not_locked(db, kpi, current_user.id)
+    return kpi_service.upsert_period_metric(db, kpi, payload)
 
 
 @router.delete("/{kpi_id}")
