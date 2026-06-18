@@ -106,6 +106,7 @@ def _period_metric(
         confirmed=True,
     )
     db.add(metric)
+    db.flush()
     return metric
 
 
